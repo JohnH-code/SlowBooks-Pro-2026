@@ -71,6 +71,7 @@ const App = {
         '/vendor-credits/:id': { page: 'vendor-credits', label: 'Vendor Credit',  render: (id) => App.withDocument(() => VendorCreditsPage.render(), () => VendorCreditsPage.view(id)) },
         // Phase 3: Productivity
         '/recurring':     { page: 'recurring',       label: 'Recurring Invoices', render: () => RecurringPage.render() },
+        '/memorized':     { page: 'memorized',       label: 'Memorized Transactions', render: () => MemorizedPage.render() },
         '/batch-payments': { page: 'batch-payments', label: 'Batch Payments',     render: () => BatchPaymentsPage.render() },
         // Phase 4: CSV Import/Export
         '/csv':           { page: 'csv',             label: 'CSV Import/Export',  render: () => App.renderCSV() },
@@ -1157,6 +1158,58 @@ const App = {
         } catch (err) { toast(err.message, 'error'); }
     },
 
+    // Clean Up Unused Accounts: every account with nothing posted to it and
+    // nothing pointing at it, ticked, to delete in one go. The built-in
+    // accounts the software posts to by number are listed as kept.
+    async showUnusedAccounts() {
+        let data;
+        try { data = await API.get('/accounts/unused'); } catch (err) { toast(err.message, 'error'); return; }
+        const row = a => `<tr><td><input type="checkbox" data-unused value="${a.id}" checked aria-label="Delete ${escapeHtml(a.name)}"></td>
+            <td>${escapeHtml(a.account_number)}</td><td>${escapeHtml(a.name)}${a.is_active ? '' : ' <span style="color:var(--gray-500)">(inactive)</span>'}</td><td>${escapeHtml(a.account_type)}</td></tr>`;
+        // A built-in bank or card account (1000 Checking, 2100 Credit Card)
+        // can hand its number to the company's own account and go.
+        const swappable = data.kept.filter(a => a.replace_with && a.replace_with.length);
+        const others = data.kept.filter(a => !(a.replace_with && a.replace_with.length));
+        const swaps = swappable.length ? `
+            <p style="font-size:12px; margin-top:10px;">Built-in ${swappable.length === 1 ? 'account' : 'accounts'} you don't use. Slowbooks reaches ${swappable.length === 1 ? 'it' : 'each'} by number (the bank a bill payment defaults to, the card charges post to), so the number moves to your own account and the empty one is deleted:</p>
+            ${swappable.map(a => `<div style="font-size:12px; margin:4px 0;"><label style="font-weight:normal;"><input type="checkbox" data-swap="${a.id}" checked style="width:auto;">
+                Replace ${escapeHtml(`${a.account_number} ${a.name}`)} with</label>
+                <select data-swap-to="${a.id}" aria-label="Replacement for ${escapeHtml(a.name)}">${a.replace_with.map(o => `<option value="${o.id}">${escapeHtml(o.name)}</option>`).join('')}</select></div>`).join('')}` : '';
+        const kept = others.length ? `<p style="font-size:11px; color:var(--gray-500); margin-top:8px;">Also unused but kept, because Slowbooks posts to them by number: ${others.map(a => escapeHtml(`${a.account_number} ${a.name}`)).join(', ')}.</p>` : '';
+        const anything = data.delete.length || swappable.length;
+        openModal('Clean Up Unused Accounts', anything ? `
+            ${data.delete.length ? `<p style="font-size:12px;">These ${data.delete.length} accounts have never been used — nothing posted to them, and no item, vendor, budget or sub-account points to them. Untick any you want to keep.</p>
+            <p style="font-size:11px;"><a href="#" onclick="document.querySelectorAll('[data-unused]').forEach(c => c.checked = !c.checked); return false;">Invert selection</a></p>
+            <div class="table-container" style="max-height:50vh; overflow:auto;"><table>
+                <thead><tr><th scope="col"></th><th scope="col">Number</th><th scope="col">Name</th><th scope="col">Type</th></tr></thead>
+                <tbody>${data.delete.map(row).join('')}</tbody></table></div>` : ''}
+            ${swaps}
+            ${kept}
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-danger" data-destructive onclick="App.removeUnusedAccounts()">Delete selected</button>
+            </div>` : `<p>Every account is in use — nothing to clean up.</p>${kept}
+            <div class="form-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`);
+    },
+
+    async removeUnusedAccounts() {
+        const ids = [...document.querySelectorAll('[data-unused]:checked')].map(c => parseInt(c.value));
+        const replace = {};
+        document.querySelectorAll('[data-swap]:checked').forEach(c => {
+            const to = document.querySelector(`[data-swap-to="${c.dataset.swap}"]`);
+            if (to && to.value) replace[c.dataset.swap] = parseInt(to.value);
+        });
+        const n = ids.length + Object.keys(replace).length;
+        if (!n) { toast('Nothing selected', 'error'); return; }
+        if (!confirm(`Delete ${n} unused account${n === 1 ? '' : 's'}? This can't be undone.`)) return;
+        try {
+            const r = await API.post('/accounts/remove-unused', { account_ids: ids, replace });
+            toast(`${r.deleted} account${r.deleted === 1 ? '' : 's'} deleted`);
+            closeModal();
+            App.refresh();
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
     async renderAccounts() {
         const accounts = await API.get('/accounts');
         const grouped = {};
@@ -1182,6 +1235,7 @@ const App = {
                     ${inactiveCount ? `<button class="btn btn-sm btn-secondary" onclick="App.toggleInactiveAccounts()">${App._showInactiveAccounts ? 'Hide' : 'Show'} ${inactiveCount} inactive</button> ` : ''}
                     <button class="btn btn-secondary" data-write onclick="App.showChartImport()">Import…</button>
                     <button class="btn btn-secondary" data-write onclick="App.showSeededCleanup()">Remove unused seeded accounts…</button>
+                    <button class="btn btn-secondary" data-write onclick="App.showUnusedAccounts()">Clean Up Unused…</button>
                     <button class="btn btn-primary" onclick="App.showAccountForm()">New Account</button>
                 </div>
             </div>
@@ -1190,8 +1244,22 @@ const App = {
                 <thead><tr><th scope="col" style="width:80px;">Number</th><th scope="col">Name</th><th scope="col" style="width:100px;">Type</th><th scope="col" class="amount" style="width:100px;">Balance</th><th scope="col" style="width:190px;">Actions</th></tr></thead>
                 <tbody>`;
 
+        // Sub-accounts under their parents, indented, as QuickBooks lists them.
+        const treeOrder = (list) => {
+            const ids = new Set(list.map(a => a.id));
+            const kids = new Map();
+            for (const a of list) {
+                const p = a.parent_id && ids.has(a.parent_id) ? a.parent_id : 0;
+                if (!kids.has(p)) kids.set(p, []);
+                kids.get(p).push(a);
+            }
+            const out = [];
+            const walk = (p, depth) => (kids.get(p) || []).forEach(a => { a._depth = depth; out.push(a); walk(a.id, depth + 1); });
+            walk(0, 0);
+            return out;
+        };
         for (const type of typeOrder) {
-            const accts = grouped[type] || [];
+            const accts = treeOrder(grouped[type] || []);
             if (accts.length === 0) continue;
             html += `<tr data-account-group="${type}" style="background:linear-gradient(180deg, #e8ecf2 0%, #dde2ea 100%);"><td colspan="5" style="font-weight:700; color:var(--qb-navy); font-size:11px; padding:4px 10px;">${typeNames[type]}</td></tr>`;
             for (const a of accts) {
@@ -1199,7 +1267,7 @@ const App = {
                 const haystack = escapeHtml(`${a.account_number || ''} ${a.name}`.toLowerCase());
                 html += `<tr${inactive ? ' class="row--dim"' : ''} data-account-row="${haystack}" data-account-type="${type}">
                     <td style="font-family:var(--font-mono);">${escapeHtml(a.account_number || '')}</td>
-                    <td><a href="${escapeHtml(App.accountRegisterHref(a))}" data-row-key="account:${Number(a.id)}" onclick="ReportsPage._leaveFrom(this)" style="font-weight:700; color:var(--text-link); text-decoration:none;" title="Open the register">${escapeHtml(a.name)}</a>${a.is_control ? ` <span class="badge-control" title="${escapeHtml(a.control_purpose || 'the software finds this account by its number')}">control</span>` : ''}${inactive ? ' <span class="badge badge-draft">inactive</span>' : ''}</td>
+                    <td style="padding-left:${10 + 18 * (a._depth || 0)}px;"><a href="${escapeHtml(App.accountRegisterHref(a))}" data-row-key="account:${Number(a.id)}" onclick="ReportsPage._leaveFrom(this)" style="font-weight:700; color:var(--text-link); text-decoration:none;" title="Open the register">${escapeHtml(a.name)}</a>${a.is_control ? ` <span class="badge-control" title="${escapeHtml(a.control_purpose || 'the software finds this account by its number')}">control</span>` : ''}${inactive ? ' <span class="badge badge-draft">inactive</span>' : ''}</td>
                     <td>${a.account_type}</td>
                     <td class="amount">${formatCurrency(a.balance)}</td>
                     <td class="actions">
@@ -1221,6 +1289,8 @@ const App = {
     async showAccountForm(id = null) {
         let acct = { name: '', account_number: '', account_type: 'expense', description: '' };
         if (id) acct = await API.get(`/accounts/${id}`);
+        const all = await API.get('/accounts');
+        App._accountsForParent = all;
 
         const types = ['asset','liability','equity','income','cogs','expense'];
         // A control account is found by its number when a document posts, so the
@@ -1250,9 +1320,11 @@ const App = {
                     <div class="form-group"><label>Name *</label>
                         <input name="name" required value="${escapeHtml(acct.name)}"></div>
                     <div class="form-group"><label>Type *</label>
-                        <select name="account_type"${locked ? ' disabled' : ''}>
+                        <select name="account_type"${locked ? ' disabled' : ''} onchange="App.fillParentOptions(this.value, ${id || 'null'})">
                             ${types.map(t => `<option value="${t}" ${acct.account_type===t?'selected':''}>${t.charAt(0).toUpperCase()+t.slice(1)}</option>`).join('')}
                         </select></div>
+                    <div class="form-group"><label for="account-parent">Subaccount of</label>
+                        <select id="account-parent" name="parent_id" data-current="${acct.parent_id || ''}"></select></div>
                     <div class="form-group full-width"><label>Description</label>
                         <textarea name="description">${escapeHtml(acct.description || '')}</textarea></div>
                 </div>
@@ -1261,6 +1333,32 @@ const App = {
                     <button type="submit" class="btn btn-primary">${id ? 'Update' : 'Create'} Account</button>
                 </div>
             </form>`);
+        App.fillParentOptions(acct.account_type, id);
+    },
+
+    // "Subaccount of": accounts of the same type, never this one or its own
+    // sub-accounts (the server refuses those too).
+    fillParentOptions(type, id) {
+        const sel = $('#account-parent');
+        if (!sel) return;
+        const all = App._accountsForParent || [];
+        const below = new Set(id ? [id] : []);
+        let grew = true;
+        while (grew) {
+            grew = false;
+            for (const a of all) if (a.parent_id && below.has(a.parent_id) && !below.has(a.id)) { below.add(a.id); grew = true; }
+        }
+        const current = sel.value || sel.dataset.current || '';
+        sel.innerHTML = '<option value="">— none (a top-level account) —</option>' + all
+            .filter(a => a.account_type === type && !below.has(a.id) && a.is_active !== false)
+            .map(a => `<option value="${a.id}" ${String(a.id) === String(current) ? 'selected' : ''}>${escapeHtml(App._accountPath(a, all))}</option>`).join('');
+    },
+
+    _accountPath(a, all) {
+        const byId = new Map(all.map(x => [x.id, x]));
+        const names = [];
+        for (let cur = a, i = 0; cur && i < 20; cur = byId.get(cur.parent_id), i++) names.unshift(cur.name);
+        return `${a.account_number ? a.account_number + ' ' : ''}${names.join(' : ')}`;
     },
 
     // Import a chart of accounts from a file (#139 / #161). Dry run first:
@@ -1396,6 +1494,7 @@ const App = {
     async saveAccount(e, id) {
         e.preventDefault();
         const data = Object.fromEntries(new FormData(e.target).entries());
+        data.parent_id = data.parent_id ? parseInt(data.parent_id) : null;
         try {
             if (id) { await API.put(`/accounts/${id}`, data); toast('Account updated'); }
             else { await API.post('/accounts', data); toast('Account created'); }

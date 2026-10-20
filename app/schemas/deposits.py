@@ -42,6 +42,19 @@ class DepositResponse(BaseModel):
     reconciled: bool = False
 
 
+class DepositOtherLineOut(BaseModel):
+    """A line of a deposit that is not a payment from Undeposited Funds:
+    money put straight into the bank from another account (interest, a
+    loan, income received without an invoice), as QuickBooks' Make Deposits
+    takes it. A negative amount is cash back or a fee taken from it."""
+
+    account_id: int
+    account_name: str = ""
+    account_number: str = ""
+    description: str = ""
+    amount: Decimal
+
+
 class DepositDetailResponse(DepositResponse):
     """One deposit with the payments it took, each in the shape Make
     Deposits lists a waiting payment — what the bank register's link to a
@@ -49,6 +62,14 @@ class DepositDetailResponse(DepositResponse):
     so it names none."""
 
     payments: list[PendingDepositResponse] = []
+    other_lines: list[DepositOtherLineOut] = []
+
+
+class DepositOtherLineIn(StrictModel):
+    account_id: int
+    amount: Decimal
+    received_from: Optional[str] = None
+    memo: Optional[str] = None
 
 
 class DepositCreate(StrictModel):
@@ -61,3 +82,6 @@ class DepositCreate(StrictModel):
     class_id: Optional[int] = None
     job_id: Optional[int] = None
     line_ids: list[int] = []
+    # money deposited straight from another account, beside (or instead of)
+    # the payments ticked
+    other_lines: list[DepositOtherLineIn] = []

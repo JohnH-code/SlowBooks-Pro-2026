@@ -47,6 +47,21 @@ DEFAULT_SETTINGS = {
     "ask_password_on_start": "false",
     "default_terms": "Net 30",
     "default_tax_rate": "0.0",
+    # Sales tax system: "us" (a state's sales tax, purchase tax part of the
+    # cost) or "canada" (GST/HST collected and claimed back through one
+    # account, filed on a return — services/hst.py)
+    "sales_tax_system": "us",
+    "hst_account_id": "",
+    "hst_rate": "13",
+    # none (not registered) | monthly | quarterly | annual
+    "hst_filing_frequency": "quarterly",
+    "hst_year_end_month": "12",
+    "hst_registration_number": "",
+    # Cheque printing: where the cheque sits on voucher stock (top | middle
+    # | bottom), and a nudge in inches to line up with the printer
+    "cheque_layout": "top",
+    "cheque_offset_x": "0",
+    "cheque_offset_y": "0",
     "invoice_prefix": "",
     "invoice_next_number": "1001",
     "estimate_prefix": "E-",

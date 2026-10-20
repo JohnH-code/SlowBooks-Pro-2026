@@ -7,6 +7,7 @@ QuickBooks you're leaving:
 |---|---|---|
 | **QuickBooks Online** | Its own Export data zip (no Intuit app) | sidebar → **Migrate Data** → QuickBooks Online export |
 | **QuickBooks Desktop** (2003–current) | IIF file import | sidebar → **Interoperability** |
+| **QuickBooks Desktop**, full history | IIF lists + Journal report | sidebar → **Migrate Data** → QuickBooks Desktop (full history) |
 
 The Desktop path imports accounts, customers, vendors, items, invoices,
 payments, and **sales receipts**. Sales receipts come across as what
@@ -317,6 +318,80 @@ Details worth knowing:
   receipt with the same customer + date + total).
 
 ---
+
+## Path 3 — QuickBooks Desktop, full history (Journal report)
+
+Every transaction since the company's first day, of every type (cheques,
+deposits, bills, bill payments, invoices, payments, transfers, credit card
+charges, general journal entries), checked to the cent against QuickBooks
+before anything is written. Sidebar → **Migrate Data** → **QuickBooks
+Desktop (full history)**, upload these together, **Dry Run**, then
+**Import**. Start from a new, empty company.
+
+| File | How to get it in QuickBooks Desktop |
+|---|---|
+| `lists.iif` | File → Utilities → Export → Lists to IIF Files: tick Chart of Accounts, Customer, Vendor, Employee, Other Names, Class, Item, Payment Terms, Sales Tax Code |
+| `journal.csv` | Reports → Accountant & Taxes → **Journal**, Dates **All**; Customize Report → Display → add the columns **Terms, Due Date, Item, Class, Sales Tax Code, Clr, Open Balance, Qty, Sales Price**; then Excel → Create New Worksheet → *Create a comma separated values (.csv) file* |
+| `balance sheet.csv` | Reports → Company & Financial → **Balance Sheet Standard**, Dates **All**, Show Columns **Year**, to CSV |
+| `profit and loss.csv` | Reports → Company & Financial → **Profit & Loss Standard**, Dates **All**, Show Columns **Year**, to CSV |
+| `attach.zip` + `attachment-map.csv` | optional: the company's folder under `Attach/` beside the .QBW, zipped, and a CSV with columns `Trans #` and `Folder` naming which transaction each `Txn/<folder>` belongs to |
+
+What happens:
+
+- **The chart** comes from the IIF: types, numbers, sub-accounts, hidden
+  accounts (made inactive). The balances the IIF also carries are **not**
+  used — the Journal holds every posting from the first day, and the
+  balances again would count everything twice. An account named like one
+  of Slowbooks' own (Retained Earnings, Accounts Receivable …) joins it;
+  the dry run lists which.
+- **Every transaction** comes across dated as in QuickBooks, with its
+  payee, number, memo and every split line:
+  - **cheques and credit card charges** become **Expenses** (Paid From the
+    bank or card, split across as many accounts as QuickBooks had them —
+    a fee and its GST, say), so a drill-down opens the cheque;
+  - **deposits** become **Deposits**, each line an *Other deposits* line
+    (received from, account, memo, amount), and the customer payments a
+    deposit banked are linked to it, so Make Deposits lists only what
+    QuickBooks still had in Undeposited Funds;
+  - **invoices, customer payments, bills and bill payments** become those
+    documents — an invoice with its number, terms, due date, items,
+    quantities, prices and HST; a bill with every line, HST paid on a line
+    of its own. QuickBooks' Journal does not say which payment paid which
+    invoice, so each invoice and bill is paid, from its customer's or
+    vendor's payments oldest first, up to the **Open Balance** QuickBooks
+    shows on it: every open invoice and bill, the A/R and A/P aging and
+    every customer's and vendor's balance come out as QuickBooks has them.
+    A voided invoice or bill comes across void, its number kept;
+  - everything else — general journal entries, transfers, credit card
+    credits — a **journal entry**.
+
+  Each is referenced `QB #<Trans #>` (a cheque `426 · QB #921`), and
+  uploading the same files again posts nothing twice.
+- **The check**: the dry run rebuilds every balance sheet account at every
+  year end and every income and expense account for every year, and
+  refuses the import if a single figure differs from QuickBooks' reports.
+  Retained Earnings is compared the way QuickBooks shows it (posted amounts
+  plus every earlier year's net income).
+- **Customers, vendors, items and classes** come from the IIF; names that
+  QuickBooks quoted because they hold a comma lose the quotes.
+- **Attachments** go onto the cheque, deposit or journal entry they came with. QuickBooks
+  names each folder by an internal ID no report shows, so the map says
+  which is which; a folder the map leaves out is listed, not guessed.
+  Files in `Inbox/` were never attached to anything and are left alone.
+
+- **Bank reconciliations** carry over from the **Clr** column: for each
+  bank account, every line QuickBooks marked reconciled (`X`) goes onto one
+  completed reconciliation dated the last day QuickBooks reconciled, so the
+  first reconciliation here starts from QuickBooks' last statement balance
+  with only the items still outstanding. The dry run states each account's
+  reconciled balance — compare it with that statement. Lines QuickBooks
+  marked cleared (`*`) or matched to a bank download (`M`) — a credit
+  card's, typically — arrive ticked, not reconciled.
+
+What it does not do: carry which payment QuickBooks applied to which
+invoice when a customer had several open at once (the open balances are
+QuickBooks', the pairing oldest-first), or the HST codes of the lines as
+tax codes (the HST amounts are on their own lines and accounts).
 
 ## Classes: entities kept apart in one file
 

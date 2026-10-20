@@ -52,11 +52,21 @@ const ExpensesPage = {
         return accounts.filter(a => a.bank_kind);
     },
 
-    async showForm() {
-        const [vendors, accounts] = await Promise.all([
+    // Back to the list the form or the void came from: Credit Card Charges
+    // lists card charges too.
+    _backTo() {
+        if ((location.hash || '').startsWith('#/cc-charges')) App.refresh();
+        else App.navigate('#/expenses');
+    },
+
+    // opts.card: a credit card charge — the form starts on the most used card
+    async showForm(opts = {}) {
+        const [vendors, accounts, payees] = await Promise.all([
             API.get('/vendors?active_only=true'),
             API.get('/accounts'),
-        ]);
+            API.get('/expenses/payees').catch(() => []),
+            API.get('/settings').catch(() => ({})),
+        ]).then(([v, a, p, s]) => { ExpensesPage._canada = s.sales_tax_system === 'canada' && !!s.hst_account_id; ExpensesPage._hstRate = s.hst_rate || '13'; return [v, a, p]; });
         ExpensesPage._vendors = vendors;
         ExpensesPage._accounts = accounts;
         const classGroup = await classFormGroupHtml();
@@ -69,24 +79,41 @@ const ExpensesPage = {
         const expenseAccts = PurchaseAccounts.filter(accounts);
         const paidFrom = ExpensesPage.paidFromAccounts(accounts);
         const acctOpt = a => `<option value="${a.id}">${accountLabel(a)}</option>`;
-        const checking = paidFrom.find(a => /checking/i.test(a.name || '')) || paidFrom[0];
+        const checking = opts.card
+            ? (paidFrom.find(a => a.bank_kind === 'credit_card' && a.account_number === '2100') || paidFrom.find(a => a.bank_kind === 'credit_card') || paidFrom[0])
+            : (paidFrom.find(a => a.account_number === '1000') || paidFrom.find(a => /checking/i.test(a.name || '')) || paidFrom[0]);
 
         openModal('Enter Expense', `
             <form id="expense-form" onsubmit="ExpensesPage.save(event)">
                 ${ScanHelper.scanRowHtml()}
                 <div class="form-grid">
-                    <div class="form-group"><label>Vendor *</label>
+                    <div class="form-group"><label>Payee *</label>
                         ${VendorQuickAdd.html(vendors, { id: 'expense-vendor', onchange: 'ExpensesPage.vendorSelected(this.value)' })}</div>
                     <div class="form-group"><label>Date *</label>
                         <input name="date" type="date" required value="${todayISO()}"></div>
-                    <div class="form-group"><label>Expense Account *</label>
+                    <div class="form-group" data-single><label>Expense Account *</label>
                         <select name="expense_account_id" required><option value="">Select...</option>${PurchaseAccounts.options(expenseAccts)}</select></div>
                     <div class="form-group"><label>Paid From *</label>
-                        <select name="paid_from_account_id" required>${paidFrom.map(acctOpt).join('')}</select></div>
-                    <div class="form-group"><label>Amount *</label>
+                        <select name="paid_from_account_id" required onchange="ExpensesPage.nextNumber()">${paidFrom.map(acctOpt).join('')}</select></div>
+                    <div class="form-group" data-single><label>Amount *</label>
                         <input name="amount" type="number" step="0.01" min="0.01" required></div>
+                    ${ExpensesPage._canada ? `<div class="form-group" data-single><label>GST/HST</label>
+                        <select name="tax_code"><option value="H">HST ${escapeHtml(ExpensesPage._hstRate)}% — included in the amount</option><option value="E">No HST</option></select></div>` : ''}
+                    <div class="form-group full-width">
+                        <button type="button" class="btn btn-sm btn-secondary" id="expense-split-toggle" onclick="ExpensesPage.toggleSplit()">Split across accounts…</button>
+                        <span style="font-size:11px; color:var(--text-muted); margin-left:6px;">A cheque for a fee and its HST, or for several bills at once</span>
+                    </div>
+                    <div class="form-group full-width" id="expense-split" hidden>
+                        <table class="split-lines" style="width:100%;">
+                            <thead><tr><th scope="col">Account</th><th scope="col">Memo</th>${ExpensesPage._canada ? '<th scope="col" title="H: the amount includes HST, claimed as an input tax credit">Tax</th>' : ''}<th scope="col" class="amount">Amount</th><th scope="col"></th></tr></thead>
+                            <tbody id="expense-split-rows"></tbody>
+                            <tfoot><tr><td colspan="${ExpensesPage._canada ? 3 : 2}"><button type="button" class="btn btn-sm btn-secondary" onclick="ExpensesPage.addSplitRow()">+ Add line</button></td>
+                                <td class="amount"><strong id="expense-split-total">$0.00</strong></td><td></td></tr></tfoot>
+                        </table>
+                    </div>
                     <div class="form-group"><label>Reference</label>
-                        <input name="reference" placeholder="Receipt / check #"></div>
+                        <input name="reference" placeholder="Receipt / cheque #" oninput="this.dataset.auto=''"></div>
+                    <div class="form-group full-width" id="expense-quickfill-note" style="font-size:11px; color:var(--text-muted);"></div>
                     ${classGroup}${Nonprofit.functionFormGroupHtml()}${jobGroup}${costCodeGroup}${billableGroup}
                     <div class="form-group full-width"><label>Memo</label>
                         <textarea name="memo"></textarea></div>
@@ -98,16 +125,125 @@ const ExpensesPage = {
             </form>`);
         const pf = document.querySelector('#expense-form [name="paid_from_account_id"]');
         if (pf && checking) pf.value = checking.id;
+        // Names cheques were written to that are not vendors (employees, the
+        // Receiver General, QuickBooks' Other Names), after the vendors.
+        const vsel = $('#expense-vendor');
+        if (vsel && payees && payees.length) {
+            vsel.insertAdjacentHTML('beforeend', `<optgroup label="Other payees">${payees.map(n =>
+                `<option value="payee:${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}</optgroup>`);
+        }
+        ExpensesPage.nextNumber();
         ScanHelper.wire(ExpensesPage._applyScan, ExpensesPage._applyScanField, ExpensesPage._scanFieldTarget);
     },
 
-    vendorSelected(vendorId) {
+    // Split mode: the one-account fields give way to a table of lines,
+    // each an account, a memo and an amount (negative for a credit).
+    _splitOn() { const el = $('#expense-split'); return !!(el && !el.hidden); },
+
+    toggleSplit() {
+        const form = $('#expense-form');
+        const box = $('#expense-split');
+        if (!form || !box) return;
+        const on = box.hidden;
+        box.hidden = !on;
+        form.querySelectorAll('[data-single]').forEach(el => { el.style.display = on ? 'none' : ''; });
+        form.expense_account_id.required = !on;
+        form.amount.required = !on;
+        $('#expense-split-toggle').textContent = on ? 'Back to one account' : 'Split across accounts…';
+        if (on && !$('#expense-split-rows').children.length) {
+            // carry what was typed into the first line
+            ExpensesPage.addSplitRow(form.expense_account_id.value, form.amount.value);
+            ExpensesPage.addSplitRow();
+        }
+        ExpensesPage.splitTotal();
+    },
+
+    addSplitRow(accountId, amount) {
+        const body = $('#expense-split-rows');
+        if (!body) return;
+        // any account but the one paid from: a cheque can pay down a loan or
+        // carry HST paid as well as an expense
+        const acctOpt = a => `<option value="${a.id}">${escapeHtml(a.account_number || '')} - ${escapeHtml(a.name)}</option>`;
+        const opts = ExpensesPage._accounts.filter(a => a.is_active !== false).map(acctOpt).join('');
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td><select data-split="account" aria-label="Account"><option value="">Select...</option>${opts}</select></td>
+            <td><input data-split="memo" aria-label="Memo" maxlength="300"></td>
+            ${ExpensesPage._canada ? `<td><select data-split="tax" aria-label="GST/HST"><option value="">—</option><option value="H">H</option></select></td>` : ''}
+            <td class="amount"><input data-split="amount" aria-label="Amount" type="number" step="0.01" style="width:110px; text-align:right;" oninput="ExpensesPage.splitTotal()"></td>
+            <td><button type="button" class="btn btn-sm btn-danger" aria-label="Remove line" onclick="this.closest('tr').remove(); ExpensesPage.splitTotal()">×</button></td>`;
+        body.appendChild(tr);
+        if (accountId) tr.querySelector('[data-split="account"]').value = accountId;
+        if (amount) tr.querySelector('[data-split="amount"]').value = amount;
+    },
+
+    _splitLines() {
+        return [...document.querySelectorAll('#expense-split-rows tr')].map(tr => ({
+            account_id: parseInt(tr.querySelector('[data-split="account"]').value) || null,
+            memo: tr.querySelector('[data-split="memo"]').value.trim() || null,
+            ...((tr.querySelector('[data-split="tax"]') || {}).value === 'H' ? { tax_code: 'H' } : {}),
+            amount: parseFloat(tr.querySelector('[data-split="amount"]').value) || 0,
+        })).filter(l => l.account_id || l.amount);
+    },
+
+    splitTotal() {
+        const total = ExpensesPage._splitLines().reduce((t, l) => t + l.amount, 0);
+        const el = $('#expense-split-total');
+        if (el) el.textContent = formatCurrency(PurchaseLines.cents(total));
+        return PurchaseLines.cents(total);
+    },
+
+    async vendorSelected(vendorId) {
         if (!vendorId || vendorId === VendorQuickAdd.NEW) return;
-        const vendor = ExpensesPage._vendors.find(v => v.id == vendorId);
+        const isPayee = String(vendorId).startsWith('payee:');
+        const vendor = isPayee ? null : ExpensesPage._vendors.find(v => v.id == vendorId);
         const sel = document.querySelector('#expense-form [name="expense_account_id"]');
         if (vendor && vendor.default_expense_account_id && sel && !sel.value) {
             sel.value = vendor.default_expense_account_id;
         }
+        // QuickFill: start from the last cheque to this payee
+        const q = isPayee ? `payee=${encodeURIComponent(String(vendorId).slice(6))}` : `vendor_id=${vendorId}`;
+        let last = null;
+        try { last = await API.get(`/expenses/quickfill?${q}`); } catch (e) { return; }
+        ExpensesPage.applyQuickFill(last);
+    },
+
+    // Fill the form from an earlier expense, unless something was typed.
+    applyQuickFill(last) {
+        const form = $('#expense-form');
+        if (!form || !last || !last.lines || !last.lines.length) return;
+        const typed = (form.amount && form.amount.value) || ExpensesPage._splitLines().some(l => l.amount);
+        if (typed) return;
+        const lines = last.lines;
+        if (lines.length === 1 && !ExpensesPage._splitOn()) {
+            form.expense_account_id.value = lines[0].account_id;
+            form.amount.value = Number(lines[0].amount).toFixed(2);
+            if (!form.memo.value && lines[0].memo) form.memo.value = lines[0].memo;
+        } else {
+            if (!ExpensesPage._splitOn()) ExpensesPage.toggleSplit();
+            $('#expense-split-rows').innerHTML = '';
+            for (const l of lines) {
+                ExpensesPage.addSplitRow(l.account_id, Number(l.amount).toFixed(2));
+                const rows = document.querySelectorAll('#expense-split-rows tr');
+                const memo = rows[rows.length - 1].querySelector('[data-split="memo"]');
+                if (memo && l.memo) memo.value = l.memo;
+            }
+            ExpensesPage.splitTotal();
+        }
+        const status = $('#expense-quickfill-note');
+        if (status) status.textContent = `Filled in from the last one, ${formatDate(last.date)} — change anything that differs.`;
+    },
+
+    // The next cheque number for the bank account paid from, unless a
+    // number was typed. A credit card has none.
+    async nextNumber() {
+        const form = $('#expense-form');
+        if (!form) return;
+        const ref = form.reference;
+        if (ref.value && ref.dataset.auto !== '1') return;
+        let next = null;
+        try { next = (await API.get(`/expenses/next-number?account_id=${form.paid_from_account_id.value}`)).number; } catch (e) { /* none */ }
+        ref.value = next || '';
+        ref.dataset.auto = next ? '1' : '';
     },
 
     // Where each canvas field lands — the canvas outlines these inputs in
@@ -182,16 +318,30 @@ const ExpensesPage = {
         e.preventDefault();
         const form = e.target;
         const paidFrom = parseInt(form.paid_from_account_id.value);
-        if (!(await Overdraft.confirm(paidFrom, parseFloat(form.amount.value) || 0))) return;
+        const split = ExpensesPage._splitOn();
+        const lines = split ? ExpensesPage._splitLines() : [];
+        if (split) {
+            if (lines.some(l => !l.account_id || !l.amount)) { toast('Each line needs an account and an amount', 'error'); return; }
+            if (!(ExpensesPage.splitTotal() > 0)) { toast('The lines must add up to more than zero', 'error'); return; }
+        }
+        const total = split ? ExpensesPage.splitTotal() : (parseFloat(form.amount.value) || 0);
+        if (!(await Overdraft.confirm(paidFrom, total))) return;
         if (!(await ClassWarn.ok(form))) return;
         try {
-            const vendorId = await VendorQuickAdd.ensure('expense-vendor');
+            const picked = ($('#expense-vendor') || {}).value || '';
+            const otherPayee = picked.startsWith('payee:') ? picked.slice(6) : null;
+            const vendorId = otherPayee ? null : await VendorQuickAdd.ensure('expense-vendor');
             const result = await API.post('/expenses', {
                 date: form.date.value,
                 vendor_id: vendorId,
-                expense_account_id: parseInt(form.expense_account_id.value),
+                ...(otherPayee ? { payee: otherPayee } : {}),
+                ...(split ? { lines } : {
+                    expense_account_id: parseInt(form.expense_account_id.value),
+                    amount: parseFloat(form.amount.value),
+                    ...(form.tax_code && form.tax_code.value === 'H' ? { tax_code: 'H' } : {}),
+                }),
+                amounts_include_tax: true,
                 paid_from_account_id: paidFrom,
-                amount: parseFloat(form.amount.value),
                 reference: form.reference.value || null,
                 memo: form.memo.value || null,
                 class_id: classIdFromForm(form),
@@ -203,7 +353,7 @@ const ExpensesPage = {
             await ScanHelper.attachAfterSave('expense', result.id);
             toast('Expense recorded');
             closeModal();
-            App.navigate('#/expenses');
+            ExpensesPage._backTo();
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -215,7 +365,7 @@ const ExpensesPage = {
             await API.post(`/expenses/${id}/void`);
             toast('Expense voided');
             closeModal();
-            App.navigate('#/expenses');
+            ExpensesPage._backTo();
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -226,12 +376,18 @@ const ExpensesPage = {
             <div style="font-size:13px; line-height:1.7;">
                 <strong>Date:</strong> ${formatDate(x.date)}<br>
                 <strong>Payee:</strong> ${escapeHtml(x.payee || '')}<br>
-                <strong>Expense Account:</strong> ${escapeHtml(x.expense_account_name || '')}<br>
+                ${(x.lines || []).length > 1 ? '' : `<strong>Expense Account:</strong> ${escapeHtml(x.expense_account_name || '')}<br>`}
                 <strong>Paid From:</strong> ${escapeHtml(x.paid_from_account_name || '')}<br>
                 <strong>Amount:</strong> ${formatCurrency(x.amount)}<br>
                 ${x.reference ? `<strong>Reference:</strong> ${escapeHtml(x.reference)}<br>` : ''}
                 ${x.memo ? `<strong>Memo:</strong> ${escapeHtml(x.memo).replace(/\n/g, '<br>')}<br>` : ''}
             </div>
+            ${(x.lines || []).length > 1 ? `<div class="table-container" style="margin-top:8px;"><table>
+                <thead><tr><th scope="col">Account</th><th scope="col">Memo</th><th scope="col" class="amount">Amount</th></tr></thead>
+                <tbody>${x.lines.map(l => `<tr><td>${escapeHtml(l.account_number ? l.account_number + ' · ' : '')}${escapeHtml(l.account_name)}</td>
+                    <td>${escapeHtml(l.memo || '')}</td><td class="amount">${formatCurrency(l.amount)}</td></tr>`).join('')}</tbody>
+                <tfoot><tr><td colspan="2"><strong>Total</strong></td><td class="amount"><strong>${formatCurrency(x.amount)}</strong></td></tr></tfoot>
+            </table></div>` : ''}
             <div style="margin-top:12px; border-top:1px solid var(--gray-300); padding-top:8px;">
                 <div style="font-weight:700; font-size:12px; margin-bottom:4px;">Attachments</div>
                 <div id="expense-attachments-list" style="margin-bottom:8px; font-size:11px;">Loading...</div>
@@ -243,6 +399,7 @@ const ExpensesPage = {
             <div class="form-actions">
                 ${x.printable ? `<button type="button" class="btn btn-secondary" onclick="window.open('/api/checks/print?transaction_id=${x.id}','_blank')">Print Check</button>` : ''}
                 ${isVoid ? '' : `<button data-destructive type="button" class="btn btn-danger" onclick="ExpensesPage.void(${x.id})">Void</button>`}
+                ${isVoid ? '' : (typeof Memorized !== "undefined" ? Memorized.button({ transaction_id: x.id }, x.payee) : "")}
                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Close</button>
             </div>`);
         if (App.documentAddress) App.documentAddress(`#/expenses/${Number(id)}`);  // the document's own address (NEW-164)

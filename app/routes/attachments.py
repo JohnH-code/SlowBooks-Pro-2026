@@ -41,6 +41,9 @@ _ENTITY_TYPE_DIRS = {
     # to equity — an Expense can only be paid from an asset or liability),
     # and its receipt belongs in the company file with it (#281).
     "journal_entry": "journal_entry",
+    # The deposit slip, the cheque copy or the letter that came with a
+    # deposit (QuickBooks keeps these on the deposit too).
+    "deposit": "deposit",
 }
 
 # Whitelist of MIME types we accept for attachments. An attachment is served

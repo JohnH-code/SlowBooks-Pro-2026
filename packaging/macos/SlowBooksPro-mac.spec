@@ -253,6 +253,11 @@ app = BUNDLE(
         # Save PDF writes under Documents; Download Backup writes to
         # Downloads. Keep them in step with desktop_launcher._reports_dir
         # and save_backup_file.
+        # Print asks Preview to show its Print dialog for the PDF
+        # (desktop_launcher._print_pdf)
+        "NSAppleEventsUsageDescription": (
+            "SlowBooks Pro asks Preview to print your invoices and cheques."
+        ),
         "NSDocumentsFolderUsageDescription": (
             "SlowBooks Pro saves the reports you export to "
             "Documents/SlowBooks Pro/Reports."

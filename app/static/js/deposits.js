@@ -41,8 +41,9 @@ const DepositsPage = {
                 <select id="deposit-class">${classOpts}</select>` : ''}
             </div>`;
 
+        DepositsPage._accounts = accounts;
         if (pending.length === 0) {
-            html += '<div class="empty-state"><p>No payments waiting to be deposited</p></div>';
+            html += '<div class="empty-state" style="padding:12px;"><p>No payments waiting to be deposited</p></div>';
         } else {
             html += `<div class="table-container"><table>
                 <thead><tr>
@@ -62,14 +63,27 @@ const DepositsPage = {
                     <td class="amount">${formatCurrency(p.amount)}</td>
                 </tr>`;
             }
-            html += `</tbody></table></div>
-                <div style="margin-top:12px; display:flex; justify-content:space-between; align-items:center;" data-write>
-                    <div id="deposit-total" style="font-size:16px; font-weight:700; color:var(--qb-navy);">
-                        Selected: $0.00 (0 items)
-                    </div>
-                    <button class="btn btn-primary" onclick="DepositsPage.makeDeposit()">Make Deposit</button>
-                </div>`;
+            html += `</tbody></table></div>`;
         }
+        // QuickBooks' other half of Make Deposits: money that goes straight
+        // in from another account — interest, a shareholder loan, income
+        // with no invoice behind it.
+        html += `
+            <h3 style="margin:16px 0 6px; font-size:13px;">Other deposits</h3>
+            <div style="font-size:10px; color:var(--text-muted); margin-bottom:6px;">
+                Money deposited straight from another account. A negative amount is cash back.
+            </div>
+            <div class="table-container" data-write><table>
+                <thead><tr><th scope="col">Received From</th><th scope="col">From Account</th><th scope="col">Memo</th><th scope="col" class="amount">Amount</th><th scope="col"></th></tr></thead>
+                <tbody id="deposit-other-rows"></tbody>
+                <tfoot><tr><td colspan="5"><button type="button" class="btn btn-sm btn-secondary" onclick="DepositsPage.addOtherRow()">+ Add line</button></td></tr></tfoot>
+            </table></div>
+            <div style="margin-top:12px; display:flex; justify-content:space-between; align-items:center;" data-write>
+                <div id="deposit-total" style="font-size:16px; font-weight:700; color:var(--qb-navy);">
+                    Deposit total: $0.00
+                </div>
+                <button class="btn btn-primary" onclick="DepositsPage.makeDeposit()">Make Deposit</button>
+            </div>`;
         html += DepositsPage._recentHtml(recent);
         return html;
     },
@@ -141,6 +155,13 @@ const DepositsPage = {
             : `<p style="font-size:11px; color:var(--text-muted);">${d.voided
                 ? 'This deposit is void: its payments went back on the Make Deposits list.'
                 : 'This deposit does not list its payments: it was recorded as an amount (imported, or made before deposits kept their list).'}</p>`;
+        const otherRows = (d.other_lines || []).map(o => `<tr>
+                <td>${escapeHtml(o.account_number ? o.account_number + ' · ' : '')}${escapeHtml(o.account_name)}</td>
+                <td>${escapeHtml(o.description || '')}</td>
+                <td class="amount">${formatCurrency(o.amount)}</td></tr>`).join('');
+        const others = otherRows ? `<div class="table-container" style="margin-top:8px;"><table>
+                <thead><tr><th scope="col">From Account</th><th scope="col">Received From / Memo</th><th scope="col" class="amount">Amount</th></tr></thead>
+                <tbody>${otherRows}</tbody></table></div>` : '';
         const canVoid = !d.voided && !d.reconciled;
         openModal(`Deposit — ${formatDate(d.date)}`, `
             <div style="margin-bottom:12px;">
@@ -150,15 +171,89 @@ const DepositsPage = {
                 <strong>Amount:</strong> ${formatCurrency(d.amount)}<br>
                 <strong>Status:</strong> ${status}${d.reconciled && !d.voided ? ' — on a reconciled bank statement, so it can\'t be voided' : ''}
             </div>
-            ${payments}
+            ${rows || !otherRows ? payments : ''}
+            ${others}
+            <div style="margin-top:12px; border-top:1px solid var(--gray-300); padding-top:8px;">
+                <div style="font-weight:700; font-size:12px; margin-bottom:4px;">Attachments</div>
+                <div id="deposit-attachments-list" style="margin-bottom:8px; font-size:11px;">Loading...</div>
+                <div style="display:flex; gap:6px; align-items:center;" data-write>
+                    <input type="file" id="deposit-attach-file" aria-label="File to attach" style="font-size:11px;">
+                    <button class="btn btn-sm btn-secondary" onclick="DepositsPage.uploadAttachment(${d.id})">Attach</button>
+                </div>
+            </div>
             <div class="form-actions">
                 ${canVoid ? `<button data-destructive type="button" class="btn btn-danger" onclick="DepositsPage.voidDeposit(${d.id})">Void</button>` : ''}
                 ${d.voided ? '' : `<button type="button" class="btn btn-secondary" onclick="window.open('/api/deposits/${d.id}/pdf','_blank')">Save PDF</button>
-                <button type="button" class="btn btn-secondary" onclick="window.open('/api/deposits/${d.id}/print-preview','_blank')">Print</button>`}
+                <button type="button" class="btn btn-secondary" onclick="window.open('/api/deposits/${d.id}/print-preview','_blank')">Print</button>
+                ${(d.other_lines || []).length ? (typeof Memorized !== "undefined" ? Memorized.button({ transaction_id: d.id }, 'Deposit') : "") : ''}`}
                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Close</button>
             </div>`);
         // the document's own address, so Back returns to the list and the Open group lists it (NEW-164)
         if (App.documentAddress) App.documentAddress(`#/deposits/${Number(id)}`);
+        DepositsPage.loadAttachments(d.id);
+    },
+
+    addOtherRow() {
+        const body = $('#deposit-other-rows');
+        if (!body) return;
+        const bankId = parseInt($('#deposit-bank-acct')?.value) || null;
+        const opts = (DepositsPage._accounts || [])
+            .filter(a => a.is_active !== false && a.id !== bankId && a.account_number !== '1200')
+            .map(a => `<option value="${a.id}">${escapeHtml(a.account_number || '')} - ${escapeHtml(a.name)}</option>`).join('');
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td><input data-other="from" aria-label="Received from" maxlength="120"></td>
+            <td><select data-other="account" aria-label="From account"><option value="">Select...</option>${opts}</select></td>
+            <td><input data-other="memo" aria-label="Memo" maxlength="160"></td>
+            <td class="amount"><input data-other="amount" aria-label="Amount" type="number" step="0.01" style="width:110px; text-align:right;" oninput="DepositsPage.recalc()"></td>
+            <td><button type="button" class="btn btn-sm btn-danger" aria-label="Remove line" onclick="this.closest('tr').remove(); DepositsPage.recalc()">×</button></td>`;
+        body.appendChild(tr);
+    },
+
+    _otherLines() {
+        return [...document.querySelectorAll('#deposit-other-rows tr')].map(tr => ({
+            received_from: tr.querySelector('[data-other="from"]').value.trim() || null,
+            account_id: parseInt(tr.querySelector('[data-other="account"]').value) || null,
+            memo: tr.querySelector('[data-other="memo"]').value.trim() || null,
+            amount: parseFloat(tr.querySelector('[data-other="amount"]').value) || 0,
+        })).filter(l => l.account_id || l.amount || l.received_from || l.memo);
+    },
+
+    async loadAttachments(id) {
+        const el = $('#deposit-attachments-list');
+        if (!el) return;
+        try {
+            const attachments = await API.get(`/attachments/deposit/${id}`);
+            el.innerHTML = attachments.length === 0
+                ? '<span style="color:var(--text-muted);">No attachments</span>'
+                : attachments.map(a => `<div style="display:flex; flex-wrap:wrap; align-items:center; gap:0 8px; padding:2px 0;">
+                    ${a.missing ? `<span>${escapeHtml(a.filename)}</span>` : `<a href="/api/attachments/download/${a.id}" target="_blank">${escapeHtml(a.filename)}</a>`}
+                    ${a.file_size == null ? '' : `<span style="color:var(--gray-400);">(${formatFileSize(a.file_size)})</span>`}
+                    <button data-destructive aria-label="Delete attachment" class="btn btn-sm btn-danger" onclick="DepositsPage.deleteAttachment(${a.id},${id})" style="padding:0 4px; font-size:10px;">X</button>
+                </div>`).join('');
+        } catch (e) { el.innerHTML = ''; }
+    },
+
+    async uploadAttachment(id) {
+        const fileInput = $('#deposit-attach-file');
+        if (!fileInput?.files[0]) { toast('Select a file first', 'error'); return; }
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        try {
+            const resp = await fetch(`/api/attachments/deposit/${id}`, { method: 'POST', body: formData });
+            if (!resp.ok) throw new Error(await API.responseError(resp, 'Upload failed'));
+            toast('Attachment uploaded');
+            fileInput.value = '';
+            DepositsPage.loadAttachments(id);
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
+    async deleteAttachment(attachmentId, id) {
+        if (!confirm('Delete this attachment?')) return;
+        try {
+            await API.del(`/attachments/${attachmentId}`);
+            toast('Attachment deleted');
+            DepositsPage.loadAttachments(id);
+        } catch (err) { toast(err.message, 'error'); }
     },
 
     toggleAll() {
@@ -175,8 +270,10 @@ const DepositsPage = {
                 count++;
             }
         });
+        const otherCents = DepositsPage._otherLines().reduce((t, l) => t + Math.round(l.amount * 100), 0);
         const el = $('#deposit-total');
-        if (el) el.textContent = `Selected: ${formatCurrency(cents / 100)} (${count} items)`;
+        if (el) el.textContent = `Deposit total: ${formatCurrency((cents + otherCents) / 100)}`
+            + (count ? ` (${count} payment${count === 1 ? '' : 's'})` : '');
     },
 
     async makeDeposit() {
@@ -189,23 +286,26 @@ const DepositsPage = {
             }
         });
         const total = cents / 100;
+        const others = DepositsPage._otherLines();
+        if (others.some(l => !l.account_id || !l.amount)) { toast('Each other deposit line needs an account and an amount', 'error'); return; }
 
-        if (lineIds.length === 0) { toast('Select payments to deposit', 'error'); return; }
+        if (lineIds.length === 0 && others.length === 0) { toast('Select payments to deposit, or add a line', 'error'); return; }
 
         const bankAcctId = $('#deposit-bank-acct')?.value;
         if (!bankAcctId) { toast('Select a bank account', 'error'); return; }
         if ($('#deposit-class') && !ClassWarn.okValue($('#deposit-class').value)) return;
 
         try {
-            await API.post('/deposits', {
+            const result = await API.post('/deposits', {
                 deposit_to_account_id: parseInt(bankAcctId),
                 date: $('#deposit-date').value,
-                total: total,
+                total: lineIds.length ? total : null,
                 reference: $('#deposit-ref')?.value || null,
                 class_id: $('#deposit-class')?.value ? parseInt($('#deposit-class').value) : null,
                 line_ids: lineIds,
+                other_lines: others,
             });
-            toast(`Deposited ${formatCurrency(total)}`);
+            toast(`Deposited ${formatCurrency(result.amount)}`);
             App.navigate('#/deposits');
         } catch (err) { toast(err.message, 'error'); }
     },

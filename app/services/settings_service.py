@@ -191,6 +191,7 @@ def upgrade_plaintext_secrets(db: Session) -> int:
 # words of the field it was typed into.
 _PERCENT_SETTINGS = {
     "default_tax_rate": "Default tax rate",
+    "hst_rate": "GST/HST rate",
     "late_fee_rate": "Late fee rate",
 }
 # A document keeps its tax rate to four places of a percent (New York

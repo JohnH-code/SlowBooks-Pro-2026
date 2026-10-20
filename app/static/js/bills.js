@@ -98,6 +98,7 @@ const BillsPage = {
                 ${bill.status !== 'void' ? `<button class="btn btn-primary" data-write onclick="BillsPage.showForm(${bill.id})">Edit</button>` : ''}
                 <button class="btn btn-secondary" onclick="window.open('/api/bills/${bill.id}/pdf','_blank')">Save PDF</button>
                 <button class="btn btn-secondary" onclick="window.open('/api/bills/${bill.id}/print-preview','_blank')">Print</button>
+                ${bill.status !== 'void' ? (typeof Memorized !== "undefined" ? Memorized.button({ bill_id: bill.id }, bill.vendor_name || 'Bill') : "") : ''}
                 <button class="btn btn-secondary" onclick="closeModal()">Close</button>
             </div>`);
         // the document's own address, so Back returns to the list and the Open group lists it (NEW-164)

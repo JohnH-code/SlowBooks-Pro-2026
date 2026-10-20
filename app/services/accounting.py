@@ -330,7 +330,13 @@ def get_default_income_account_id(db: Session) -> int:
 
 
 def get_sales_tax_account_id(db: Session) -> int:
-    """Sales Tax Payable (2200). Raises MissingControlAccount."""
+    """Sales Tax Payable (2200), or a Canadian company's GST/HST account
+    (services/hst.py). Raises MissingControlAccount."""
+    from app.services import hst
+
+    canadian = hst.account_id(db)
+    if canadian is not None:
+        return canadian
     return control_accounts.resolve(db, "2200")
 
 

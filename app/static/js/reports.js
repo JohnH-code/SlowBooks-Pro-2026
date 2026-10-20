@@ -24,6 +24,7 @@ const ReportsPage = {
         'ar-aging':             { label: () => T('Accounts Receivable Aging'), open: (p) => ReportsPage.arAging(p), asOf: true },
         'ap-aging':             { label: 'Accounts Payable Aging',    open: (p) => ReportsPage.apAging(p), asOf: true },
         'sales-tax':            { label: 'Sales Tax Report',   open: (p) => ReportsPage.salesTax(p) },
+        'gst-hst-return':       { label: 'GST/HST Return',     open: (p) => ReportsPage.gstHstReturn(p) },
         'general-ledger':       { label: 'General Ledger',     open: (p) => ReportsPage.generalLedger(p), keep: ['class_id'] },
         'income-by-customer':   { label: () => T('Income by Customer'), open: (p) => ReportsPage.incomeByCustomer(p) },
         'trial-balance':        { label: 'Trial Balance',      open: (p) => ReportsPage.trialBalance(p) },
@@ -352,6 +353,7 @@ const ReportsPage = {
                 ${card('ar-aging', T('A/R Aging'), 'Outstanding receivables by age')}
                 ${card('ap-aging', 'A/P Aging', 'Outstanding payables by age')}
                 ${card('sales-tax', 'Sales Tax', 'Tax collected by invoice')}
+                ${card('gst-hst-return', 'GST/HST Return', 'Canada: tax collected, input tax credits and net tax for a filing period')}
                 ${card('general-ledger', 'General Ledger', 'All journal entries by account')}
                 ${card('income-by-customer', T('Income by Customer'), Terms.isNonprofit() ? 'Contribution totals per donor' : 'Sales totals per customer')}
                 ${card('customer-statement', T('Customer Statement'), Terms.text('Invoice/payment history PDF'))}
@@ -1045,6 +1047,21 @@ const ReportsPage = {
         if (redraw) live.render();
     },
 
+    // A report section's lines with its sub-accounts under their parents
+    // (services/account_tree.py): header, sub-accounts, "- Other", "Total".
+    // A report from before the tree came back as plain rows.
+    _tree(data, key) {
+        if (data.tree && data.tree[key]) return data.tree[key];
+        return (data[key] || []).map(i => ({ ...i, kind: 'account', depth: 0, label: i.account_label || i.account_name }));
+    },
+
+    _treeRow(i, cols, link, figures) {
+        const pad = `padding-left:${24 + 18 * (i.depth || 0)}px;`;
+        if (i.kind === 'header') return `<tr><td style="${pad}">${escapeHtml(i.label)}</td>${'<td></td>'.repeat(cols - 1)}</tr>`;
+        if (i.kind === 'total') return `<tr style="font-weight:600;"><td style="${pad}">${escapeHtml(i.label)}</td>${figures(i.amount, i.prior_amount)}</tr>`;
+        return `<tr><td style="${pad}">${link()}</td>${figures(i.amount, i.prior_amount, i)}</tr>`;
+    },
+
     async profitLoss(prefill) {
         // A P&L saved or addressed with a class is that class's own (#235):
         // the address is replaced by the class view's, so Back is not a
@@ -1078,14 +1095,13 @@ const ReportsPage = {
             const cols = ReportsPage._cmpCols(prior, show);
             const figures = (cur, before, item) => ReportsPage._cmpCells(cur, before, prior, show,
                 item && prior ? drillCall(item, prior.start_date, prior.end_date) : null);
-            const section = (items) => {
+            const section = (key) => {
+                const items = ReportsPage._tree(data, key);
                 if (!items.length) return `<tr><td colspan="${cols}" style="color:var(--gray-400);">None</td></tr>`;
-                return items.map(i =>
-                    `<tr><td style="padding-left:24px;">
-                        <a href="javascript:void(0)" style="color:var(--text-link); text-decoration:none;"
-                           onclick="${drillCall(i, range.start, range.end)}">${escapeHtml(i.account_label || i.account_name)}</a>
-                        </td>${figures(i.amount, i.prior_amount, i)}</tr>`
-                ).join("");
+                return items.map(i => ReportsPage._treeRow(i, cols,
+                    () => `<a href="javascript:void(0)" style="color:var(--text-link); text-decoration:none;"
+                           onclick="${drillCall(i, range.start, range.end)}">${escapeHtml(i.label)}</a>`,
+                    figures)).join("");
             };
             const head = (label) => `<tr><td><strong>${label}</strong></td>${'<td></td>'.repeat(cols - 1)}</tr>`;
             const total = (label, key, style) => `<tr style="${style}"><td>${label}</td>${figures(data[key], prior ? prior[key] : 0)}</tr>`;
@@ -1096,13 +1112,13 @@ const ReportsPage = {
                     <thead><tr><th scope="col">Account</th>${ReportsPage._cmpHead(prior, show)}</tr></thead>
                     <tbody>
                         ${head(T('Income'))}
-                        ${section(data.income)}
+                        ${section('income')}
                         ${total(T('Total Income'), 'total_income', sub)}
                         ${head('Cost of Goods Sold')}
-                        ${section(data.cogs)}
+                        ${section('cogs')}
                         ${total('Gross Profit', 'gross_profit', sub)}
                         ${head('Expenses')}
-                        ${section(data.expenses)}
+                        ${section('expenses')}
                         ${total('Total Expenses', 'total_expenses', sub)}
                         ${total(T('Net Income'), 'net_income', 'font-weight:700; font-size:15px; background:var(--primary-light);')}
                     </tbody>
@@ -1176,10 +1192,10 @@ const ReportsPage = {
             // A computed line (net income to date) has no account to open.
             const name = (i) => i.account_id
                 ? `<a href="javascript:void(0)" style="color:var(--text-link); text-decoration:none;"
-                       onclick="${drillCall(i, asOf)}">${escapeHtml(i.account_label || i.account_name)}</a>`
-                : escapeHtml(i.account_name);
-            const section = (items) => items.map(i =>
-                `<tr><td style="padding-left:24px;">${name(i)}</td>${figures(i.amount, i.prior_amount, i)}</tr>`
+                       onclick="${drillCall(i, asOf)}">${escapeHtml(i.label)}</a>`
+                : escapeHtml(i.label);
+            const section = (key) => ReportsPage._tree(data, key).map(i =>
+                ReportsPage._treeRow(i, cols, () => name(i), figures)
             ).join("") || `<tr><td colspan="${cols}" style="color:var(--gray-400);">None</td></tr>`;
             const head = (label) => `<tr><td><strong>${label}</strong></td>${'<td></td>'.repeat(cols - 1)}</tr>`;
             const total = (label, cur, before, style) => `<tr style="${style}"><td>${label}</td>${figures(cur, before)}</tr>`;
@@ -1191,18 +1207,72 @@ const ReportsPage = {
                     <thead><tr><th scope="col">Account</th>${ReportsPage._cmpHead(prior, show)}</tr></thead>
                     <tbody>
                         ${head('Assets')}
-                        ${section(data.assets)}
+                        ${section('assets')}
                         ${total('Total Assets', data.total_assets, p.total_assets, sub)}
                         ${head('Liabilities')}
-                        ${section(data.liabilities)}
+                        ${section('liabilities')}
                         ${total('Total Liabilities', data.total_liabilities, p.total_liabilities, sub)}
                         ${head(T('Equity'))}
-                        ${section(data.equity)}
+                        ${section('equity')}
                         ${total(T('Total Equity'), data.total_equity, p.total_equity, sub)}
                         ${total(T('Liabilities + Equity'), data.total_liabilities + data.total_equity, (p.total_liabilities || 0) + (p.total_equity || 0), 'font-weight:700; background:var(--primary-light);')}
                     </tbody>
                 </table></div>`;
         }, "As Of", true, { reportType: 'balance_sheet', view: 'balance-sheet', prefill, params: bsParams, toolbar: opts.toolbar + ReportsPage._compareToolbar(bsParams, 'Compare to same date last year'), wide: true });
+    },
+
+    // Canada's GST/HST return for any period: the company's filing periods
+    // in a picker beside the dates, the one to file now first.
+    async gstHstReturn(prefill) {
+        let info = { enabled: false, periods: [], due: null };
+        try { info = await API.get('/reports/gst-hst-return/periods'); } catch (e) { /* shown below */ }
+        const start = (prefill && prefill.start_date) || (info.due && info.due.start);
+        const end = (prefill && prefill.end_date) || (info.due && info.due.end);
+        const fill = start && end ? { ...(prefill || {}), start_date: start, end_date: end } : prefill;
+        const label = p => `${formatDate(p.start)} – ${formatDate(p.end)}`;
+        const picker = info.periods.length ? `
+            <div class="form-group"><label for="hst-period">Filing period</label>
+                <select id="hst-period" onchange="ReportsPage.pickHstPeriod(this.value)">
+                    <option value="">Choose…</option>
+                    ${info.periods.map(p => `<option value="${p.start}|${p.end}">${label(p)}${info.due && info.due.start === p.start ? ' (to file)' : ''}</option>`).join('')}
+                </select></div>` : '';
+        const money = v => formatCurrency(v);
+        await ReportsPage.openPeriodModal('GST/HST Return', 'last_quarter', async (_period, range) => {
+            const d = await API.get(`/reports/gst-hst-return?start_date=${range.start}&end_date=${range.end}`);
+            if (!d.enabled) {
+                return `<div class="empty-state"><p>GST/HST isn't turned on for this company. In Settings → Sales Tax, choose "Canada — GST/HST" and the GST/HST account.</p></div>`;
+            }
+            const line = (no, text, v, strong) => `<tr${strong ? ' style="font-weight:700;"' : ''}><td style="width:60px;">${no}</td><td>${text}</td><td class="amount">${money(v)}</td></tr>`;
+            const side = { sale: 'Sale', purchase: 'Purchase (ITC)', payment: 'Payment / refund' };
+            const rows = d.transactions.map(t => `<tr>
+                <td>${formatDate(t.date)}</td><td>${escapeHtml(t.reference)}</td><td>${escapeHtml(t.description)}</td>
+                <td>${side[t.side]}</td><td class="amount">${money(t.tax)}</td></tr>`).join('');
+            return `
+                <p style="margin-bottom:8px; color:var(--gray-500);">${formatDate(d.start_date)} — ${formatDate(d.end_date)}${d.registration_number ? ` · ${escapeHtml(d.registration_number)}` : ''} · ${escapeHtml(d.account_name)}</p>
+                <div class="table-container"><table><tbody>
+                    ${line('101', 'Sales and other revenue', d.line_101)}
+                    ${line('103', 'GST/HST collected or collectible', d.line_103)}
+                    ${line('105', 'Total GST/HST and adjustments for the period', d.line_105, true)}
+                    ${line('106', 'Input tax credits (ITCs) for the current period', d.line_106)}
+                    ${line('108', 'Total ITCs and adjustments', d.line_108, true)}
+                    ${line('109', d.line_109 >= 0 ? 'Net tax (owing)' : 'Net tax (refund)', d.line_109, true)}
+                </tbody></table></div>
+                <p style="font-size:11px; color:var(--gray-500); margin:6px 0 12px;">Payments and refunds to the Receiver General dated in this period: ${money(d.payments_in_period)} (not part of the return). ${d.counts.sale} sales, ${d.counts.purchase} purchases.</p>
+                <details><summary style="cursor:pointer; font-size:12px;">The ${d.transactions.length} transactions behind it</summary>
+                <div class="table-container"><table>
+                    <thead><tr><th scope="col">Date</th><th scope="col">Ref</th><th scope="col">Description</th><th scope="col">Kind</th><th scope="col" class="amount">GST/HST</th></tr></thead>
+                    <tbody>${rows}</tbody></table></div></details>`;
+        }, 'Dates', false, { reportType: 'gst_hst_return', view: 'gst-hst-return', prefill: fill, toolbar: picker });
+    },
+
+    pickHstPeriod(value) {
+        if (!value) return;
+        const [start, end] = value.split('|');
+        const sel = $('#report-period-select');
+        if (sel) sel.value = 'custom';
+        $('#report-custom-start').value = start;
+        $('#report-custom-end').value = end;
+        ReportsPage.refresh();
     },
 
     async salesTax(prefill) {

@@ -28,6 +28,7 @@ const DashboardPage = {
         DashboardPage._editing = false;
         DashboardPage._dirty = false;
         await DashboardPage._load();
+        DashboardPage._reminders = typeof MemorizedPage !== 'undefined' ? await MemorizedPage.reminderHtml() : '';
         return DashboardPage._pageHtml();
     },
 
@@ -62,6 +63,7 @@ const DashboardPage = {
                     : `<button class="btn btn-sm btn-secondary" data-write onclick="DashboardPage.startEdit()" title="Choose which cards show and in what order">Customize</button>`}
                 </div>
             </div>
+            ${editing ? '' : (DashboardPage._reminders || '')}
             ${editing ? '<div style="font-size:11px;color:var(--gray-500);margin-bottom:8px;">Use the arrows to reorder, × to hide. Your layout is remembered for your login.</div>' : ''}
             <div id="dash-grid" class="dash-grid">${DashboardPage._gridHtml()}</div>`;
     },

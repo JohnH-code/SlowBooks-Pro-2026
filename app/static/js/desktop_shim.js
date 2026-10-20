@@ -161,7 +161,44 @@
         return m ? decodeURIComponent(m[1]) : null;
     }
 
+    // A Print button (an invoice's print preview, a cheque): print the
+    // document's PDF with the system Print dialog. The print-preview page in
+    // a window of its own had no way to reach a printer.
+    function printPdfUrl(url) {
+        try {
+            const u = new URL(url, window.location.href);
+            if (/\/print-preview$/.test(u.pathname)) {
+                u.pathname = u.pathname.replace(/\/print-preview$/, '/pdf');
+                return u.pathname + u.search;
+            }
+            if (u.pathname === '/api/checks/print') return u.pathname + u.search;
+        } catch (e) { /* not a URL */ }
+        return null;
+    }
+
+    async function printViaBridge(pdfUrl) {
+        const api = window.pywebview && window.pywebview.api;
+        if (!api || !api.print_document_pdf) return false;
+        let response;
+        try {
+            response = await fetch(pdfUrl, { credentials: 'same-origin', headers: { 'X-Slowbooks-Desktop': '1' } });
+        } catch (e) { return false; }
+        if (!response.ok || !(response.headers.get('Content-Type') || '').toLowerCase().includes('pdf')) return false;
+        const title = filenameFromDisposition(response.headers.get('Content-Disposition') || '', 'Document.pdf');
+        const base64 = arrayBufferToBase64(await response.arrayBuffer());
+        if (typeof toast === 'function') toast('Opening the Print dialog…');
+        const result = await api.print_document_pdf(title, base64, 'Documents');
+        if (result && result.success) {
+            if (result.note && typeof toast === 'function') toast(result.note, 'info');
+        } else if (typeof toast === 'function') {
+            toast('Could not print: ' + ((result && result.error) || 'unknown error'), 'error');
+        }
+        return true;
+    }
+
     async function openSameOriginUrl(url) {
+        const printUrl = printPdfUrl(url);
+        if (printUrl && await printViaBridge(printUrl)) return;
         let response;
         try {
             response = await fetch(url, {

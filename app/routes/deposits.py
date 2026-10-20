@@ -22,6 +22,7 @@ from app.routes._helpers import clamp_pagination
 from app.schemas.deposits import (
     DepositCreate,
     DepositDetailResponse,
+    DepositOtherLineOut,
     DepositResponse,
     PendingDepositResponse,
 )
@@ -181,6 +182,16 @@ def get_deposit(deposit_id: int, db: Session = Depends(get_db)):
     details = _payment_details(db, [t for _, t in taken])
     bank = next((ln for ln in txn.lines if ln.debit > 0), None)
     account = db.get(Account, bank.account_id) if bank else None
+    uf_id = None
+    try:
+        uf_id = get_undeposited_funds_id(db)
+    except Exception:
+        pass
+    others = [
+        ln
+        for ln in sorted(txn.lines, key=lambda ln: ln.id or 0)
+        if ln is not bank and ln.account_id != uf_id
+    ]
     return DepositDetailResponse(
         id=txn.id,
         date=txn.date,
@@ -192,6 +203,16 @@ def get_deposit(deposit_id: int, db: Session = Depends(get_db)):
         voided=txn.id in dead_transaction_ids(db, [txn]),
         reconciled=reconciled(txn),
         payments=[_payment_line(tl, t, details.get(t.id, {})) for tl, t in taken],
+        other_lines=[
+            DepositOtherLineOut(
+                account_id=ln.account_id,
+                account_name=ln.account.name if ln.account else "",
+                account_number=(ln.account.account_number or "") if ln.account else "",
+                description=ln.description or "",
+                amount=Decimal(str(ln.credit or 0)) - Decimal(str(ln.debit or 0)),
+            )
+            for ln in others
+        ],
     )
 
 
@@ -294,8 +315,42 @@ def create_deposit(data: DepositCreate, db: Session = Depends(get_db)):
                     f"${_q(data.total):,.2f}. Reload Make Deposits and try again."
                 ),
             )
+    elif data.other_lines:
+        total = Decimal("0")  # no payments ticked: only the lines below
     else:
         total = _q(data.total or 0)
+
+    # Money put straight into the bank from another account, as QuickBooks'
+    # Make Deposits takes it beside the payments: each line credits its
+    # account (a negative line — cash back — debits it).
+    others = []
+    for ln in data.other_lines:
+        amount = _q(ln.amount)
+        if amount == 0:
+            raise HTTPException(status_code=400, detail="A deposit line has no amount")
+        acct = db.query(Account).filter(Account.id == ln.account_id).first()
+        if acct is None:
+            raise HTTPException(status_code=404, detail="Deposit line account not found")
+        if acct.id in (uf_id, bank_account.id):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "A deposit line can't come from Undeposited Funds or the bank "
+                    "it goes into; tick the payment in the list instead"
+                ),
+            )
+        words = " — ".join(
+            w for w in ((ln.received_from or "").strip(), (ln.memo or "").strip()) if w
+        )
+        others.append((acct, amount, words[:300] or f"Deposit to {bank_account.name}"))
+    payments_total = total
+    if others:
+        total = _q(payments_total + sum((a for _, a, _ in others), Decimal("0")))
+        if data.total is not None and data.line_ids == [] and _q(data.total) != total:
+            raise HTTPException(
+                status_code=400,
+                detail=f"The deposit lines add up to ${total:,.2f}, not ${_q(data.total):,.2f}.",
+            )
 
     if total <= 0:
         raise HTTPException(status_code=400, detail="Deposit amount must be positive")
@@ -307,13 +362,25 @@ def create_deposit(data: DepositCreate, db: Session = Depends(get_db)):
             "credit": Decimal("0"),
             "description": f"Deposit to {bank_account.name}",
         },
-        {
-            "account_id": uf_id,
-            "debit": Decimal("0"),
-            "credit": total,
-            "description": f"Deposit to {bank_account.name}",
-        },
     ]
+    if payments_total > 0:
+        journal_lines.append(
+            {
+                "account_id": uf_id,
+                "debit": Decimal("0"),
+                "credit": payments_total,
+                "description": f"Deposit to {bank_account.name}",
+            }
+        )
+    for acct, amount, words in others:
+        journal_lines.append(
+            {
+                "account_id": acct.id,
+                "debit": -amount if amount < 0 else Decimal("0"),
+                "credit": amount if amount > 0 else Decimal("0"),
+                "description": words,
+            }
+        )
 
     txn = create_journal_entry(
         db,
@@ -334,6 +401,7 @@ def create_deposit(data: DepositCreate, db: Session = Depends(get_db)):
         "transaction_id": txn.id,
         "amount": float(total),
         "items": len(chosen),
+        "other_lines": len(others),
     }
 
 

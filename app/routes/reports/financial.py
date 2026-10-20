@@ -11,6 +11,7 @@ from app.models.accounts import Account, AccountType
 from app.models.transactions import Transaction, TransactionLine
 from app.routes.reports._router import router
 from app.services.terminology import Terms, terms_from_db
+from app.services.account_tree import add_trees
 
 # Debit-normal account types. For these, natural balance = debit - credit.
 # For the rest (liability, equity, income), natural balance = credit - debit.
@@ -217,7 +218,11 @@ def profit_loss(
             sort=sort,
             exclude_adjusting=exclude_adjusting,
         )
-        return _pl_with_prior(db, current, prior, sort)
+        return add_trees(
+            db,
+            _pl_with_prior(db, current, prior, sort),
+            ("income", "cogs", "expenses"),
+        )
     cls, in_class = _in_class(db, class_id) if class_id is not None else (None, None)
 
     income = _totals_by_account(
@@ -234,7 +239,7 @@ def profit_loss(
     total_cogs = sum(c["amount"] for c in cogs)
     total_expenses = sum(e["amount"] for e in expenses)
 
-    return {
+    return add_trees(db, {
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
         "class_id": cls.id if cls else None,
@@ -249,7 +254,7 @@ def profit_loss(
         "gross_profit": total_income - total_cogs,
         "total_expenses": total_expenses,
         "net_income": total_income - total_cogs - total_expenses,
-    }
+    }, ("income", "cogs", "expenses"))
 
 
 def _year_earlier(d: date) -> date:
@@ -396,11 +401,15 @@ def balance_sheet(
     if not as_of_date:
         as_of_date = date.today()
     if compare == "prior_year":
-        return _bs_with_prior(
+        return add_trees(
             db,
-            balance_sheet(as_of_date, db, sort=sort),
-            balance_sheet(_year_earlier(as_of_date), db, sort=sort),
-            sort,
+            _bs_with_prior(
+                db,
+                balance_sheet(as_of_date, db, sort=sort),
+                balance_sheet(_year_earlier(as_of_date), db, sort=sort),
+                sort,
+            ),
+            ("assets", "liabilities", "equity"),
         )
 
     assets = _totals_by_account(db, AccountType.ASSET, date_end=as_of_date, sort=sort)
@@ -440,7 +449,7 @@ def balance_sheet(
         ]
         total_equity += net_income
 
-    return {
+    return add_trees(db, {
         "as_of_date": as_of_date.isoformat(),
         "sort": sort,
         "assets": assets,
@@ -449,7 +458,7 @@ def balance_sheet(
         "total_assets": total_assets,
         "total_liabilities": total_liabilities,
         "total_equity": total_equity,
-    }
+    }, ("assets", "liabilities", "equity"))
 
 
 @router.get("/general-ledger")
@@ -1250,6 +1259,22 @@ def _row_words(item: dict) -> str:
     return item.get("account_label") or item["account_name"]
 
 
+def _tree_rows(tree, prior, show_changes, blank) -> list[dict]:
+    """PDF rows for a section's sub-account tree (services/account_tree)."""
+    rows = []
+    for e in tree:
+        pad = "    " * (e["depth"] + 1)
+        if e["kind"] == "header":
+            rows.append({"cells": [pad + e["label"]] + blank})
+        else:
+            rows.append({
+                "cells": [pad + e["label"]]
+                + _compare_figures(e["amount"], e.get("prior_amount") or 0, prior, show_changes),
+                **({"style": "subtotal"} if e["kind"] == "total" else {}),
+            })
+    return rows
+
+
 def _pl_section(data: dict, t=None, show_changes: bool = True) -> dict:
     """P&L rows for the PDF; t (Terms) picks the company's words —
     "Statement of Activities" / "Revenue & Support" for a nonprofit. One
@@ -1270,6 +1295,10 @@ def _pl_section(data: dict, t=None, show_changes: bool = True) -> dict:
             )
         }
 
+    def lines(key):
+        tree = (data.get("tree") or {}).get(key)
+        return _tree_rows(tree, prior, show_changes, blank) if tree is not None else [line(i) for i in data[key]]
+
     def total(label, key, style="subtotal"):
         return {
             "cells": [label]
@@ -1285,11 +1314,11 @@ def _pl_section(data: dict, t=None, show_changes: bool = True) -> dict:
         ("Cost of Goods Sold", "cogs", "total_cogs"),
     ):
         rows.append({"cells": [label] + blank, "style": "subtotal"})
-        rows.extend(line(item) for item in data[key])
+        rows.extend(lines(key))
         rows.append(total(f"Total {label}", total_key))
     rows.append(total("Gross Profit", "gross_profit"))
     rows.append({"cells": ["Expenses"] + blank, "style": "subtotal"})
-    rows.extend(line(item) for item in data["expenses"])
+    rows.extend(lines("expenses"))
     rows.append(total("Total Expenses", "total_expenses"))
     rows.append(total(t("Net Income"), "net_income", "grand-total"))
     cls = data.get("class_name")
@@ -1419,13 +1448,17 @@ def _bs_section(data: dict, t=None, show_changes: bool = True) -> dict:
         (t("Equity"), "equity", "total_equity"),
     ):
         rows.append({"cells": [label] + blank, "style": "subtotal"})
-        for item in data[key]:
-            rows.append(
-                {
-                    "cells": [f"  {_row_words(item)}"]
-                    + figures(item["amount"], item.get("prior_amount", 0))
-                }
-            )
+        tree = (data.get("tree") or {}).get(key)
+        if tree is not None:
+            rows.extend(_tree_rows(tree, prior, show_changes, blank))
+        else:
+            for item in data[key]:
+                rows.append(
+                    {
+                        "cells": [f"  {_row_words(item)}"]
+                        + figures(item["amount"], item.get("prior_amount", 0))
+                    }
+                )
         rows.append(
             {
                 "cells": [f"Total {label}"]

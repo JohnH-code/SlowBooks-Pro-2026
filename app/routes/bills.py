@@ -28,6 +28,7 @@ from app.services.audit import audited_bulk_delete
 from app.services.closing_date import check_closing_date
 from app.services.request_utils import content_disposition
 from app.services.purchase_posting import (
+    purchase_tax,
     expense_account_for,
     spread,
     unit_cost_with_tax,
@@ -184,7 +185,7 @@ def _post_bill_lines(
     amounts = [_q(Decimal(str(ln.quantity)) * Decimal(str(ln.rate))) for ln in lines]
     # Tax on a purchase is part of what the lines cost: each line's debit
     # carries its share, and nothing is posted to Sales Tax Payable.
-    tax_shares = spread(tax_amount, amounts)
+    tax_shares, itc_account = purchase_tax(db, tax_amount, amounts)
 
     journal_lines = []
     for i, line_data in enumerate(lines):
@@ -277,6 +278,16 @@ def _post_bill_lines(
                 }
             )
 
+    # A Canadian registrant's tax: an input tax credit, not a cost
+    if itc_account and journal_lines:
+        journal_lines.append(
+            {
+                "account_id": itc_account,
+                "debit": _q(tax_amount),
+                "credit": Decimal("0"),
+                "description": "GST/HST",
+            }
+        )
     # Credit AP
     if ap_id and journal_lines:
         journal_lines.append(

@@ -5,7 +5,13 @@
 <style>
     @page { size: letter; margin: 0.25in 0.5in; }
     body { font-family: 'Courier New', Courier, monospace; font-size: 10pt; color: #000; }
-    .check-page { height: 10in; display: flex; flex-direction: column; }
+    .check-page { height: 10in; display: flex; flex-direction: column; position: relative;
+        left: {{ check.offset_x or 0 }}in; top: {{ check.offset_y or 0 }}in; }
+    .stub:last-child { border-bottom: none; }
+    .check-area + .stub { border-top: 1px dashed #999; }
+    .cpa-date { font-size: 10pt; letter-spacing: 3px; }
+    .cpa-guide { font-size: 6pt; color: #666; letter-spacing: 6px; }
+    .payee-address { font-size: 9pt; margin-top: 4px; line-height: 1.3; }
     .stub { height: 3.33in; border-bottom: 1px dashed #999; padding: 0.25in 0.25in; box-sizing: border-box; }
     .check-area { height: 3.33in; padding: 0.25in 0.25in; box-sizing: border-box; position: relative; }
     .stub-header { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 9pt; }
@@ -31,12 +37,12 @@
 </style>
 </head>
 <body>
-    <div class="check-page">
-        <!-- Top Stub -->
+{% set word = check.word or 'Check' %}
+{% macro stub() %}
         <div class="stub">
             <div class="stub-header">
                 <div class="stub-company">{{ company.company_name or 'Company' }}</div>
-                <div>Check #{{ check.check_number }} &bull; {{ check.date | fdate }}</div>
+                <div>{{ word }} #{{ check.check_number }} &bull; {{ check.date | fdate }}</div>
             </div>
             <div style="font-size:9pt; margin-bottom:6px;">
                 <strong>Pay To:</strong> {{ check.payee }}
@@ -55,32 +61,8 @@
                 </tbody>
             </table>
         </div>
-
-        <!-- Middle Stub -->
-        <div class="stub">
-            <div class="stub-header">
-                <div class="stub-company">{{ company.company_name or 'Company' }}</div>
-                <div>Check #{{ check.check_number }} &bull; {{ check.date | fdate }}</div>
-            </div>
-            <div style="font-size:9pt; margin-bottom:6px;">
-                <strong>Pay To:</strong> {{ check.payee }}
-                &nbsp;&bull;&nbsp;
-                <strong>Amount:</strong> {{ check.amount | currency }}
-            </div>
-            <table class="stub-table">
-                <thead><tr><th>Description</th><th style="text-align:right;">Amount</th></tr></thead>
-                <tbody>
-                {% for d in check.details %}
-                <tr><td>{{ d.description }}</td><td class="r">{{ d.amount | currency }}</td></tr>
-                {% endfor %}
-                {% if not check.details %}
-                <tr><td>Payment</td><td class="r">{{ check.amount | currency }}</td></tr>
-                {% endif %}
-                </tbody>
-            </table>
-        </div>
-
-        <!-- Actual Check -->
+{% endmacro %}
+{% macro cheque() %}
         <div class="check-area">
             <div class="check-company">{{ company.company_name or 'Company' }}</div>
             <div class="check-company-addr">
@@ -89,12 +71,18 @@
             </div>
             <div class="check-number">#{{ check.check_number }}</div>
             <div class="check-date">
+                {% if check.cpa_date %}
+                <span class="cpa-guide">Y Y Y Y M M D D</span><br>
+                <span class="cpa-date">{{ check.cpa_date }}</span>
+                {% else %}
                 <span class="check-date-label">DATE</span><br>
                 {{ check.date | fdate }}
+                {% endif %}
             </div>
             <div class="pay-to">
                 <span class="pay-to-label">PAY TO THE ORDER OF</span><br>
                 <span class="pay-to-line">{{ check.payee }}</span>
+                {% if check.payee_address %}<div class="payee-address">{% for l in check.payee_address %}{{ l }}<br>{% endfor %}</div>{% endif %}
             </div>
             <div class="amount-box">{{ check.amount | currency }}</div>
             <div class="amount-words">{{ check.amount_words }} ******</div>
@@ -104,6 +92,11 @@
             </div>
             <div class="signature-line"></div>
         </div>
+{% endmacro %}
+    <div class="check-page">
+        {% if check.layout == 'top' %}{{ cheque() }}{{ stub() }}{{ stub() }}
+        {% elif check.layout == 'middle' %}{{ stub() }}{{ cheque() }}{{ stub() }}
+        {% else %}{{ stub() }}{{ stub() }}{{ cheque() }}{% endif %}
     </div>
 </body>
 </html>

@@ -8,11 +8,11 @@ const fs = require('fs'), vm = require('vm');
 
 const script = fs.readFileSync(process.argv[2], 'utf8');
 const el = () => ({ disabled: true, textContent: '', listeners: {}, addEventListener(t, f) { this.listeners[t] = f; } });
-const els = { 'open-in-app': el(), 'show-in-folder': el(), note: el() };
+const els = { 'print-doc': el(), 'open-in-app': el(), 'show-in-folder': el(), note: el() };
 const docListeners = {};
 const winListeners = {};
 const calls = [];
-const answers = { open_in_default_app: { success: false, error: 'No app opens PDFs on this computer.' }, show_in_folder: { success: true } };
+const answers = { open_in_default_app: { success: false, error: 'No app opens PDFs on this computer.' }, show_in_folder: { success: true }, print_document: { success: true } };
 const win = { addEventListener: (t, f) => { winListeners[t] = f; } };
 const ctx = {
   window: win,
@@ -29,6 +29,7 @@ vm.runInContext(script, ctx);
   win.pywebview = { api: {
     open_in_default_app: async () => { calls.push('open_in_default_app'); return answers.open_in_default_app; },
     show_in_folder: async () => { calls.push('show_in_folder'); return answers.show_in_folder; },
+    print_document: async () => { calls.push('print_document'); return answers.print_document; },
   } };
   winListeners.pywebviewready();
   out.after_ready = [els['open-in-app'].disabled, els['show-in-folder'].disabled];
@@ -38,6 +39,7 @@ vm.runInContext(script, ctx);
   els['open-in-app'].listeners.click();
   await new Promise((r) => setTimeout(r, 5));
   out.note_after_open = els.note.textContent;
+  out.print_ready = !els['print-doc'].disabled;
   let prevented = 0;
   for (const key of ['p', 's', 'x']) {
     docListeners.keydown({ metaKey: true, ctrlKey: false, key, preventDefault: () => { prevented++; } });

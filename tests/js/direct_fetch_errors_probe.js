@@ -117,6 +117,11 @@ const scenarios = {
     await p.get('ExpensesPage').uploadAttachment(1);
     return last(p.toasts);
   },
+  async 'deposits.js attachment'() {
+    const p = page(['app/static/js/deposits.js']);
+    await p.get('DepositsPage').uploadAttachment(1);
+    return last(p.toasts);
+  },
   async 'journal.js attachment'() {
     const p = page(['app/static/js/journal.js']);
     await p.get('JournalPage').uploadAttachment(1);

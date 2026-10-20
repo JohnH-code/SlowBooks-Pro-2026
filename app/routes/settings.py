@@ -52,6 +52,10 @@ ENUM_SETTINGS = {
     "ask_password_on_start": frozenset({"true", "false"}),
     "invoice_show_logo": frozenset({"true", "false"}),
     "class_warn_blank": frozenset({"true", "false"}),
+    "sales_tax_system": frozenset({"us", "canada"}),
+    "cheque_layout": frozenset({"top", "middle", "bottom"}),
+    "hst_filing_frequency": frozenset({"none", "monthly", "quarterly", "annual"}),
+    "hst_year_end_month": frozenset({str(m) for m in range(1, 13)}),
 }
 
 

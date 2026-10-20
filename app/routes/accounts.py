@@ -16,6 +16,145 @@ from app.routes._helpers import get_or_404
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 
+def _unused(db: Session) -> tuple[list[Account], list[Account]]:
+    """(accounts that can be deleted, unused control accounts — kept: the
+    software posts to them by number): every account with nothing posted to it and nothing
+    pointing at it — no item, vendor, bank feed, budget, setting or
+    sub-account. A parent whose sub-accounts all go, goes with them."""
+    from app.database import Base
+    from app.services.settings_service import get_setting_raw
+
+    used: set[int] = set()
+    for table in Base.metadata.sorted_tables:
+        for fk in table.foreign_keys:
+            if fk.column.table.name != "accounts" or table.name == "accounts":
+                continue
+            used.update(
+                v for (v,) in db.query(fk.parent).filter(fk.parent.isnot(None)).distinct()
+            )
+    for key in ("hst_account_id",):
+        raw = get_setting_raw(db, key) or ""
+        if raw.isdigit():
+            used.add(int(raw))
+    accounts = db.query(Account).all()
+    children: dict[int, list[int]] = {}
+    for a in accounts:
+        if a.parent_id:
+            children.setdefault(a.parent_id, []).append(a.id)
+    unused = {a.id for a in accounts if a.id not in used}
+    # a parent stays while any sub-account stays
+    changed = True
+    while changed:
+        changed = False
+        for aid in list(unused):
+            if any(c not in unused for c in children.get(aid, [])):
+                unused.discard(aid)
+                changed = True
+    delete, deactivate = [], []
+    for a in sorted(accounts, key=lambda a: (a.account_number or "", a.name)):
+        if a.id not in unused:
+            continue
+        if control_accounts.is_control_number(a.account_number):
+            deactivate.append(a)
+        else:
+            delete.append(a)
+    return delete, deactivate
+
+
+def _brief(a: Account) -> dict:
+    return {
+        "id": a.id,
+        "account_number": a.account_number or "",
+        "name": a.name,
+        "account_type": a.account_type.value,
+        "is_active": bool(a.is_active),
+    }
+
+
+@router.get("/unused")
+def list_unused_accounts(db: Session = Depends(get_db)):
+    """The accounts Clean Up Unused Accounts would delete, and the unused
+    control accounts it keeps (the software posts to them by number)."""
+    delete, kept = _unused(db)
+    return {
+        "delete": [_brief(a) for a in delete],
+        "kept": [{**_brief(a), "replace_with": _replacements(db, a)} for a in kept],
+    }
+
+
+def _replacements(db: Session, control: Account) -> list[dict]:
+    """For an unused built-in bank or card account (1000 Checking, 2100
+    Credit Card): the company's own accounts of that kind that could take
+    its number instead, most used first. The software reaches the built-in
+    account by its number — the bank a bill payment defaults to, the card
+    charges post to — so the number moves to the real account and the empty
+    one goes."""
+    if not control.bank_kind:
+        return []
+    counts = dict(
+        db.query(TransactionLine.account_id, func.count())
+        .group_by(TransactionLine.account_id)
+        .all()
+    )
+    options = [
+        a
+        for a in db.query(Account).filter(
+            Account.bank_kind == control.bank_kind,
+            Account.id != control.id,
+            Account.is_active.is_(True),
+        )
+        if not control_accounts.is_control_number(a.account_number)
+        and counts.get(a.id, 0)  # an empty one is for Clean Up to delete
+    ]
+    options.sort(key=lambda a: -counts.get(a.id, 0))
+    return [{**_brief(a), "lines": counts.get(a.id, 0)} for a in options]
+
+
+@router.post("/remove-unused")
+def remove_unused_accounts(body: dict, db: Session = Depends(get_db)):
+    """Delete the chosen accounts — only those still unused when this runs;
+    a control account is never deleted."""
+    wanted = {int(i) for i in (body or {}).get("account_ids", [])}
+    replace = {int(k): int(v) for k, v in ((body or {}).get("replace") or {}).items()}
+    delete, kept = _unused(db)
+    deleted = 0
+    # an unused built-in bank or card account hands its number to the
+    # company's own account (see _replacements), then goes
+    for control in kept:
+        target_id = replace.get(control.id)
+        if target_id is None:
+            continue
+        allowed = {o["id"] for o in _replacements(db, control)}
+        if target_id not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{control.name} can only be replaced by another active {control.bank_kind.replace('_', ' ')} account",
+            )
+        target = db.get(Account, target_id)
+        number = control.account_number
+        db.delete(control)
+        db.flush()
+        target.account_number = number
+        db.flush()
+        deleted += 1
+    # sub-accounts before their parents
+    by_id = {a.id: a for a in delete if a.id in wanted}
+
+    def depth(a):
+        d = 0
+        while a.parent_id in by_id:
+            a = by_id[a.parent_id]
+            d += 1
+        return d
+
+    for a in sorted(by_id.values(), key=depth, reverse=True):
+        db.delete(a)
+        db.flush()
+        deleted += 1
+    db.commit()
+    return {"deleted": deleted}
+
+
 def _reject_duplicate_number(db: Session, number, exclude_id=None):
     """account_number is UNIQUE. Without this the violation surfaces from the
     database as an unhandled IntegrityError, i.e. an opaque HTTP 500 that
@@ -220,9 +359,36 @@ def _in_company_words(db: Session, accounts):
     return out
 
 
+def _check_parent(db: Session, parent_id, account_type, account_id=None) -> None:
+    """A sub-account sits under an account of its own type (an expense
+    under an expense), and never under itself or one of its own
+    sub-accounts."""
+    if not parent_id:
+        return
+    parent = db.get(Account, parent_id)
+    if parent is None:
+        raise HTTPException(status_code=400, detail="The parent account doesn't exist.")
+    kind = getattr(account_type, "value", account_type)
+    if parent.account_type.value != kind:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A sub-account must be the same type as its parent: {parent.name} is {parent.account_type.value}.",
+        )
+    cur, guard = parent, 0
+    while cur is not None and guard < 100:
+        if account_id is not None and cur.id == account_id:
+            raise HTTPException(
+                status_code=400,
+                detail="An account cannot be a sub-account of itself or of one of its own sub-accounts.",
+            )
+        cur = db.get(Account, cur.parent_id) if cur.parent_id else None
+        guard += 1
+
+
 @router.post("", response_model=AccountResponse, status_code=201)
 def create_account(data: AccountCreate, db: Session = Depends(get_db)):
     _check_bank_kind(data.bank_kind, data.account_type)
+    _check_parent(db, data.parent_id, data.account_type)
     _check_account_number(data.account_number)
     _reject_duplicate_number(db, data.account_number)
     account = Account(**data.model_dump())
@@ -273,6 +439,13 @@ def update_account(account_id: int, data: AccountUpdate, db: Session = Depends(g
     if fields.get("parent_id") == account_id:
         raise HTTPException(
             status_code=400, detail="An account cannot be its own parent."
+        )
+    if "parent_id" in fields or "account_type" in fields:
+        _check_parent(
+            db,
+            fields.get("parent_id", account.parent_id),
+            fields.get("account_type", account.account_type),
+            account_id,
         )
     if "bank_kind" in fields or "account_type" in fields:
         _check_bank_kind(
