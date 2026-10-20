@@ -62,7 +62,10 @@ def paid_from_line(txn: Transaction):
 
 
 def _serialize(
-    txn: Transaction, db: Session, voided: bool | None = None, vendors: dict | None = None
+    txn: Transaction,
+    db: Session,
+    voided: bool | None = None,
+    vendors: dict | None = None,
 ) -> ExpenseResponse:
     if voided is None:
         voided = txn.id in _void_ids(db, [txn.id])
@@ -107,7 +110,9 @@ def _serialize(
             credit_line.account.name if credit_line and credit_line.account else ""
         ),
         paid_from_kind=(
-            (credit_line.account.bank_kind or "") if credit_line and credit_line.account else ""
+            (credit_line.account.bank_kind or "")
+            if credit_line and credit_line.account
+            else ""
         ),
         amount=float(credit_line.credit) if credit_line else 0.0,
         reference=txn.reference or "",
@@ -148,9 +153,7 @@ def list_payees(db: Session = Depends(get_db)):
     other names written on cheques — employees, the Receiver General,
     QuickBooks' Other Names — that have no vendor record. QuickBooks offers
     them all in the Pay to the Order of box."""
-    vendor_names = {
-        (v.name or "").lower() for v in db.query(Vendor.name).all()
-    }
+    vendor_names = {(v.name or "").lower() for v in db.query(Vendor.name).all()}
     seen: dict[str, str] = {}
     for (desc,) in (
         db.query(Transaction.description)
@@ -179,8 +182,7 @@ def quickfill(
         vendor = db.get(Vendor, vendor_id)
         names = [f"Expense: {vendor.name}"] if vendor else []
         q = q.filter(
-            (Transaction.source_id == vendor_id)
-            | (Transaction.description.in_(names))
+            (Transaction.source_id == vendor_id) | (Transaction.description.in_(names))
         )
     elif payee:
         q = q.filter(Transaction.description == f"Expense: {payee.strip()}")
@@ -204,8 +206,8 @@ def quickfill(
             "paid_from_account_id": credit.account_id if credit else None,
             # a blank memo was saved as the payee's name: not worth repeating
             "lines": [
-                {**l.model_dump(), "memo": "" if l.memo == out.payee else l.memo}
-                for l in out.lines
+                {**ln.model_dump(), "memo": "" if ln.memo == out.payee else ln.memo}
+                for ln in out.lines
             ],
         }
     return None

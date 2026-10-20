@@ -23,7 +23,7 @@
 
 import re
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 ZERO = Decimal("0")
@@ -63,7 +63,7 @@ def _rate(price: str):
 
 
 def _lines(t):
-    return [l for l in t["lines"] if l["debit"] or l["credit"]]
+    return [ln for ln in t["lines"] if ln["debit"] or ln["credit"]]
 
 
 def classify(t: dict, qtype: dict) -> str | None:
@@ -74,17 +74,47 @@ def classify(t: dict, qtype: dict) -> str | None:
     if len(lines) < 2:
         return None
     head = lines[0]
-    ar = [l for l in lines if qtype.get(l["account"]) == "AR"]
-    ap = [l for l in lines if qtype.get(l["account"]) == "AP"]
-    if ttype == "invoice" and len(ar) == 1 and ar[0] is head and head["debit"] > head["credit"] and not ap:
+    ar = [ln for ln in lines if qtype.get(ln["account"]) == "AR"]
+    ap = [ln for ln in lines if qtype.get(ln["account"]) == "AP"]
+    if (
+        ttype == "invoice"
+        and len(ar) == 1
+        and ar[0] is head
+        and head["debit"] > head["credit"]
+        and not ap
+    ):
         return INVOICE
-    if ttype == "payment" and len(ar) == 1 and ar[0] is not head and ar[0]["credit"] > ar[0]["debit"] and not ap:
-        if qtype.get(head["account"]) not in ("AR", "AP") and head["debit"] > head["credit"]:
+    if (
+        ttype == "payment"
+        and len(ar) == 1
+        and ar[0] is not head
+        and ar[0]["credit"] > ar[0]["debit"]
+        and not ap
+    ):
+        if (
+            qtype.get(head["account"]) not in ("AR", "AP")
+            and head["debit"] > head["credit"]
+        ):
             return PAYMENT
-    if ttype == "bill" and len(ap) == 1 and ap[0] is head and head["credit"] > head["debit"] and not ar:
+    if (
+        ttype == "bill"
+        and len(ap) == 1
+        and ap[0] is head
+        and head["credit"] > head["debit"]
+        and not ar
+    ):
         return BILL
-    if ttype.startswith("bill pmt") and len(ap) == 1 and ap[0] is not head and ap[0]["debit"] > ap[0]["credit"] and not ar:
-        if qtype.get(head["account"]) in ("BANK", "CCARD") and head["credit"] > head["debit"]:
+    if (
+        ttype.startswith("bill pmt")
+        and len(ap) == 1
+        and ap[0] is not head
+        and ap[0]["debit"] > ap[0]["credit"]
+        and not ar
+    ):
+        if (
+            qtype.get(head["account"]) in ("BANK", "CCARD")
+            and head["credit"] > head["debit"]
+        ):
             return BILL_PAYMENT
     return None
 
@@ -129,7 +159,9 @@ def plan(txns: list[dict], qtype: dict) -> dict:
                     continue
                 total[key] = amount
                 open_amount[key] = _q(qb_open) if qb_open is not None else ZERO
-                receivables[who.lower()].append((t["date"], key, amount - open_amount[key]))
+                receivables[who.lower()].append(
+                    (t["date"], key, amount - open_amount[key])
+                )
             elif acct == "AR" and amount < 0:
                 if not k:
                     side[t["trans"]].append((PAYMENT, i, who, -amount))
@@ -137,7 +169,9 @@ def plan(txns: list[dict], qtype: dict) -> dict:
                     continue
                 total[key] = -amount
                 open_amount[key] = abs(_q(qb_open)) if qb_open is not None else ZERO
-                credits[who.lower()].append((t["date"], key, -amount - open_amount[key]))
+                credits[who.lower()].append(
+                    (t["date"], key, -amount - open_amount[key])
+                )
             elif acct == "AP" and amount < 0:
                 if not k:
                     side[t["trans"]].append((BILL, i, who, -amount))
@@ -145,7 +179,9 @@ def plan(txns: list[dict], qtype: dict) -> dict:
                     continue
                 total[key] = -amount
                 open_amount[key] = abs(_q(qb_open)) if qb_open is not None else ZERO
-                payables[who.lower()].append((t["date"], key, -amount - open_amount[key]))
+                payables[who.lower()].append(
+                    (t["date"], key, -amount - open_amount[key])
+                )
             elif acct == "AP" and amount > 0:
                 if not k:
                     side[t["trans"]].append((BILL_PAYMENT, i, who, amount))
@@ -160,8 +196,17 @@ def plan(txns: list[dict], qtype: dict) -> dict:
 
     def apply(docs, pays, label):
         for who in set(docs) | set(pays):
-            need = [[d, key, cap] for d, key, cap in sorted(docs.get(who, []), key=lambda x: (x[0], int(x[1][0]) if x[1][0].isdigit() else 0))]
-            for _d, pkey, avail in sorted(pays.get(who, []), key=lambda x: (x[0], int(x[1][0]) if x[1][0].isdigit() else 0)):
+            need = [
+                [d, key, cap]
+                for d, key, cap in sorted(
+                    docs.get(who, []),
+                    key=lambda x: (x[0], int(x[1][0]) if x[1][0].isdigit() else 0),
+                )
+            ]
+            for _d, pkey, avail in sorted(
+                pays.get(who, []),
+                key=lambda x: (x[0], int(x[1][0]) if x[1][0].isdigit() else 0),
+            ):
                 for row in need:
                     if avail <= 0:
                         break
@@ -265,7 +310,6 @@ class Maker:
         key = (t["trans"], 0)
         who = self.customer(_who(t, head))
         total = _q(head["debit"] - head["credit"])
-        open_amt = self.p["open"].get(key, ZERO)
         tax = ZERO
         rate = ZERO
         body = []
@@ -295,7 +339,9 @@ class Maker:
         self.db.add(inv)
         self.db.flush()
         for order, (line, amount) in enumerate(body):
-            item = self.items.get((line["item"] or "").lower()) if line["item"] else None
+            item = (
+                self.items.get((line["item"] or "").lower()) if line["item"] else None
+            )
             qty = _num(line["qty"])
             qty = abs(qty) if qty else Decimal("1")
             price = _num(line["price"])
@@ -303,11 +349,18 @@ class Maker:
                 InvoiceLine(
                     invoice_id=inv.id,
                     item_id=item.id if item else None,
-                    description=(line["memo"] or line["item"] or line["account"])[:2000],
+                    description=(line["memo"] or line["item"] or line["account"])[
+                        :2000
+                    ],
                     quantity=qty,
-                    rate=price if price is not None else (amount / qty if qty else amount),
+                    rate=(
+                        price
+                        if price is not None
+                        else (amount / qty if qty else amount)
+                    ),
                     amount=amount,
-                    is_taxable=(line["tax_code"] or "").upper() not in ("", "E", "Z", "NON"),
+                    is_taxable=(line["tax_code"] or "").upper()
+                    not in ("", "E", "Z", "NON"),
                     line_order=order,
                 )
             )
@@ -320,7 +373,11 @@ class Maker:
 
         lines = _lines(t)
         head = lines[0]
-        i, ar = next((i, l) for i, l in enumerate(lines) if self.qtype.get(l["account"]) == "AR")
+        i, ar = next(
+            (i, ln)
+            for i, ln in enumerate(lines)
+            if self.qtype.get(ln["account"]) == "AR"
+        )
         who = self.customer(_who(t, ar))
         pay = Payment(
             customer_id=who.id,
@@ -367,7 +424,9 @@ class Maker:
         self.db.flush()
         for order, line in enumerate(lines[1:]):
             amount = _q(line["debit"] - line["credit"])
-            item = self.items.get((line["item"] or "").lower()) if line["item"] else None
+            item = (
+                self.items.get((line["item"] or "").lower()) if line["item"] else None
+            )
             qty = _num(line["qty"])
             qty = abs(qty) if qty else Decimal("1")
             self.db.add(
@@ -391,7 +450,11 @@ class Maker:
 
         lines = _lines(t)
         head = lines[0]
-        i, ap = next((i, l) for i, l in enumerate(lines) if self.qtype.get(l["account"]) == "AP")
+        i, ap = next(
+            (i, ln)
+            for i, ln in enumerate(lines)
+            if self.qtype.get(ln["account"]) == "AP"
+        )
         who = self.vendor(_who(t, ap))
         card = self.qtype.get(head["account"]) == "CCARD"
         bp = BillPayment(
@@ -423,18 +486,34 @@ class Maker:
         if model is Invoice:
             doc = Invoice(
                 invoice_number=self._invoice_number(t),
-                customer_id=self.customer(_who(t, head)).id, status=InvoiceStatus.VOID,
-                date=t["date"], due_date=_date(head["due"]) or t["date"],
-                terms=(head["terms"] or "")[:50], subtotal=ZERO, tax_rate=ZERO,
-                tax_amount=ZERO, total=ZERO, amount_paid=ZERO, balance_due=ZERO, notes=words,
+                customer_id=self.customer(_who(t, head)).id,
+                status=InvoiceStatus.VOID,
+                date=t["date"],
+                due_date=_date(head["due"]) or t["date"],
+                terms=(head["terms"] or "")[:50],
+                subtotal=ZERO,
+                tax_rate=ZERO,
+                tax_amount=ZERO,
+                total=ZERO,
+                amount_paid=ZERO,
+                balance_due=ZERO,
+                notes=words,
             )
         else:
             doc = Bill(
                 bill_number=((t["num"] or "").strip() or f"QB-{t['trans']}")[:100],
-                vendor_id=self.vendor(_who(t, head)).id, status=BillStatus.VOID,
-                date=t["date"], due_date=_date(head["due"]) or t["date"], terms="",
-                subtotal=ZERO, tax_rate=ZERO, tax_amount=ZERO, total=ZERO,
-                amount_paid=ZERO, balance_due=ZERO, notes=words,
+                vendor_id=self.vendor(_who(t, head)).id,
+                status=BillStatus.VOID,
+                date=t["date"],
+                due_date=_date(head["due"]) or t["date"],
+                terms="",
+                subtotal=ZERO,
+                tax_rate=ZERO,
+                tax_amount=ZERO,
+                total=ZERO,
+                amount_paid=ZERO,
+                balance_due=ZERO,
+                notes=words,
             )
         self.db.add(doc)
         self.db.flush()
@@ -447,36 +526,89 @@ class Maker:
         from app.models.payments import Payment
 
         for kind, i, who, amount in self.p["side"].get(t["trans"], []):
-            words = f"QuickBooks journal entry QB #{t['trans']}" + (f": {t['memo']}" if t["memo"] else "")
+            words = f"QuickBooks journal entry QB #{t['trans']}" + (
+                f": {t['memo']}" if t["memo"] else ""
+            )
             if kind == INVOICE:
                 doc = Invoice(
-                    invoice_number=self._invoice_number({"num": "", "trans": f"{t['trans']}-{i}"}),
-                    customer_id=self.customer(who).id, status=InvoiceStatus.SENT,
-                    date=t["date"], due_date=t["date"], terms="",
-                    subtotal=amount, tax_rate=ZERO, tax_amount=ZERO, total=amount,
-                    amount_paid=ZERO, balance_due=amount, notes=words,
+                    invoice_number=self._invoice_number(
+                        {"num": "", "trans": f"{t['trans']}-{i}"}
+                    ),
+                    customer_id=self.customer(who).id,
+                    status=InvoiceStatus.SENT,
+                    date=t["date"],
+                    due_date=t["date"],
+                    terms="",
+                    subtotal=amount,
+                    tax_rate=ZERO,
+                    tax_amount=ZERO,
+                    total=amount,
+                    amount_paid=ZERO,
+                    balance_due=amount,
+                    notes=words,
                     transaction_id=txn_id,
                 )
                 self.db.add(doc)
                 self.db.flush()
-                self.db.add(InvoiceLine(invoice_id=doc.id, description=words, quantity=Decimal("1"),
-                                        rate=amount, amount=amount, is_taxable=False, line_order=0))
+                self.db.add(
+                    InvoiceLine(
+                        invoice_id=doc.id,
+                        description=words,
+                        quantity=Decimal("1"),
+                        rate=amount,
+                        amount=amount,
+                        is_taxable=False,
+                        line_order=0,
+                    )
+                )
             elif kind == PAYMENT:
-                doc = Payment(customer_id=self.customer(who).id, date=t["date"], amount=amount,
-                              reference=f"QB #{t['trans']}", notes=words, transaction_id=txn_id)
+                doc = Payment(
+                    customer_id=self.customer(who).id,
+                    date=t["date"],
+                    amount=amount,
+                    reference=f"QB #{t['trans']}",
+                    notes=words,
+                    transaction_id=txn_id,
+                )
                 self.db.add(doc)
             elif kind == BILL:
-                doc = Bill(bill_number=f"QB-{t['trans']}", vendor_id=self.vendor(who).id,
-                           status=BillStatus.UNPAID, date=t["date"], due_date=t["date"], terms="",
-                           subtotal=amount, tax_rate=ZERO, tax_amount=ZERO, total=amount,
-                           amount_paid=ZERO, balance_due=amount, notes=words, transaction_id=txn_id)
+                doc = Bill(
+                    bill_number=f"QB-{t['trans']}",
+                    vendor_id=self.vendor(who).id,
+                    status=BillStatus.UNPAID,
+                    date=t["date"],
+                    due_date=t["date"],
+                    terms="",
+                    subtotal=amount,
+                    tax_rate=ZERO,
+                    tax_amount=ZERO,
+                    total=amount,
+                    amount_paid=ZERO,
+                    balance_due=amount,
+                    notes=words,
+                    transaction_id=txn_id,
+                )
                 self.db.add(doc)
                 self.db.flush()
-                self.db.add(BillLine(bill_id=doc.id, description=words, quantity=Decimal("1"),
-                                     rate=amount, amount=amount, line_order=0))
+                self.db.add(
+                    BillLine(
+                        bill_id=doc.id,
+                        description=words,
+                        quantity=Decimal("1"),
+                        rate=amount,
+                        amount=amount,
+                        line_order=0,
+                    )
+                )
             else:
-                doc = BillPayment(vendor_id=self.vendor(who).id, date=t["date"], amount=amount,
-                                  method="check", notes=words, transaction_id=txn_id)
+                doc = BillPayment(
+                    vendor_id=self.vendor(who).id,
+                    date=t["date"],
+                    amount=amount,
+                    method="check",
+                    notes=words,
+                    transaction_id=txn_id,
+                )
                 self.db.add(doc)
             self.db.flush()
             self.docs[(t["trans"], i)] = (kind, doc)
@@ -501,9 +633,17 @@ class Maker:
             pkind, pay = self.docs[pkey]
             dkind, doc = self.docs[dkey]
             if pkind == PAYMENT and dkind == INVOICE:
-                self.db.add(PaymentAllocation(payment_id=pay.id, invoice_id=doc.id, amount=amount))
+                self.db.add(
+                    PaymentAllocation(
+                        payment_id=pay.id, invoice_id=doc.id, amount=amount
+                    )
+                )
             elif pkind == BILL_PAYMENT and dkind == BILL:
-                self.db.add(BillPaymentAllocation(bill_payment_id=pay.id, bill_id=doc.id, amount=amount))
+                self.db.add(
+                    BillPaymentAllocation(
+                        bill_payment_id=pay.id, bill_id=doc.id, amount=amount
+                    )
+                )
             else:
                 continue
             paid[dkey] += amount
@@ -512,12 +652,18 @@ class Maker:
                 done = paid[key]
                 doc.amount_paid = done
                 doc.balance_due = _q(doc.total - done)
-                doc.status = (InvoiceStatus.PAID if doc.balance_due <= 0
-                              else InvoiceStatus.PARTIAL if done > 0 else InvoiceStatus.SENT)
+                doc.status = (
+                    InvoiceStatus.PAID
+                    if doc.balance_due <= 0
+                    else InvoiceStatus.PARTIAL if done > 0 else InvoiceStatus.SENT
+                )
             elif kind == BILL:
                 done = paid[key]
                 doc.amount_paid = done
                 doc.balance_due = _q(doc.total - done)
-                doc.status = (BillStatus.PAID if doc.balance_due <= 0
-                              else BillStatus.PARTIAL if done > 0 else BillStatus.UNPAID)
+                doc.status = (
+                    BillStatus.PAID
+                    if doc.balance_due <= 0
+                    else BillStatus.PARTIAL if done > 0 else BillStatus.UNPAID
+                )
         self.db.flush()

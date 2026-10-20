@@ -85,7 +85,10 @@ def _files(journal=JOURNAL, bs=BALANCE_SHEET, attach=True):
         ("files", ("lists.iif", io.BytesIO(LISTS.encode()), "text/plain")),
         ("files", ("journal.csv", io.BytesIO(journal.encode()), "text/csv")),
         ("files", ("balance sheet.csv", io.BytesIO(bs.encode()), "text/csv")),
-        ("files", ("profit and loss.csv", io.BytesIO(PROFIT_LOSS.encode()), "text/csv")),
+        (
+            "files",
+            ("profit and loss.csv", io.BytesIO(PROFIT_LOSS.encode()), "text/csv"),
+        ),
     ]
     if attach:
         files += [
@@ -105,7 +108,9 @@ def test_dry_run_verifies_against_quickbooks(client, db_session):
     assert any("Verified against QuickBooks to the cent" in w for w in data["warnings"])
     assert any("not in the map" in w for w in data["warnings"])
     # nothing written
-    assert db_session.query(Transaction).filter_by(source_type="qbd_import").count() == 0
+    assert (
+        db_session.query(Transaction).filter_by(source_type="qbd_import").count() == 0
+    )
 
 
 def test_dry_run_refuses_a_journal_that_disagrees(client):
@@ -118,7 +123,9 @@ def test_dry_run_refuses_a_journal_that_disagrees(client):
 
 
 def test_dry_run_refuses_a_cut_off_journal(client):
-    cut = JOURNAL.replace('"TOTAL",,,,,,,19500.00,19500.00', '"TOTAL",,,,,,,20000.00,20000.00')
+    cut = JOURNAL.replace(
+        '"TOTAL",,,,,,,19500.00,19500.00', '"TOTAL",,,,,,,20000.00,20000.00'
+    )
     data = client.post("/api/migration/qbd/dry-run", files=_files(journal=cut)).json()
     assert not data["ok"]
     assert any("rows are missing" in e for e in data["errors"])
@@ -145,7 +152,10 @@ def test_import_posts_history_once_without_opening_balances(client, db_session):
         "102 · QB #4": "expense",
     }
     # the IIF's OBAMOUNT is not posted: the Journal already carries it
-    assert db_session.query(Transaction).filter_by(source_type="opening_balance").count() == 0
+    assert (
+        db_session.query(Transaction).filter_by(source_type="opening_balance").count()
+        == 0
+    )
 
     cheq = db_session.query(Account).filter_by(name="Chequing").one()
     lines = db_session.query(TransactionLine).filter_by(account_id=cheq.id).all()
@@ -153,17 +163,25 @@ def test_import_posts_history_once_without_opening_balances(client, db_session):
 
     # sub-account under its parent, hidden account inactive, seeded RE reused
     gas = db_session.query(Account).filter_by(name="Gas").one()
-    assert gas.parent_id == db_session.query(Account).filter_by(name="Utilities").one().id
-    assert db_session.query(Account).filter_by(name="Old account").one().is_active is False
+    assert (
+        gas.parent_id == db_session.query(Account).filter_by(name="Utilities").one().id
+    )
+    assert (
+        db_session.query(Account).filter_by(name="Old account").one().is_active is False
+    )
     assert db_session.query(Account).filter_by(name="Retained Earnings").count() == 1
 
     # a name with a comma loses QuickBooks' quotes
-    assert db_session.query(Vendor).filter_by(name="Locks, Keys and Re-keys").count() == 1
+    assert (
+        db_session.query(Vendor).filter_by(name="Locks, Keys and Re-keys").count() == 1
+    )
 
     gas_cheque = next(t for t in txns if t.reference == "101 · QB #3")
-    att = db_session.query(Attachment).filter_by(
-        entity_type="expense", entity_id=gas_cheque.id
-    ).one()
+    att = (
+        db_session.query(Attachment)
+        .filter_by(entity_type="expense", entity_id=gas_cheque.id)
+        .one()
+    )
     assert att.filename == "gas bill.pdf"
 
     # the cheque opens as an Expense, paid from Chequing, to Gas
@@ -172,25 +190,35 @@ def test_import_posts_history_once_without_opening_balances(client, db_session):
     assert exp["paid_from_account_name"] == "Chequing"
     assert [l["account_name"] for l in exp["lines"]] == ["Gas"]
     # a payee that is a vendor is linked to it
-    locks = client.get(f"/api/expenses/{next(t.id for t in txns if t.reference == '102 · QB #4')}").json()
+    locks = client.get(
+        f"/api/expenses/{next(t.id for t in txns if t.reference == '102 · QB #4')}"
+    ).json()
     assert locks["vendor_id"] is not None
-    dep = client.get(f"/api/deposits/{next(t.id for t in txns if t.reference == 'QB #2')}").json()
+    dep = client.get(
+        f"/api/deposits/{next(t.id for t in txns if t.reference == 'QB #2')}"
+    ).json()
     assert float(dep["amount"]) == 3000
-    assert [(o["account_name"], float(o["amount"]), o["description"]) for o in dep["other_lines"]] == [
-        ("Rental income", 3000.0, "Tenant A — Rent")
-    ]
+    assert [
+        (o["account_name"], float(o["amount"]), o["description"])
+        for o in dep["other_lines"]
+    ] == [("Rental income", 3000.0, "Tenant A — Rent")]
 
     again = client.post("/api/migration/qbd/import", files=_files()).json()
     assert again["imported_journals"] == 0
     assert again["imported_attachments"] == 0
-    assert db_session.query(Transaction).filter(
-        Transaction.source_type.in_(["qbd_import", "expense", "deposit"])
-    ).count() == 4
+    assert (
+        db_session.query(Transaction)
+        .filter(Transaction.source_type.in_(["qbd_import", "expense", "deposit"]))
+        .count()
+        == 4
+    )
 
 
 def test_balance_sheet_report_matches_quickbooks(client):
     client.post("/api/migration/qbd/import", files=_files(attach=False))
-    bs = client.get("/api/reports/balance-sheet", params={"as_of_date": "2024-12-31"}).json()
+    bs = client.get(
+        "/api/reports/balance-sheet", params={"as_of_date": "2024-12-31"}
+    ).json()
     assert bs["total_assets"] == 4500
     assert bs["total_liabilities"] == 2000
     assert bs["total_equity"] == 2500

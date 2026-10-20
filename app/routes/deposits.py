@@ -330,7 +330,9 @@ def create_deposit(data: DepositCreate, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="A deposit line has no amount")
         acct = db.query(Account).filter(Account.id == ln.account_id).first()
         if acct is None:
-            raise HTTPException(status_code=404, detail="Deposit line account not found")
+            raise HTTPException(
+                status_code=404, detail="Deposit line account not found"
+            )
         if acct.id in (uf_id, bank_account.id):
             raise HTTPException(
                 status_code=400,

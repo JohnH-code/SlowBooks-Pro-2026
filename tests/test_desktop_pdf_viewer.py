@@ -271,7 +271,9 @@ def test_print_shows_the_print_dialog(home, launched, monkeypatch):
     class Done:
         returncode = 0
 
-    monkeypatch.setattr(dl.subprocess, "run", lambda args, **kw: runs.append(args) or Done())
+    monkeypatch.setattr(
+        dl.subprocess, "run", lambda args, **kw: runs.append(args) or Done()
+    )
     assert dl.DocumentViewerApi(path).print_document() == {"success": True}
     assert runs[0][0] == "osascript" and "with print dialog" in runs[0][2]
     assert str(path.resolve()) in runs[0][2] or str(path) in runs[0][2]
@@ -307,14 +309,18 @@ def test_an_attachment_is_saved_with_the_documents(home, windows):
     assert Path(export["path"]).parent.name == "Reports"
 
 
-def test_print_keeps_no_copy_in_the_users_folders(home, launched, monkeypatch, tmp_path):
+def test_print_keeps_no_copy_in_the_users_folders(
+    home, launched, monkeypatch, tmp_path
+):
     monkeypatch.setattr(dl.sys, "platform", "darwin")
     sent = []
 
     class Done:
         returncode = 0
 
-    monkeypatch.setattr(dl.subprocess, "run", lambda args, **kw: sent.append(args) or Done())
+    monkeypatch.setattr(
+        dl.subprocess, "run", lambda args, **kw: sent.append(args) or Done()
+    )
     pdf = base64.b64encode(b"%PDF-1.7 invoice").decode()
     got = dl.PickerApi(3001).print_document_pdf("Invoice_1002.pdf", pdf)
     assert got == {"success": True}

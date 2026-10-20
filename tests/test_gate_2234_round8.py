@@ -292,8 +292,9 @@ def test_a_statement_row_names_a_sub_account_by_its_path_and_number(
     assert "Automobile: Fuel" in csv_text and ",8250,Legal," in csv_text
     js = (ROOT / "app/static/js/reports.js").read_text(encoding="utf-8")
     assert (
-        js.count("i.account_label || i.account_name") == 4
-    )  # the P&L and the Balance Sheet rows, and their drill-down titles
+        js.count("i.account_label || i.account_name") == 3
+    )  # the two drill-down titles, and a row with no sub-account tree (the
+    # rows themselves read the tree's label, services/account_tree.py)
 
 
 def test_the_trial_balance_puts_unnumbered_accounts_last_and_grouped(

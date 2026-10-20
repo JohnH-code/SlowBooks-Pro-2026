@@ -163,7 +163,7 @@ const ExpensesPage = {
         if (!body) return;
         // any account but the one paid from: a cheque can pay down a loan or
         // carry HST paid as well as an expense
-        const acctOpt = a => `<option value="${a.id}">${escapeHtml(a.account_number || '')} - ${escapeHtml(a.name)}</option>`;
+        const acctOpt = a => `<option value="${a.id}">${accountLabel(a)}</option>`;
         const opts = ExpensesPage._accounts.filter(a => a.is_active !== false).map(acctOpt).join('');
         const tr = document.createElement('tr');
         tr.innerHTML = `<td><select data-split="account" aria-label="Account"><option value="">Select...</option>${opts}</select></td>

@@ -199,7 +199,7 @@ const DepositsPage = {
         const bankId = parseInt($('#deposit-bank-acct')?.value) || null;
         const opts = (DepositsPage._accounts || [])
             .filter(a => a.is_active !== false && a.id !== bankId && a.account_number !== '1200')
-            .map(a => `<option value="${a.id}">${escapeHtml(a.account_number || '')} - ${escapeHtml(a.name)}</option>`).join('');
+            .map(a => `<option value="${a.id}">${accountLabel(a)}</option>`).join('');
         const tr = document.createElement('tr');
         tr.innerHTML = `<td><input data-other="from" aria-label="Received from" maxlength="120"></td>
             <td><select data-other="account" aria-label="From account"><option value="">Select...</option>${opts}</select></td>

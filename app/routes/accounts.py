@@ -30,7 +30,8 @@ def _unused(db: Session) -> tuple[list[Account], list[Account]]:
             if fk.column.table.name != "accounts" or table.name == "accounts":
                 continue
             used.update(
-                v for (v,) in db.query(fk.parent).filter(fk.parent.isnot(None)).distinct()
+                v
+                for (v,) in db.query(fk.parent).filter(fk.parent.isnot(None)).distinct()
             )
     for key in ("hst_account_id",):
         raw = get_setting_raw(db, key) or ""

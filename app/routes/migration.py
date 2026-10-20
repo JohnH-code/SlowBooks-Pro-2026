@@ -160,7 +160,9 @@ def _members(filename: str, content: bytes) -> list[tuple[str, bytes]]:
     return members
 
 
-async def bundle_from_uploads(files: list[UploadFile], classify, keep_binary=None) -> dict:
+async def bundle_from_uploads(
+    files: list[UploadFile], classify, keep_binary=None
+) -> dict:
     bundle: dict[str, str] = {}
     unrecognized = []
     for file in files:

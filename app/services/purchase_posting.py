@@ -77,7 +77,9 @@ def unit_cost_with_tax(amount, tax_share, quantity, rate) -> Decimal:
     return quantize_to((Decimal(str(amount)) + share) / qty, COST_Q)
 
 
-def purchase_tax(db: Session, tax_amount, amounts) -> tuple[list[Decimal], Optional[int]]:
+def purchase_tax(
+    db: Session, tax_amount, amounts
+) -> tuple[list[Decimal], Optional[int]]:
     """Where the tax on a purchase goes: (each line's share, None) for a US
     company — the tax is part of the cost — or (all zeros, the GST/HST
     account) for a Canadian registrant, who claims it back as an input tax

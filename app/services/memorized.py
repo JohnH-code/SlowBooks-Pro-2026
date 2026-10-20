@@ -23,7 +23,15 @@ from app.models.memorized import MemorizedTransaction
 from app.models.transactions import Transaction
 
 KINDS = ("expense", "bill", "deposit", "journal", "invoice")
-FREQUENCIES = ("never", "weekly", "biweekly", "monthly", "quarterly", "semiannually", "annually")
+FREQUENCIES = (
+    "never",
+    "weekly",
+    "biweekly",
+    "monthly",
+    "quarterly",
+    "semiannually",
+    "annually",
+)
 ACTIONS = ("remind", "auto", "none")
 _MONTHS = {"monthly": 1, "quarterly": 3, "semiannually": 6, "annually": 12}
 
@@ -66,13 +74,15 @@ def pattern_from_transaction(db: Session, txn: Transaction) -> tuple[str, dict, 
                 continue
             amount = _f(ln.debit) - _f(ln.credit)
             memo = ln.description or ""
-            lines.append({
-                "account_id": ln.account_id,
-                "amount": f"{amount:.2f}",
-                "memo": None if memo == out.payee else (memo or None),
-                "class_id": ln.class_id,
-                "job_id": ln.job_id,
-            })
+            lines.append(
+                {
+                    "account_id": ln.account_id,
+                    "amount": f"{amount:.2f}",
+                    "memo": None if memo == out.payee else (memo or None),
+                    "class_id": ln.class_id,
+                    "job_id": ln.job_id,
+                }
+            )
         payload = {
             "vendor_id": out.vendor_id,
             "payee": out.payee or None,
@@ -87,7 +97,9 @@ def pattern_from_transaction(db: Session, txn: Transaction) -> tuple[str, dict, 
 
         bill = db.get(Bill, txn.source_id)
         if bill is None:
-            raise HTTPException(status_code=404, detail="The bill behind this transaction is gone")
+            raise HTTPException(
+                status_code=404, detail="The bill behind this transaction is gone"
+            )
         payload = {
             "vendor_id": bill.vendor_id,
             "terms": bill.terms or "Net 30",
@@ -97,16 +109,16 @@ def pattern_from_transaction(db: Session, txn: Transaction) -> tuple[str, dict, 
             "job_id": bill.job_id,
             "lines": [
                 {
-                    "item_id": l.item_id,
-                    "account_id": l.account_id,
-                    "description": l.description,
-                    "quantity": _f(l.quantity) or 1,
-                    "rate": _f(l.rate),
-                    "class_id": l.class_id,
-                    "job_id": l.job_id,
-                    "line_order": l.line_order or i,
+                    "item_id": ln.item_id,
+                    "account_id": ln.account_id,
+                    "description": ln.description,
+                    "quantity": _f(ln.quantity) or 1,
+                    "rate": _f(ln.rate),
+                    "class_id": ln.class_id,
+                    "job_id": ln.job_id,
+                    "line_order": ln.line_order or i,
                 }
-                for i, l in enumerate(bill.lines)
+                for i, ln in enumerate(bill.lines)
             ],
         }
         return "bill", payload, bill.vendor.name if bill.vendor else "Bill"
@@ -115,7 +127,9 @@ def pattern_from_transaction(db: Session, txn: Transaction) -> tuple[str, dict, 
 
         inv = db.get(Invoice, txn.source_id)
         if inv is None:
-            raise HTTPException(status_code=404, detail="The invoice behind this transaction is gone")
+            raise HTTPException(
+                status_code=404, detail="The invoice behind this transaction is gone"
+            )
         payload = {
             "customer_id": inv.customer_id,
             "terms": inv.terms or "Net 30",
@@ -125,56 +139,70 @@ def pattern_from_transaction(db: Session, txn: Transaction) -> tuple[str, dict, 
             "job_id": inv.job_id,
             "lines": [
                 {
-                    "item_id": l.item_id,
-                    "description": l.description,
-                    "quantity": _f(l.quantity) or 1,
-                    "rate": _f(l.rate),
-                    "is_taxable": bool(getattr(l, "is_taxable", True)),
-                    "line_order": getattr(l, "line_order", i) or i,
+                    "item_id": ln.item_id,
+                    "description": ln.description,
+                    "quantity": _f(ln.quantity) or 1,
+                    "rate": _f(ln.rate),
+                    "is_taxable": bool(getattr(ln, "is_taxable", True)),
+                    "line_order": getattr(ln, "line_order", i) or i,
                 }
-                for i, l in enumerate(inv.lines)
+                for i, ln in enumerate(inv.lines)
             ],
         }
         return "invoice", payload, inv.customer.name if inv.customer else "Invoice"
     if st == "deposit":
         bank = next(
-            (l for l in txn.lines if _f(l.debit) > 0 and l.account and l.account.bank_kind),
+            (
+                ln
+                for ln in txn.lines
+                if _f(ln.debit) > 0 and ln.account and ln.account.bank_kind
+            ),
             None,
         )
         if bank is None:
-            raise HTTPException(status_code=400, detail="This deposit has no bank line to memorize")
+            raise HTTPException(
+                status_code=400, detail="This deposit has no bank line to memorize"
+            )
         from app.services import control_accounts
 
         uf = control_accounts.find(db, "1200")
         others = [
             {
-                "account_id": l.account_id,
-                "amount": f"{_f(l.credit) - _f(l.debit):.2f}",
-                "memo": l.description or None,
+                "account_id": ln.account_id,
+                "amount": f"{_f(ln.credit) - _f(ln.debit):.2f}",
+                "memo": ln.description or None,
             }
-            for l in txn.lines
-            if l is not bank and l.account_id != uf
+            for ln in txn.lines
+            if ln is not bank and ln.account_id != uf
         ]
         if not others:
             raise HTTPException(
                 status_code=400,
                 detail="This deposit only banked customer payments; there is nothing in it to repeat",
             )
-        payload = {"deposit_to_account_id": bank.account_id, "other_lines": others, "class_id": txn.class_id}
+        payload = {
+            "deposit_to_account_id": bank.account_id,
+            "other_lines": others,
+            "class_id": txn.class_id,
+        }
         return "deposit", payload, txn.description or "Deposit"
     # a journal entry (typed, or brought over from QuickBooks)
     lines = [
         {
-            "account_id": l.account_id,
-            "debit": f"{_f(l.debit):.2f}",
-            "credit": f"{_f(l.credit):.2f}",
-            "description": l.description or None,
-            "class_id": l.class_id,
-            "job_id": l.job_id,
+            "account_id": ln.account_id,
+            "debit": f"{_f(ln.debit):.2f}",
+            "credit": f"{_f(ln.credit):.2f}",
+            "description": ln.description or None,
+            "class_id": ln.class_id,
+            "job_id": ln.job_id,
         }
-        for l in txn.lines
+        for ln in txn.lines
     ]
-    payload = {"description": txn.description or "Journal entry", "lines": lines, "class_id": txn.class_id}
+    payload = {
+        "description": txn.description or "Journal entry",
+        "lines": lines,
+        "class_id": txn.class_id,
+    }
     return "journal", payload, txn.description or "Journal entry"
 
 
@@ -188,11 +216,15 @@ def _clean(payload: dict, schema) -> dict:
     if "lines" in out and hasattr(schema.model_fields["lines"].annotation, "__args__"):
         line_schema = schema.model_fields["lines"].annotation.__args__[0]
         keep = set(line_schema.model_fields)
-        out["lines"] = [{k: v for k, v in ln.items() if k in keep} for ln in out["lines"]]
+        out["lines"] = [
+            {k: v for k, v in ln.items() if k in keep} for ln in out["lines"]
+        ]
     return out
 
 
-def enter(db: Session, m: MemorizedTransaction, on: date, overrides: dict | None = None) -> dict:
+def enter(
+    db: Session, m: MemorizedTransaction, on: date, overrides: dict | None = None
+) -> dict:
     """Post the memorized transaction dated `on`. Returns where it went:
     {kind, id}. Raises the route's own HTTPException when it is refused."""
     payload = {**json.loads(m.payload), **(overrides or {})}
@@ -202,12 +234,21 @@ def enter(db: Session, m: MemorizedTransaction, on: date, overrides: dict | None
         from app.schemas.expenses import ExpenseCreate
 
         if not payload.get("reference") and payload.get("paid_from_account_id"):
-            payload["reference"] = next_cheque_number(payload["paid_from_account_id"], db)["number"]
-        if payload.get("lines") and len(payload["lines"]) == 1 and not payload["lines"][0].get("tax_code"):
+            payload["reference"] = next_cheque_number(
+                payload["paid_from_account_id"], db
+            )["number"]
+        if (
+            payload.get("lines")
+            and len(payload["lines"]) == 1
+            and not payload["lines"][0].get("tax_code")
+        ):
             # keep it a one-account expense, as it was typed
             ln = payload.pop("lines")[0]
-            payload.update(expense_account_id=ln["account_id"], amount=ln["amount"],
-                           memo=payload.get("memo") or ln.get("memo"))
+            payload.update(
+                expense_account_id=ln["account_id"],
+                amount=ln["amount"],
+                memo=payload.get("memo") or ln.get("memo"),
+            )
         out = create_expense(ExpenseCreate(**_clean(payload, ExpenseCreate)), db)
         return {"kind": "expense", "id": out.id}
     if m.kind == "bill":
@@ -227,13 +268,19 @@ def enter(db: Session, m: MemorizedTransaction, on: date, overrides: dict | None
         from app.schemas.deposits import DepositCreate
 
         out = create_deposit(DepositCreate(**_clean(payload, DepositCreate)), db)
-        tid = out.get("transaction_id") if isinstance(out, dict) else getattr(out, "transaction_id", None)
+        tid = (
+            out.get("transaction_id")
+            if isinstance(out, dict)
+            else getattr(out, "transaction_id", None)
+        )
         return {"kind": "deposit", "id": tid}
     if m.kind == "journal":
         from app.routes.journal import create_manual_journal_entry
         from app.schemas.journal import JournalEntryCreate
 
-        out = create_manual_journal_entry(JournalEntryCreate(**_clean(payload, JournalEntryCreate)), db)
+        out = create_manual_journal_entry(
+            JournalEntryCreate(**_clean(payload, JournalEntryCreate)), db
+        )
         return {"kind": "journal", "id": out.id}
     raise HTTPException(status_code=400, detail=f"Unknown memorized kind {m.kind}")
 
@@ -264,16 +311,22 @@ def check_payload(kind: str, payload: dict) -> None:
     except ValidationError as exc:
         raise HTTPException(
             status_code=422,
-            detail="; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()),
+            detail="; ".join(
+                f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
+                for e in exc.errors()
+            ),
         )
     lines = payload.get("other_lines" if kind == "deposit" else "lines") or []
     if not lines:
         raise HTTPException(status_code=422, detail="It needs at least one line")
     if kind == "journal":
-        dr = sum(Decimal(str(l.get("debit") or 0)) for l in lines)
-        cr = sum(Decimal(str(l.get("credit") or 0)) for l in lines)
+        dr = sum(Decimal(str(ln.get("debit") or 0)) for ln in lines)
+        cr = sum(Decimal(str(ln.get("credit") or 0)) for ln in lines)
         if dr != cr:
-            raise HTTPException(status_code=422, detail=f"Debits ({dr}) and credits ({cr}) must be equal")
+            raise HTTPException(
+                status_code=422,
+                detail=f"Debits ({dr}) and credits ({cr}) must be equal",
+            )
 
 
 def mark_entered(m: MemorizedTransaction, on: date) -> None:
@@ -292,7 +345,9 @@ def due(db: Session, today: date | None = None) -> list[MemorizedTransaction]:
     their days in advance of the next date."""
     today = today or date.today()
     out = []
-    for m in db.query(MemorizedTransaction).filter(MemorizedTransaction.is_active.is_(True)):
+    for m in db.query(MemorizedTransaction).filter(
+        MemorizedTransaction.is_active.is_(True)
+    ):
         if m.next_date is None or m.action != "remind":
             continue
         if m.next_date - timedelta(days=m.days_in_advance or 0) <= today:
@@ -306,22 +361,40 @@ def auto_enter(db: Session, today: date | None = None) -> list[dict]:
     due and is reported."""
     today = today or date.today()
     done = []
-    for m in db.query(MemorizedTransaction).filter(
-        MemorizedTransaction.is_active.is_(True), MemorizedTransaction.action == "auto"
-    ).all():
+    for m in (
+        db.query(MemorizedTransaction)
+        .filter(
+            MemorizedTransaction.is_active.is_(True),
+            MemorizedTransaction.action == "auto",
+        )
+        .all()
+    ):
         guard = 0
-        while m.next_date is not None and m.next_date - timedelta(days=m.days_in_advance or 0) <= today and guard < 60:
+        while (
+            m.next_date is not None
+            and m.next_date - timedelta(days=m.days_in_advance or 0) <= today
+            and guard < 60
+        ):
             guard += 1
             on = m.next_date
             try:
                 where = enter(db, m, on)
             except HTTPException as exc:
                 db.rollback()
-                done.append({"memorized_id": m.id, "name": m.name, "date": on.isoformat(), "error": str(exc.detail)})
+                done.append(
+                    {
+                        "memorized_id": m.id,
+                        "name": m.name,
+                        "date": on.isoformat(),
+                        "error": str(exc.detail),
+                    }
+                )
                 break
             mark_entered(m, on)
             db.commit()
-            done.append({"memorized_id": m.id, "name": m.name, "date": on.isoformat(), **where})
+            done.append(
+                {"memorized_id": m.id, "name": m.name, "date": on.isoformat(), **where}
+            )
     return done
 
 
@@ -329,15 +402,24 @@ def describe(db: Session, m: MemorizedTransaction) -> dict:
     payload = json.loads(m.payload)
     amount = 0.0
     if m.kind == "expense":
-        amount = sum(float(l.get("amount") or 0) for l in payload.get("lines") or []) or float(payload.get("amount") or 0)
+        amount = sum(
+            float(ln.get("amount") or 0) for ln in payload.get("lines") or []
+        ) or float(payload.get("amount") or 0)
     elif m.kind in ("bill", "invoice"):
-        amount = sum(float(l.get("quantity") or 1) * float(l.get("rate") or 0) for l in payload.get("lines") or [])
+        amount = sum(
+            float(ln.get("quantity") or 1) * float(ln.get("rate") or 0)
+            for ln in payload.get("lines") or []
+        )
     elif m.kind == "deposit":
-        amount = sum(float(l.get("amount") or 0) for l in payload.get("other_lines") or [])
+        amount = sum(
+            float(ln.get("amount") or 0) for ln in payload.get("other_lines") or []
+        )
     elif m.kind == "journal":
-        amount = sum(float(l.get("debit") or 0) for l in payload.get("lines") or [])
+        amount = sum(float(ln.get("debit") or 0) for ln in payload.get("lines") or [])
     account = ""
-    acct_id = payload.get("paid_from_account_id") or payload.get("deposit_to_account_id")
+    acct_id = payload.get("paid_from_account_id") or payload.get(
+        "deposit_to_account_id"
+    )
     if acct_id:
         a = db.get(Account, acct_id)
         account = a.name if a else ""

@@ -21,7 +21,9 @@ def gst_hst_periods(db: Session = Depends(get_db)):
         "enabled": hst.account_id(db) is not None,
         "frequency": hst.frequency(db),
         "periods": [{"start": s.isoformat(), "end": e.isoformat()} for s, e in ps],
-        "due": {"start": due[0].isoformat(), "end": due[1].isoformat()} if due else None,
+        "due": (
+            {"start": due[0].isoformat(), "end": due[1].isoformat()} if due else None
+        ),
     }
 
 

@@ -84,7 +84,9 @@ def _add_months(d: date, months: int) -> date:
     return date(y, m, 1)
 
 
-def periods(freq: str, year_end: int, first: date, last: date) -> list[tuple[date, date]]:
+def periods(
+    freq: str, year_end: int, first: date, last: date
+) -> list[tuple[date, date]]:
     """The filing periods from the one holding `first` to the one holding
     `last`, oldest first. Periods line up with the fiscal year: a quarterly
     filer with a March year end files April–June, July–September, …"""
@@ -130,7 +132,11 @@ def _side(lines, tax_account: int, kinds: dict[int, tuple]) -> str:
             sale = True
         elif acct_type in (AccountType.EXPENSE, AccountType.COGS):
             purchase = True
-        elif acct_type == AccountType.ASSET and not bank_kind and number not in ("1100", "1200"):
+        elif (
+            acct_type == AccountType.ASSET
+            and not bank_kind
+            and number not in ("1100", "1200")
+        ):
             purchase = True
     if sale:
         return "sale"
@@ -145,7 +151,11 @@ def gst_hst_return(db: Session, start: date, end: date) -> dict:
 
     tax_account = account_id(db)
     if tax_account is None:
-        return {"enabled": False, "start_date": start.isoformat(), "end_date": end.isoformat()}
+        return {
+            "enabled": False,
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+        }
     acct = db.get(Account, tax_account)
     kinds = {
         a.id: (a.account_type, a.bank_kind, a.account_number)
@@ -168,16 +178,20 @@ def gst_hst_return(db: Session, start: date, end: date) -> dict:
         for t in txns:
             side = _side(t.lines, tax_account, kinds)
             tax = sum(
-                (Decimal(l.credit or 0) - Decimal(l.debit or 0) for l in t.lines if l.account_id == tax_account),
+                (
+                    Decimal(ln.credit or 0) - Decimal(ln.debit or 0)
+                    for ln in t.lines
+                    if ln.account_id == tax_account
+                ),
                 ZERO,
             )
             if side == "sale":
                 collected += tax
                 sales += sum(
                     (
-                        Decimal(l.credit or 0) - Decimal(l.debit or 0)
-                        for l in t.lines
-                        if kinds[l.account_id][0] == AccountType.INCOME
+                        Decimal(ln.credit or 0) - Decimal(ln.debit or 0)
+                        for ln in t.lines
+                        if kinds[ln.account_id][0] == AccountType.INCOME
                     ),
                     ZERO,
                 )
@@ -200,7 +214,7 @@ def gst_hst_return(db: Session, start: date, end: date) -> dict:
     # Line 101 is all sales and other revenue, taxable or not: the income
     # accounts for the period.
     revenue = ZERO
-    for (credit, debit) in (
+    for credit, debit in (
         db.query(TransactionLine.credit, TransactionLine.debit)
         .join(Transaction, Transaction.id == TransactionLine.transaction_id)
         .join(Account, Account.id == TransactionLine.account_id)

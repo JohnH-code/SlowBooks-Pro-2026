@@ -49,7 +49,6 @@ from app.services.numbering import next_vendor_credit_number
 from app.services.purchase_posting import (
     purchase_tax,
     expense_account_for,
-    spread,
     unit_cost_with_tax,
 )
 

@@ -48,11 +48,16 @@ class EnterRequest(StrictModel):
 def _apply(m: MemorizedTransaction, s: Schedule, fields: set) -> None:
     if s.frequency is not None:
         if s.frequency not in svc.FREQUENCIES:
-            raise HTTPException(status_code=422, detail=f"frequency must be one of {', '.join(svc.FREQUENCIES)}")
+            raise HTTPException(
+                status_code=422,
+                detail=f"frequency must be one of {', '.join(svc.FREQUENCIES)}",
+            )
         m.frequency = s.frequency
     if s.action is not None:
         if s.action not in svc.ACTIONS:
-            raise HTTPException(status_code=422, detail="action must be remind, auto or none")
+            raise HTTPException(
+                status_code=422, detail="action must be remind, auto or none"
+            )
         m.action = s.action
     if s.name:
         m.name = s.name.strip()
@@ -100,7 +105,9 @@ def memorize(body: FromTransaction, db: Session = Depends(get_db)):
     if body.transaction_id:
         txn = db.get(Transaction, body.transaction_id)
     else:
-        kind, sid = ("bill", body.bill_id) if body.bill_id else ("invoice", body.invoice_id)
+        kind, sid = (
+            ("bill", body.bill_id) if body.bill_id else ("invoice", body.invoice_id)
+        )
         txn = (
             db.query(Transaction)
             .filter(Transaction.source_type == kind, Transaction.source_id == sid)
@@ -162,7 +169,10 @@ def enter_now(mid: int, body: EnterRequest, db: Session = Depends(get_db)):
         key = "other_lines" if m.kind == "deposit" else "lines"
         lines = payload.get(key) or []
         if m.kind not in ("expense", "deposit") or len(lines) != 1:
-            raise HTTPException(status_code=400, detail="A new amount can only be given for a one-line cheque or deposit")
+            raise HTTPException(
+                status_code=400,
+                detail="A new amount can only be given for a one-line cheque or deposit",
+            )
         overrides[key] = [{**lines[0], "amount": f"{body.amount:.2f}"}]
     where = svc.enter(db, m, on, overrides)
     if m.next_date is not None:

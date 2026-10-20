@@ -51,12 +51,26 @@ def account_tree(
     def order(ids):
         # the report's order (#326): by number then name, or by name
         if sort == "name":
-            return sorted(ids, key=lambda i: (accounts[i].name.lower(), accounts[i].account_number or ""))
-        return sorted(ids, key=lambda i: ((accounts[i].account_number or "~"), accounts[i].name.lower()))
+            return sorted(
+                ids,
+                key=lambda i: (
+                    accounts[i].name.lower(),
+                    accounts[i].account_number or "",
+                ),
+            )
+        return sorted(
+            ids,
+            key=lambda i: (
+                (accounts[i].account_number or "~"),
+                accounts[i].name.lower(),
+            ),
+        )
 
     def words(acct):
         # the number first, as the statements' rows read (W-8)
-        return f"{acct.account_number} - {acct.name}" if acct.account_number else acct.name
+        return (
+            f"{acct.account_number} - {acct.name}" if acct.account_number else acct.name
+        )
 
     out: list[dict] = []
 
@@ -67,31 +81,73 @@ def account_tree(
         own_prior = float(item.get("prior_amount") or 0)
         children = order(kids.get(aid, []))
         if not children:
-            out.append({**item, "kind": "account", "label": words(acct), "depth": depth,
-                        "account_id": aid, "account_name": item.get("account_name", acct.name),
-                        "amount": own, "prior_amount": own_prior})
+            out.append(
+                {
+                    **item,
+                    "kind": "account",
+                    "label": words(acct),
+                    "depth": depth,
+                    "account_id": aid,
+                    "account_name": item.get("account_name", acct.name),
+                    "amount": own,
+                    "prior_amount": own_prior,
+                }
+            )
             return own, own_prior
-        out.append({"kind": "header", "label": words(acct), "depth": depth, "account_id": aid,
-                    "account_name": acct.name, "amount": None, "prior_amount": None})
+        out.append(
+            {
+                "kind": "header",
+                "label": words(acct),
+                "depth": depth,
+                "account_id": aid,
+                "account_name": acct.name,
+                "amount": None,
+                "prior_amount": None,
+            }
+        )
         total, total_prior = own, own_prior
         for c in children:
             a, p = emit(c, depth + 1)
             total += a
             total_prior += p
         if own or own_prior:
-            out.append({"kind": "other", "label": f"{acct.name} - Other", "depth": depth + 1,
-                        "account_id": aid, "account_name": acct.name,
-                        "amount": own, "prior_amount": own_prior})
-        out.append({"kind": "total", "label": f"Total {acct.name}", "depth": depth, "account_id": None,
-                    "account_name": f"Total {acct.name}",
-                    "amount": round(total, 2), "prior_amount": round(total_prior, 2)})
+            out.append(
+                {
+                    "kind": "other",
+                    "label": f"{acct.name} - Other",
+                    "depth": depth + 1,
+                    "account_id": aid,
+                    "account_name": acct.name,
+                    "amount": own,
+                    "prior_amount": own_prior,
+                }
+            )
+        out.append(
+            {
+                "kind": "total",
+                "label": f"Total {acct.name}",
+                "depth": depth,
+                "account_id": None,
+                "account_name": f"Total {acct.name}",
+                "amount": round(total, 2),
+                "prior_amount": round(total_prior, 2),
+            }
+        )
         return total, total_prior
 
     for root in order(kids.get(None, [])):
         emit(root, 0)
     for i in loose:
-        out.append({**i, "kind": "account", "label": i.get("account_label") or i.get("account_name", ""), "depth": 0,
-                    "amount": float(i.get("amount") or 0), "prior_amount": float(i.get("prior_amount") or 0)})
+        out.append(
+            {
+                **i,
+                "kind": "account",
+                "label": i.get("account_label") or i.get("account_name", ""),
+                "depth": 0,
+                "amount": float(i.get("amount") or 0),
+                "prior_amount": float(i.get("prior_amount") or 0),
+            }
+        )
     return out
 
 
@@ -100,5 +156,7 @@ def add_trees(db: Session, data: dict, keys) -> dict:
     report's own order (data["sort"])."""
     accounts = {a.id: a for a in db.query(Account).all()}
     sort = data.get("sort") if data.get("sort") in ("number", "name") else "number"
-    data["tree"] = {k: account_tree(db, data.get(k) or [], accounts, sort) for k in keys}
+    data["tree"] = {
+        k: account_tree(db, data.get(k) or [], accounts, sort) for k in keys
+    }
     return data

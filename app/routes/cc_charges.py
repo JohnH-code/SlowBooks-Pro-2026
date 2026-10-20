@@ -91,7 +91,9 @@ def _card_expenses(db: Session) -> list[dict]:
     for i in range(0, len(ids), 500):
         txns += (
             db.query(Transaction)
-            .options(selectinload(Transaction.lines).selectinload(TransactionLine.account))
+            .options(
+                selectinload(Transaction.lines).selectinload(TransactionLine.account)
+            )
             .filter(Transaction.id.in_(ids[i : i + 500]))
             .all()
         )

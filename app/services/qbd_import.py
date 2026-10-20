@@ -159,7 +159,11 @@ def _iif_sections(text: str) -> dict[str, list[dict]]:
         # QuickBooks quotes any field holding a comma ("Locks, Keys and
         # Re-keys"); the quotes are not part of the name.
         out[kind].append(
-            {h: (_unquote(cells[i]) if i < len(cells) else "") for i, h in enumerate(hdr) if h}
+            {
+                h: (_unquote(cells[i]) if i < len(cells) else "")
+                for i, h in enumerate(hdr)
+                if h
+            }
         )
     return out
 
@@ -178,7 +182,9 @@ def parse_chart(lists_text: str) -> tuple[list[dict], list[str]]:
             continue
         qb_type = (row.get("ACCNTTYPE") or "").strip().upper()
         if qb_type not in _TYPES:
-            errors.append(f"Account {qb_name!r} has a type this import does not know: {qb_type!r}")
+            errors.append(
+                f"Account {qb_name!r} has a type this import does not know: {qb_type!r}"
+            )
             continue
         parts = [p.strip() for p in qb_name.split(":")]
         specs.append(
@@ -204,7 +210,9 @@ def parse_chart(lists_text: str) -> tuple[list[dict], list[str]]:
             s["name"] = s["leaf"]
     specs.sort(key=lambda s: s["qb_name"].count(":"))
     if not specs:
-        errors.append("The IIF file has no chart of accounts (export the Chart of Accounts list with it)")
+        errors.append(
+            "The IIF file has no chart of accounts (export the Chart of Accounts list with it)"
+        )
     return specs, errors
 
 
@@ -259,7 +267,9 @@ def parse_journal(text: str) -> tuple[list[dict], list[str]]:
         "price": col("sales price"),
     }
     if None in (c["trans"], c["date"], c["account"], c["debit"], c["credit"]):
-        return [], ["Journal: the header row lacks Trans #, Date, Account, Debit or Credit"]
+        return [], [
+            "Journal: the header row lacks Trans #, Date, Account, Debit or Credit"
+        ]
 
     def cell(row, key):
         i = c[key]
@@ -271,11 +281,16 @@ def parse_journal(text: str) -> tuple[list[dict], list[str]]:
     for n, row in enumerate(rows[header_at + 1 :], start=header_at + 2):
         trans = cell(row, "trans")
         if trans.upper() == "TOTAL":
-            grand = (parse_amount(cell(row, "debit")), parse_amount(cell(row, "credit")))
+            grand = (
+                parse_amount(cell(row, "debit")),
+                parse_amount(cell(row, "credit")),
+            )
             break
         if trans:
             if current is not None:
-                errors.append(f"Journal row {n}: transaction {current['trans']} has no totals row")
+                errors.append(
+                    f"Journal row {n}: transaction {current['trans']} has no totals row"
+                )
                 txns.append(current)
             raw_date = cell(row, "date")
             parsed = None
@@ -310,8 +325,8 @@ def parse_journal(text: str) -> tuple[list[dict], list[str]]:
         if not account:
             if not (cell(row, "debit") or cell(row, "credit")):
                 continue  # a blank row
-            sd = sum(l["debit"] for l in current["lines"])
-            sc = sum(l["credit"] for l in current["lines"])
+            sd = sum(ln["debit"] for ln in current["lines"])
+            sc = sum(ln["credit"] for ln in current["lines"])
             if (debit, credit) != (sd, sc):
                 errors.append(
                     f"Journal: transaction {current['trans']} totals {debit}/{credit} "
@@ -344,10 +359,12 @@ def parse_journal(text: str) -> tuple[list[dict], list[str]]:
     if current is not None:
         txns.append(current)
     if grand is None:
-        errors.append("Journal: no TOTAL row at the end — was the whole report exported?")
+        errors.append(
+            "Journal: no TOTAL row at the end — was the whole report exported?"
+        )
     else:
-        td = sum(l["debit"] for t in txns for l in t["lines"])
-        tc = sum(l["credit"] for t in txns for l in t["lines"])
+        td = sum(ln["debit"] for t in txns for ln in t["lines"])
+        tc = sum(ln["credit"] for t in txns for ln in t["lines"])
         if (td, tc) != grand:
             errors.append(
                 f"Journal: the report's TOTAL is {grand[0]}/{grand[1]} but its "
@@ -358,7 +375,7 @@ def parse_journal(text: str) -> tuple[list[dict], list[str]]:
         if t["trans"] in seen:
             errors.append(f"Journal: Trans # {t['trans']} appears twice")
         seen.add(t["trans"])
-        if _q(sum(l["debit"] - l["credit"] for l in t["lines"])) != 0:
+        if _q(sum(ln["debit"] - ln["credit"] for ln in t["lines"])) != 0:
             errors.append(f"Journal: transaction {t['trans']} does not balance")
     return txns, errors
 
@@ -388,18 +405,20 @@ def resolve_accounts(txns: list[dict], specs: list[dict]) -> list[str]:
             else:
                 unknown.add(name)
     for name in sorted(unknown):
-        errors.append(f"The Journal posts to {name!r}, which the IIF chart does not list")
+        errors.append(
+            f"The Journal posts to {name!r}, which the IIF chart does not list"
+        )
     for name in sorted(ambiguous):
         errors.append(
             f"The Journal names the account {name!r}, which more than one parent "
             f"account has. In QuickBooks turn off Edit → Preferences → Accounting → "
-            f"\"Show lowest subaccount only\" and export the Journal again"
+            f'"Show lowest subaccount only" and export the Journal again'
         )
     return errors
 
 
 def _reference(t: dict, kind: str = SOURCE_TYPE) -> str:
-    """"QB #2130" on a journal entry; a cheque or deposit leads with its own
+    """ "QB #2130" on a journal entry; a cheque or deposit leads with its own
     number, which is what its Reference box shows ("426 · QB #921")."""
     tag = f"{REF_PREFIX}{t['trans']}"
     if kind != SOURCE_TYPE and t.get("num"):
@@ -439,7 +458,10 @@ def _imported(db: Session) -> dict[str, tuple[int, str, int | None]]:
     import."""
     out = {}
     for tid, ref, kind, doc in db.query(
-        Transaction.id, Transaction.reference, Transaction.source_type, Transaction.source_id
+        Transaction.id,
+        Transaction.reference,
+        Transaction.source_type,
+        Transaction.source_id,
     ).filter(
         Transaction.source_type.in_(list(_DOC_SOURCE)),
         Transaction.reference.like(f"%{REF_PREFIX}%"),
@@ -459,10 +481,16 @@ def fingerprint(txns: list[dict]) -> str:
     the same company still starts with."""
     import hashlib
 
-    first = sorted(txns, key=lambda t: (int(t["trans"]) if t["trans"].isdigit() else 0, t["trans"]))[:5]
+    first = sorted(
+        txns, key=lambda t: (int(t["trans"]) if t["trans"].isdigit() else 0, t["trans"])
+    )[:5]
     words = "|".join(
         f"{t['trans']},{t['date']},{t['type']},"
-        + (f"{t['lines'][0]['account']},{t['lines'][0]['debit']},{t['lines'][0]['credit']}" if t["lines"] else "")
+        + (
+            f"{t['lines'][0]['account']},{t['lines'][0]['debit']},{t['lines'][0]['credit']}"
+            if t["lines"]
+            else ""
+        )
         for t in first
     )
     return hashlib.sha1(words.encode("utf-8")).hexdigest()
@@ -508,7 +536,9 @@ def _set_up_hst(db: Session, specs, by_qb, txns) -> str | None:
 
     if (get_setting_raw(db, "sales_tax_system") or "us") == "canada":
         return None
-    tax = next((by_qb[s["qb_name"]] for s in specs if s.get("rename") is not None), None)
+    tax = next(
+        (by_qb[s["qb_name"]] for s in specs if s.get("rename") is not None), None
+    )
     if tax is None:
         return None
     rates = {}
@@ -534,7 +564,7 @@ def _kind(t: dict, by_qb_type: dict[str, str]) -> str:
     """expense, deposit or a journal entry, by the transaction's type and
     whether its first line (the bank, in QuickBooks) fits that document."""
     ttype = (t["type"] or "").strip().lower()
-    lines = [l for l in t["lines"] if l["debit"] or l["credit"]]
+    lines = [ln for ln in t["lines"] if ln["debit"] or ln["credit"]]
     if len(lines) < 2:
         return SOURCE_TYPE
     head = lines[0]
@@ -542,10 +572,12 @@ def _kind(t: dict, by_qb_type: dict[str, str]) -> str:
     rest = lines[1:]
     if ttype in _EXPENSE_TYPES and head_type in ("BANK", "CCARD"):
         paid = head["credit"] - head["debit"]
-        if paid > 0 and all(l["account"] != head["account"] for l in rest):
+        if paid > 0 and all(ln["account"] != head["account"] for ln in rest):
             return "expense"
     if ttype in _DEPOSIT_TYPES and head_type == "BANK":
-        if head["debit"] - head["credit"] > 0 and all(l["account"] != head["account"] for l in rest):
+        if head["debit"] - head["credit"] > 0 and all(
+            ln["account"] != head["account"] for ln in rest
+        ):
             return "deposit"
     return SOURCE_TYPE
 
@@ -611,15 +643,27 @@ def _carry_reconciliations(db: Session, by_qb, qtype, marks) -> list[str]:
         acct = by_qb[acct_name]
         already = (
             db.query(Reconciliation)
-            .filter(Reconciliation.account_id == acct.id,
-                    Reconciliation.status == ReconciliationStatus.COMPLETED)
+            .filter(
+                Reconciliation.account_id == acct.id,
+                Reconciliation.status == ReconciliationStatus.COMPLETED,
+            )
             .first()
         )
         if already:
-            notes.append(f"{acct.name} already has a reconciliation here; QuickBooks' was not carried again")
+            notes.append(
+                f"{acct.name} already has a reconciliation here; QuickBooks' was not carried again"
+            )
             continue
         last = max(w for _, w in rows)
-        balance = _q(sum((Decimal(str(r.debit or 0)) - Decimal(str(r.credit or 0)) for r, _ in rows), Decimal("0")))
+        balance = _q(
+            sum(
+                (
+                    Decimal(str(r.debit or 0)) - Decimal(str(r.credit or 0))
+                    for r, _ in rows
+                ),
+                Decimal("0"),
+            )
+        )
         recon = Reconciliation(
             account_id=acct.id,
             statement_date=last,
@@ -657,9 +701,12 @@ def _link_deposits(db: Session, txns, txn_ids, qtype) -> str:
     rows = (
         db.query(TransactionLine, Transaction)
         .join(Transaction, TransactionLine.transaction_id == Transaction.id)
-        .filter(TransactionLine.account_id == uf_id, TransactionLine.debit > 0,
-                TransactionLine.deposit_transaction_id.is_(None),
-                Transaction.source_type == "payment")
+        .filter(
+            TransactionLine.account_id == uf_id,
+            TransactionLine.debit > 0,
+            TransactionLine.deposit_transaction_id.is_(None),
+            Transaction.source_type == "payment",
+        )
         .order_by(Transaction.date, Transaction.id)
         .all()
     )
@@ -667,7 +714,9 @@ def _link_deposits(db: Session, txns, txn_ids, qtype) -> str:
     from app.models.contacts import Customer
 
     names = dict(
-        db.query(Payment.id, Customer.name).join(Customer, Payment.customer_id == Customer.id).all()
+        db.query(Payment.id, Customer.name)
+        .join(Customer, Payment.customer_id == Customer.id)
+        .all()
     )
     for line, txn in rows:
         key = ((names.get(txn.source_id) or "").lower(), _q(line.debit))
@@ -675,7 +724,11 @@ def _link_deposits(db: Session, txns, txn_ids, qtype) -> str:
         by_amount[key[1]].append((line, txn.date))
     used = set()
     linked = missed = 0
-    uf_names = {name for name, kind in qtype.items() if kind == "OCASSET" and name.lower() == "undeposited funds"}
+    uf_names = {
+        name
+        for name, kind in qtype.items()
+        if kind == "OCASSET" and name.lower() == "undeposited funds"
+    }
     for t in txns:
         if t["trans"] not in txn_ids:
             continue
@@ -684,8 +737,14 @@ def _link_deposits(db: Session, txns, txn_ids, qtype) -> str:
             if line["account"] not in uf_names or line["credit"] <= line["debit"]:
                 continue
             amount = _q(line["credit"] - line["debit"])
-            pool = waiting.get(((line["name"] or "").lower(), amount)) or by_amount.get(amount) or []
-            hit = next((l for l, d in pool if l.id not in used and d <= t["date"]), None)
+            pool = (
+                waiting.get(((line["name"] or "").lower(), amount))
+                or by_amount.get(amount)
+                or []
+            )
+            hit = next(
+                (ln for ln, d in pool if ln.id not in used and d <= t["date"]), None
+            )
             if hit is None:
                 missed += 1
                 continue
@@ -697,14 +756,34 @@ def _link_deposits(db: Session, txns, txn_ids, qtype) -> str:
         return ""
     text = f"Linked {linked} customer payments to the deposits that banked them"
     if missed:
-        text += f"; {missed} deposited amounts matched no payment here and stay as they are"
+        text += (
+            f"; {missed} deposited amounts matched no payment here and stay as they are"
+        )
     return text
 
 
 # ── QuickBooks' own reports, by year ───────────────────────────────────────
 
-_MONTHS = {m: i for i, m in enumerate(
-    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+_MONTHS = {
+    m: i
+    for i, m in enumerate(
+        [
+            "jan",
+            "feb",
+            "mar",
+            "apr",
+            "may",
+            "jun",
+            "jul",
+            "aug",
+            "sep",
+            "oct",
+            "nov",
+            "dec",
+        ],
+        1,
+    )
+}
 
 
 def _column_date(label: str) -> date | None:
@@ -729,7 +808,9 @@ def _column_date(label: str) -> date | None:
     return date(year, mon, day)
 
 
-def parse_report_by_year(text: str, label: str) -> tuple[list[date], dict[str, list[Decimal]], list[str]]:
+def parse_report_by_year(
+    text: str, label: str
+) -> tuple[list[date], dict[str, list[Decimal]], list[str]]:
     """A Balance Sheet or Profit & Loss with a column per year: the period
     end dates, and {row label: [figure per year]}. Section headings, totals
     and blank rows are left out by the caller, which matches labels to
@@ -761,10 +842,14 @@ def parse_report_by_year(text: str, label: str) -> tuple[list[date], dict[str, l
             if ends != sorted(ends):
                 errors.append(f"{label}: the year columns are not in order")
             return ends, figures, errors
-    return [], {}, [
-        f"{label}: no row of year columns found — run it with Dates: All and "
-        f"Show Columns: Year, and export it as CSV"
-    ]
+    return (
+        [],
+        {},
+        [
+            f"{label}: no row of year columns found — run it with Dates: All and "
+            f"Show Columns: Year, and export it as CSV"
+        ],
+    )
 
 
 def verify(txns, specs, bs_text, pl_text) -> tuple[list[str], list[str], int]:
@@ -772,7 +857,6 @@ def verify(txns, specs, bs_text, pl_text) -> tuple[list[str], list[str], int]:
     cent. Returns (errors, notes, figures checked)."""
     errors: list[str] = []
     notes: list[str] = []
-    by_qb = {s["qb_name"]: s for s in specs}
     # The reports name an account by its own name; a name two parents share
     # cannot be told apart there and is left to the totals.
     by_leaf: dict[str, list[dict]] = defaultdict(list)
@@ -793,10 +877,19 @@ def verify(txns, specs, bs_text, pl_text) -> tuple[list[str], list[str], int]:
     postings = defaultdict(list)  # qb_name → [(date, debit - credit)]
     for t in txns:
         for line in t["lines"]:
-            postings[line["account"]].append((t["date"], line["debit"] - line["credit"]))
+            postings[line["account"]].append(
+                (t["date"], line["debit"] - line["credit"])
+            )
 
     def net(qb_name, start, end):
-        return sum((a for d, a in postings[qb_name] if (start is None or d > start) and d <= end), Decimal(0))
+        return sum(
+            (
+                a
+                for d, a in postings[qb_name]
+                if (start is None or d > start) and d <= end
+            ),
+            Decimal(0),
+        )
 
     checked = 0
     pl_ends: list[date] = []
@@ -835,7 +928,11 @@ def verify(txns, specs, bs_text, pl_text) -> tuple[list[str], list[str], int]:
                 if is_re:
                     # QuickBooks shows Retained Earnings with every earlier
                     # year's net income closed into it.
-                    year_start = date(end.year - 1, end.month, end.day) if k == 0 else bs_ends[k - 1]
+                    year_start = (
+                        date(end.year - 1, end.month, end.day)
+                        if k == 0
+                        else bs_ends[k - 1]
+                    )
                     ours += sum(-net(a, None, year_start) for a in pl_accounts)
                 theirs = shown[k] if shown else Decimal(0)
                 if shown is not None or ours != 0:
@@ -846,9 +943,13 @@ def verify(txns, specs, bs_text, pl_text) -> tuple[list[str], list[str], int]:
                             f"the Journal gives {ours:,.2f}"
                         )
     if not bs_text:
-        notes.append("No Balance Sheet by year was uploaded: balance sheet accounts were not verified")
+        notes.append(
+            "No Balance Sheet by year was uploaded: balance sheet accounts were not verified"
+        )
     if not pl_text:
-        notes.append("No Profit & Loss by year was uploaded: income and expense were not verified")
+        notes.append(
+            "No Profit & Loss by year was uploaded: income and expense were not verified"
+        )
     if len(errors) > 40:
         errors = errors[:40] + [f"…and {len(errors) - 40} more differences"]
     return errors, notes, checked
@@ -900,19 +1001,24 @@ def attachment_plan(zip_bytes: bytes | None, amap: dict[str, str], txns: list[di
             unmapped.append(folder)
             continue
         if trans not in known:
-            notes.append(f"Attachment map sends folder {folder} to Trans # {trans}, which the Journal does not have")
+            notes.append(
+                f"Attachment map sends folder {folder} to Trans # {trans}, which the Journal does not have"
+            )
             continue
         for path in files:
             fname = posixpath.basename(path)
             ext = posixpath.splitext(fname)[1].lower()
             if ext not in _ATTACH_TYPES:
-                notes.append(f"{fname} (Trans # {trans}) is a {ext or 'typeless'} file Slowbooks does not store; it was left out")
+                notes.append(
+                    f"{fname} (Trans # {trans}) is a {ext or 'typeless'} file Slowbooks does not store; it was left out"
+                )
                 continue
             plan.append((trans, fname, path))
     if unmapped:
         notes.append(
             f"{len(unmapped)} attachment folder(s) are not in the map and were not attached: "
-            + ", ".join(unmapped[:10]) + (" …" if len(unmapped) > 10 else "")
+            + ", ".join(unmapped[:10])
+            + (" …" if len(unmapped) > 10 else "")
         )
     return plan, notes
 
@@ -941,7 +1047,9 @@ def _resolve_accounts(db: Session, specs: list[dict]):
             # account under its Canadian name: one account, renamed on import
             # (services/hst.py points GST/HST at it).
             s["rename"] = seeded_tax.name != s["name"]
-            notes.append(f"{s['qb_name']} becomes {seeded_tax.account_number} {seeded_tax.name}, renamed {s['name']}")
+            notes.append(
+                f"{s['qb_name']} becomes {seeded_tax.account_number} {seeded_tax.name}, renamed {s['name']}"
+            )
             plan[s["qb_name"]] = seeded_tax
             continue
         if acct is not None and acct.is_system and s["parent_qb"]:
@@ -958,7 +1066,11 @@ def _resolve_accounts(db: Session, specs: list[dict]):
         elif acct is not None and acct.is_system:
             # one of Slowbooks' own starting accounts (Retained Earnings,
             # Accounts Receivable …): worth saying the two become one
-            notes.append(f"{s['qb_name']} joins the existing account {acct.account_number or ''} {acct.name}".replace("  ", " "))
+            notes.append(
+                f"{s['qb_name']} joins the existing account {acct.account_number or ''} {acct.name}".replace(
+                    "  ", " "
+                )
+            )
         plan[s["qb_name"]] = acct
     return plan, errors, notes
 
@@ -967,9 +1079,13 @@ def _prepare(db: Session, bundle: dict) -> dict:
     errors: list[str] = []
     warnings: list[str] = []
     if "lists" not in bundle:
-        errors.append("Missing the IIF list export (File → Utilities → Export → Lists to IIF Files)")
+        errors.append(
+            "Missing the IIF list export (File → Utilities → Export → Lists to IIF Files)"
+        )
     if "gl" not in bundle:
-        errors.append("Missing the Journal report saved as CSV (a file name with 'journal' in it)")
+        errors.append(
+            "Missing the Journal report saved as CSV (a file name with 'journal' in it)"
+        )
     if errors:
         return {"errors": errors, "warnings": warnings}
     specs, e = parse_chart(bundle["lists"])
@@ -987,11 +1103,16 @@ def _prepare(db: Session, bundle: dict) -> dict:
     qtype = {sp["qb_name"]: sp["qb_type"] for sp in specs}
     docplan = qbd_documents.plan(txns, qtype)
     warnings.extend(docplan["notes"])
-    amap, e = parse_attach_map(bundle["attach_map"]) if "attach_map" in bundle else ({}, [])
+    amap, e = (
+        parse_attach_map(bundle["attach_map"]) if "attach_map" in bundle else ({}, [])
+    )
     errors.extend(e)
     attach, a_notes = attachment_plan(bundle.get("attachments"), amap, txns)
     if bundle.get("attachments") and "attach_map" not in bundle:
-        a_notes.insert(0, "An Attach folder came without an attachment map, so nothing in it can be attached")
+        a_notes.insert(
+            0,
+            "An Attach folder came without an attachment map, so nothing in it can be attached",
+        )
     warnings.extend(a_notes)
     seen = _imported(db)
     other = _other_company(db, txns, seen)
@@ -1053,12 +1174,17 @@ def _summary(p: dict) -> dict:
         out["warnings"].insert(
             0,
             f"{len(txns)} transactions from {first} to {last}: "
-            + ", ".join(f"{n} {k}" for k, n in sorted(types.items(), key=lambda kv: -kv[1])),
+            + ", ".join(
+                f"{n} {k}" for k, n in sorted(types.items(), key=lambda kv: -kv[1])
+            ),
         )
     if p.get("joins"):
         out["warnings"].append(
             "These QuickBooks accounts join the account of the same name already in "
-            "the books: " + "; ".join(j.replace(" joins the existing account ", " → ") for j in p["joins"])
+            "the books: "
+            + "; ".join(
+                j.replace(" joins the existing account ", " → ") for j in p["joins"]
+            )
         )
     if p.get("checked") and not p["errors"]:
         out["warnings"].insert(
@@ -1088,12 +1214,22 @@ def dry_run(db: Session, bundle: dict) -> dict:
 
 def run_import(db: Session, bundle: dict) -> dict:
     from app.services import file_store
-    from app.services.iif_import import import_classes, import_customers, import_items, import_vendors
+    from app.services.iif_import import (
+        import_classes,
+        import_customers,
+        import_items,
+        import_vendors,
+    )
 
     p = _prepare(db, bundle)
     result = _summary(p)
-    zeros = dict(imported_accounts=0, imported_journals=0, imported_customers=0,
-                 imported_vendors=0, imported_attachments=0)
+    zeros = dict(
+        imported_accounts=0,
+        imported_journals=0,
+        imported_customers=0,
+        imported_vendors=0,
+        imported_attachments=0,
+    )
     if p["errors"]:
         return {**result, **zeros}
 
@@ -1104,7 +1240,12 @@ def run_import(db: Session, bundle: dict) -> dict:
         acct = p["plan"].get(s["qb_name"])
         if acct is None:
             number = s["number"]
-            if number and db.query(Account.id).filter(Account.account_number == number).first():
+            if (
+                number
+                and db.query(Account.id)
+                .filter(Account.account_number == number)
+                .first()
+            ):
                 number = None  # the seeded chart has it; the name is what matters
             acct = Account(
                 name=s["name"],
@@ -1127,13 +1268,19 @@ def run_import(db: Session, bundle: dict) -> dict:
     # Lists that carry no money: classes, customers, vendors, items.
     lists = p["lists"]
     counts = {}
-    for key, fn in (("CLASS", import_classes), ("CUST", import_customers),
-                    ("VEND", import_vendors), ("INVITEM", import_items)):
+    for key, fn in (
+        ("CLASS", import_classes),
+        ("CUST", import_customers),
+        ("VEND", import_vendors),
+        ("INVITEM", import_items),
+    ):
         rows = lists.get(key) or []
         if rows:
             r = fn(db, rows)
             counts[key] = r.get("imported", 0)
-            result["warnings"].extend(f"{key}: {e}" for e in (r.get("errors") or [])[:5])
+            result["warnings"].extend(
+                f"{key}: {e}" for e in (r.get("errors") or [])[:5]
+            )
 
     # Every transaction, as QuickBooks posted it.
     from app.models.classes import TxnClass
@@ -1144,7 +1291,9 @@ def run_import(db: Session, bundle: dict) -> dict:
 
     from app.services import qbd_documents
 
-    vendors = {name.lower(): vid for vid, name in db.query(Vendor.id, Vendor.name).all()}
+    vendors = {
+        name.lower(): vid for vid, name in db.query(Vendor.id, Vendor.name).all()
+    }
     by_qb_type = {s["qb_name"]: s["qb_type"] for s in p["specs"]}
     maker = qbd_documents.Maker(db, by_qb, by_qb_type, p["docs"])
     posted = 0
@@ -1174,7 +1323,17 @@ def run_import(db: Session, bundle: dict) -> dict:
                     if kind == SOURCE_TYPE
                     # on a cheque or deposit each line keeps its own words:
                     # the name and memo QuickBooks shows on it
-                    else (" — ".join(w for w in (line["name"] if kind == "deposit" else "", line["memo"]) if w)[:300] or None)
+                    else (
+                        " — ".join(
+                            w
+                            for w in (
+                                line["name"] if kind == "deposit" else "",
+                                line["memo"],
+                            )
+                            if w
+                        )[:300]
+                        or None
+                    )
                 ),
             }
             if line["cls"]:
@@ -1204,13 +1363,19 @@ def run_import(db: Session, bundle: dict) -> dict:
             description = f"Expense: {payee}" if payee else "Expense"
             source_id = vendors.get(payee.lower())
         elif kind == "deposit":
-            description = "Deposit" + (f": {t['memo']}" if t["memo"] and t["memo"].lower() != "deposit" else "")
+            description = "Deposit" + (
+                f": {t['memo']}" if t["memo"] and t["memo"].lower() != "deposit" else ""
+            )
             source_id = None
         else:
             description, source_id = _description(t), None
         txn = create_journal_entry(
-            db, t["date"], description[:500], lines,
-            source_type=_DOC_SOURCE[kind], source_id=source_id,
+            db,
+            t["date"],
+            description[:500],
+            lines,
+            source_type=_DOC_SOURCE[kind],
+            source_id=source_id,
             reference=_reference(t, kind)[:100],
         )
         if kind in qbd_documents.DOC_KINDS:
@@ -1254,15 +1419,22 @@ def run_import(db: Session, bundle: dict) -> dict:
                     tid = doc_id
                 if (
                     db.query(Attachment.id)
-                    .filter(Attachment.entity_type == entity,
-                            Attachment.entity_id == tid, Attachment.filename == fname)
+                    .filter(
+                        Attachment.entity_type == entity,
+                        Attachment.entity_id == tid,
+                        Attachment.filename == fname,
+                    )
                     .first()
                 ):
                     continue  # attached by an earlier run
                 ext = posixpath.splitext(fname)[1].lower()
                 file_store.add_attachment(
-                    db, entity_type=entity, entity_id=tid, filename=fname,
-                    content_type=_ATTACH_TYPES.get(ext) or mimetypes.guess_type(fname)[0],
+                    db,
+                    entity_type=entity,
+                    entity_id=tid,
+                    filename=fname,
+                    content_type=_ATTACH_TYPES.get(ext)
+                    or mimetypes.guess_type(fname)[0],
                     data=z.read(path),
                 )
                 attached += 1

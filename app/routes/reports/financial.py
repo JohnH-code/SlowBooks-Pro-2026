@@ -239,22 +239,26 @@ def profit_loss(
     total_cogs = sum(c["amount"] for c in cogs)
     total_expenses = sum(e["amount"] for e in expenses)
 
-    return add_trees(db, {
-        "start_date": start_date.isoformat(),
-        "end_date": end_date.isoformat(),
-        "class_id": cls.id if cls else None,
-        "class_name": cls.name if cls else None,
-        "sort": sort,
-        "exclude_adjusting": bool(exclude_adjusting),
-        "income": income,
-        "cogs": cogs,
-        "expenses": expenses,
-        "total_income": total_income,
-        "total_cogs": total_cogs,
-        "gross_profit": total_income - total_cogs,
-        "total_expenses": total_expenses,
-        "net_income": total_income - total_cogs - total_expenses,
-    }, ("income", "cogs", "expenses"))
+    return add_trees(
+        db,
+        {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "class_id": cls.id if cls else None,
+            "class_name": cls.name if cls else None,
+            "sort": sort,
+            "exclude_adjusting": bool(exclude_adjusting),
+            "income": income,
+            "cogs": cogs,
+            "expenses": expenses,
+            "total_income": total_income,
+            "total_cogs": total_cogs,
+            "gross_profit": total_income - total_cogs,
+            "total_expenses": total_expenses,
+            "net_income": total_income - total_cogs - total_expenses,
+        },
+        ("income", "cogs", "expenses"),
+    )
 
 
 def _year_earlier(d: date) -> date:
@@ -449,16 +453,20 @@ def balance_sheet(
         ]
         total_equity += net_income
 
-    return add_trees(db, {
-        "as_of_date": as_of_date.isoformat(),
-        "sort": sort,
-        "assets": assets,
-        "liabilities": liabilities,
-        "equity": equity,
-        "total_assets": total_assets,
-        "total_liabilities": total_liabilities,
-        "total_equity": total_equity,
-    }, ("assets", "liabilities", "equity"))
+    return add_trees(
+        db,
+        {
+            "as_of_date": as_of_date.isoformat(),
+            "sort": sort,
+            "assets": assets,
+            "liabilities": liabilities,
+            "equity": equity,
+            "total_assets": total_assets,
+            "total_liabilities": total_liabilities,
+            "total_equity": total_equity,
+        },
+        ("assets", "liabilities", "equity"),
+    )
 
 
 @router.get("/general-ledger")
@@ -1267,11 +1275,15 @@ def _tree_rows(tree, prior, show_changes, blank) -> list[dict]:
         if e["kind"] == "header":
             rows.append({"cells": [pad + e["label"]] + blank})
         else:
-            rows.append({
-                "cells": [pad + e["label"]]
-                + _compare_figures(e["amount"], e.get("prior_amount") or 0, prior, show_changes),
-                **({"style": "subtotal"} if e["kind"] == "total" else {}),
-            })
+            rows.append(
+                {
+                    "cells": [pad + e["label"]]
+                    + _compare_figures(
+                        e["amount"], e.get("prior_amount") or 0, prior, show_changes
+                    ),
+                    **({"style": "subtotal"} if e["kind"] == "total" else {}),
+                }
+            )
     return rows
 
 
@@ -1297,7 +1309,11 @@ def _pl_section(data: dict, t=None, show_changes: bool = True) -> dict:
 
     def lines(key):
         tree = (data.get("tree") or {}).get(key)
-        return _tree_rows(tree, prior, show_changes, blank) if tree is not None else [line(i) for i in data[key]]
+        return (
+            _tree_rows(tree, prior, show_changes, blank)
+            if tree is not None
+            else [line(i) for i in data[key]]
+        )
 
     def total(label, key, style="subtotal"):
         return {
