@@ -136,6 +136,10 @@ def test_hst_on_sales_and_purchases_and_the_return(
     assert r["line_109"] == 91.0
     assert r["line_101"] == 1000.0
     assert r["payments_in_period"] == 500.0
+    # the account's balance ties: start + net tax - paid = end
+    assert r["opening_balance"] == 0.0
+    assert r["closing_balance"] == 130.0 - 39.0 - 500.0
+    assert r["ties"] is True
     assert r["counts"] == {"sale": 1, "purchase": 2, "payment": 1}
 
     periods = client.get("/api/reports/gst-hst-return/periods").json()

@@ -204,7 +204,8 @@ def gst_hst_return(db: Session, start: date, end: date) -> dict:
                     "transaction_id": t.id,
                     "date": t.date.isoformat(),
                     "reference": t.reference or "",
-                    "description": t.description or "",
+                    # an expense's description is "Expense: <payee>"
+                    "description": (t.description or "").removeprefix("Expense: "),
                     "source_type": t.source_type,
                     "side": side,
                     "tax": float(tax if side == "sale" else -tax),
@@ -223,6 +224,25 @@ def gst_hst_return(db: Session, start: date, end: date) -> dict:
     ):
         revenue += Decimal(credit or 0) - Decimal(debit or 0)
     net = collected - itc
+
+    # The account's balance before and at the end of the period (what is
+    # owed: credits less debits). Every posting in the period is a sale, a
+    # purchase or a payment, so opening + net tax - paid = closing exactly,
+    # and the closing figure is the account's line on the Balance Sheet.
+    def owed(before=None, through=None) -> Decimal:
+        q = (
+            db.query(TransactionLine.credit, TransactionLine.debit)
+            .join(Transaction, Transaction.id == TransactionLine.transaction_id)
+            .filter(TransactionLine.account_id == tax_account)
+        )
+        if before is not None:
+            q = q.filter(Transaction.date < before)
+        if through is not None:
+            q = q.filter(Transaction.date <= through)
+        return sum((Decimal(c or 0) - Decimal(d or 0) for c, d in q), ZERO)
+
+    opening = owed(before=start)
+    closing = owed(through=end)
     return {
         "enabled": True,
         "start_date": start.isoformat(),
@@ -238,6 +258,9 @@ def gst_hst_return(db: Session, start: date, end: date) -> dict:
         "line_108": float(itc),
         "line_109": float(net),
         "payments_in_period": float(paid),
+        "opening_balance": float(opening),
+        "closing_balance": float(closing),
+        "ties": opening + net - paid == closing,
         "transactions": detail,
         "counts": {
             "sale": sum(1 for d in detail if d["side"] == "sale"),

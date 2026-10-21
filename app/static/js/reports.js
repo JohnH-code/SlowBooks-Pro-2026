@@ -1243,10 +1243,33 @@ const ReportsPage = {
                 return `<div class="empty-state"><p>GST/HST isn't turned on for this company. In Settings → Sales Tax, choose "Canada — GST/HST" and the GST/HST account.</p></div>`;
             }
             const line = (no, text, v, strong) => `<tr${strong ? ' style="font-weight:700;"' : ''}><td style="width:60px;">${no}</td><td>${text}</td><td class="amount">${money(v)}</td></tr>`;
-            const side = { sale: 'Sale', purchase: 'Purchase (ITC)', payment: 'Payment / refund' };
-            const rows = d.transactions.map(t => `<tr>
-                <td>${formatDate(t.date)}</td><td>${escapeHtml(t.reference)}</td><td>${escapeHtml(t.description)}</td>
-                <td>${side[t.side]}</td><td class="amount">${money(t.tax)}</td></tr>`).join('');
+            // The detail in three groups, each subtotalled to its line: the
+            // sales to 103, the purchases to 106, and the payments and
+            // refunds to the Receiver General (not on the return) to the
+            // reconciliation below.
+            const groups = [
+                ['sale', 'Sales — GST/HST collected', 'Total collected (line 103)', d.line_103],
+                ['purchase', 'Purchases — input tax credits', 'Total ITCs (line 106)', d.line_106],
+                ['payment', 'Payments and refunds to the Receiver General', 'Total paid (refunds less)', d.payments_in_period],
+            ];
+            const detail = groups.map(([kind, title, totalLabel, total]) => {
+                const items = d.transactions.filter(t => t.side === kind);
+                if (!items.length) return '';
+                return `<tr><td colspan="4" style="font-weight:700; background:var(--gray-50);">${title} (${items.length})</td></tr>`
+                    + items.map(t => `<tr>
+                        <td style="padding-left:18px;">${formatDate(t.date)}</td><td>${escapeHtml(t.reference)}</td><td>${escapeHtml(t.description)}</td>
+                        <td class="amount">${money(t.tax)}</td></tr>`).join('')
+                    + `<tr style="font-weight:700;"><td colspan="3" style="padding-left:18px;">${totalLabel}</td><td class="amount" style="border-top:1px solid var(--gray-400);">${money(total)}</td></tr>`;
+            }).join('');
+            const rec = (text, v, strong) => `<tr${strong ? ' style="font-weight:700;"' : ''}><td>${text}</td><td class="amount">${money(v)}</td></tr>`;
+            const reconcile = `
+                <div class="table-container" style="margin:10px 0 12px;"><table><tbody>
+                    ${rec(`${escapeHtml(d.account_name)} balance at ${formatDate(d.start_date)} (start)`, d.opening_balance)}
+                    ${rec('Add: net tax for the period (line 109)', d.line_109)}
+                    ${rec('Less: payments and refunds in the period', -d.payments_in_period)}
+                    ${rec(`${escapeHtml(d.account_name)} balance at ${formatDate(d.end_date)}`, d.closing_balance, true)}
+                </tbody></table></div>
+                ${d.ties ? '' : '<p style="color:var(--danger); font-size:12px;">The figures above do not add up to the account\'s balance — please report this.</p>'}`;
             return `
                 <p style="margin-bottom:8px; color:var(--gray-500);">${formatDate(d.start_date)} — ${formatDate(d.end_date)}${d.registration_number ? ` · ${escapeHtml(d.registration_number)}` : ''} · ${escapeHtml(d.account_name)}</p>
                 <div class="table-container"><table><tbody>
@@ -1257,11 +1280,12 @@ const ReportsPage = {
                     ${line('108', 'Total ITCs and adjustments', d.line_108, true)}
                     ${line('109', d.line_109 >= 0 ? 'Net tax (owing)' : 'Net tax (refund)', d.line_109, true)}
                 </tbody></table></div>
-                <p style="font-size:11px; color:var(--gray-500); margin:6px 0 12px;">Payments and refunds to the Receiver General dated in this period: ${money(d.payments_in_period)} (not part of the return). ${d.counts.sale} sales, ${d.counts.purchase} purchases.</p>
-                <details><summary style="cursor:pointer; font-size:12px;">The ${d.transactions.length} transactions behind it</summary>
+                <h4 style="font-size:12px; margin:12px 0 0;">${escapeHtml(d.account_name)} account</h4>
+                ${reconcile}
+                <details><summary style="cursor:pointer; font-size:12px;">The ${d.transactions.length} transactions behind it, by group</summary>
                 <div class="table-container"><table>
-                    <thead><tr><th scope="col">Date</th><th scope="col">Ref</th><th scope="col">Description</th><th scope="col">Kind</th><th scope="col" class="amount">GST/HST</th></tr></thead>
-                    <tbody>${rows}</tbody></table></div></details>`;
+                    <thead><tr><th scope="col">Date</th><th scope="col">Ref</th><th scope="col">Description</th><th scope="col" class="amount">GST/HST</th></tr></thead>
+                    <tbody>${detail}</tbody></table></div></details>`;
         }, 'Dates', false, { reportType: 'gst_hst_return', view: 'gst-hst-return', prefill: fill, toolbar: picker });
     },
 
