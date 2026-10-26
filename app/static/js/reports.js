@@ -1831,7 +1831,7 @@ const ReportsPage = {
                         ${grouped('liabilities')}
                         ${total('Total Liabilities', data.total_liabilities, p.total_liabilities, sub)}
                         ${head(T('Equity'))}
-                        ${section('equity')}
+                        ${section(data.equity)}
                         ${total(T('Total Equity'), data.total_equity, p.total_equity, sub)}
                         ${total(T('Liabilities + Equity'), data.total_liabilities + data.total_equity, (p.total_liabilities || 0) + (p.total_equity || 0), 'font-weight:700; background:var(--primary-light);')}
                     </tbody>
