@@ -56,9 +56,71 @@ def list_cc_charges(db: Session = Depends(get_db)):
                     names.get(card_line.account_id, "") if card_line else ""
                 ),
                 "status": "void" if txn.id in voided else "recorded",
+                "kind": "cc_charge",
             }
         )
+    results.extend(_card_expenses(db))
+    results.sort(key=lambda r: (r["date"], r["id"]), reverse=True)
     return results
+
+
+def _card_expenses(db: Session) -> list[dict]:
+    """Expenses paid from a credit card — the Enter Expense form's card
+    charges, with their splits and HST, and every QuickBooks credit card
+    charge the import brought over — so the card's charges are all here."""
+    from app.routes.expenses import SOURCE_TYPE, _serialize, _void_ids, paid_from_line
+    from app.models.contacts import Vendor
+    from sqlalchemy.orm import selectinload
+
+    from app.models.transactions import TransactionLine
+
+    cards = {a.id for a in db.query(Account).filter(Account.bank_kind == "credit_card")}
+    if not cards:
+        return []
+    ids = [
+        tid
+        for (tid,) in db.query(TransactionLine.transaction_id)
+        .join(Transaction, Transaction.id == TransactionLine.transaction_id)
+        .filter(Transaction.source_type == SOURCE_TYPE)
+        .filter(TransactionLine.account_id.in_(cards), TransactionLine.credit > 0)
+        .distinct()
+    ]
+    if not ids:
+        return []
+    txns = []
+    for i in range(0, len(ids), 500):
+        txns += (
+            db.query(Transaction)
+            .options(
+                selectinload(Transaction.lines).selectinload(TransactionLine.account)
+            )
+            .filter(Transaction.id.in_(ids[i : i + 500]))
+            .all()
+        )
+    voided = _void_ids(db, ids)
+    vendors = {v.id: v for v in db.query(Vendor).all()}
+    out = []
+    for txn in txns:
+        card = paid_from_line(txn)
+        if card is None or card.account_id not in cards:
+            continue
+        x = _serialize(txn, db, txn.id in voided, vendors)
+        out.append(
+            {
+                "id": txn.id,
+                "transaction_id": txn.id,
+                "date": txn.date.isoformat(),
+                "description": x.payee,
+                "reference": x.reference,
+                "amount": x.amount,
+                "account_name": x.expense_account_name,
+                "card_account_id": card.account_id,
+                "card_account_name": x.paid_from_account_name,
+                "status": x.status,
+                "kind": "expense",
+            }
+        )
+    return out
 
 
 @router.post("", status_code=201)

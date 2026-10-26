@@ -939,6 +939,43 @@ def _open_with_default_app(target: Path) -> None:
         subprocess.Popen(["xdg-open", str(target)])
 
 
+def _print_pdf(target: Path) -> dict:
+    """Send a PDF to the printer with the system's Print dialog, so the
+    printer, copies and pages can be chosen (QuickBooks' Print button).
+
+    macOS: Preview's print command with its dialog (the first time, macOS
+    asks to let SlowBooks Pro control Preview). If that is refused, the PDF
+    opens in Preview and the answer says to press Cmd+P. Windows: the
+    system's "print" verb for the file. Linux: lp to the default printer."""
+    try:
+        if sys.platform == "darwin":
+            posix = str(target).replace("\\", "\\\\").replace('"', '\\"')
+            script = (
+                'tell application "Preview"\n'
+                "  activate\n"
+                f'  print (POSIX file "{posix}") with print dialog\n'
+                "end tell"
+            )
+            done = subprocess.run(
+                ["osascript", "-e", script], capture_output=True, text=True, timeout=600
+            )
+            if done.returncode != 0:
+                subprocess.Popen(["open", "-a", "Preview", str(target)])
+                return {
+                    "success": True,
+                    "note": "Opened in Preview — press Cmd+P to print. (To print straight "
+                    "away next time, allow SlowBooks Pro to control Preview in System "
+                    "Settings → Privacy & Security → Automation.)",
+                }
+        elif sys.platform == "win32":
+            os.startfile(str(target), "print")  # type: ignore[attr-defined]
+        else:
+            subprocess.Popen(["lp", str(target)])
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+    return {"success": True}
+
+
 def _default_pdf_app(pdf: Path) -> str | None:
     """The name of the program the system opens a PDF with ("Preview",
     "Microsoft Edge"), for the viewer's button; None when it can't be told,
@@ -1040,6 +1077,7 @@ _VIEWER_PAGE = Template("""<!DOCTYPE html>
   <span class="name">$name</span>
   <span class="where" title="$path">Saved in $where</span>
   <span class="note" id="note" role="status"></span>
+  <button type="button" id="print-doc" disabled>Print</button>
   <button type="button" id="open-in-app" disabled
           title="Print it, or save a copy somewhere else, from there">$open_label</button>
   <button type="button" id="show-in-folder" disabled>Show in folder</button>
@@ -1057,9 +1095,13 @@ _VIEWER_PAGE = Template("""<!DOCTYPE html>
     });
   }
   function ready() {
+    document.getElementById('print-doc').disabled = false;
     document.getElementById('open-in-app').disabled = false;
     document.getElementById('show-in-folder').disabled = false;
   }
+  document.getElementById('print-doc').addEventListener('click', function () {
+    call('print_document');
+  });
   document.getElementById('open-in-app').addEventListener('click', function () {
     call('open_in_default_app');
   });
@@ -1067,7 +1109,10 @@ _VIEWER_PAGE = Template("""<!DOCTYPE html>
     call('show_in_folder');
   });
   document.addEventListener('keydown', function (e) {
-    if ((e.metaKey || e.ctrlKey) && (e.key === 'p' || e.key === 's')) {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'p') {
+      e.preventDefault();
+      call('print_document');
+    } else if ((e.metaKey || e.ctrlKey) && e.key === 's') {
       e.preventDefault();
       call('open_in_default_app');
     }
@@ -1132,6 +1177,15 @@ class DocumentViewerApi:
 
     def show_in_folder(self) -> dict:
         return _reveal(self._path)
+
+    def print_document(self) -> dict:
+        target = _openable_pdf(self._path)
+        if target is None:
+            return {
+                "success": False,
+                "error": "This PDF has been moved or deleted. Use Show in folder.",
+            }
+        return _print_pdf(target)
 
 
 class PickerApi:
@@ -1257,6 +1311,32 @@ class PickerApi:
         if note:
             result["note"] = note
         return result
+
+    def print_document_pdf(self, title: str, base64_data: str, folder: str = "") -> dict:
+        """A Print button (an invoice, a cheque): send the already-fetched
+        PDF to the printer with the Print dialog (_print_pdf). Nothing is
+        kept in the user's folders: the printer needs a file, so a working
+        copy goes in the app's own data folder and is cleared out a day
+        later. Save PDF is what keeps a copy."""
+        import base64
+
+        try:
+            data = base64.b64decode(base64_data)
+            stem = re.sub(r"\.pdf$", "", str(title or ""), flags=re.IGNORECASE)
+            spool = get_data_dir() / "print"
+            spool.mkdir(parents=True, exist_ok=True)
+            cutoff = time.time() - 86400
+            for old in spool.glob("*.pdf"):
+                try:
+                    if old.stat().st_mtime < cutoff:
+                        old.unlink()
+                except OSError:
+                    pass
+            dest = spool / f"{secrets.token_hex(4)}-{_safe_temp_filename(stem, '.pdf')}"
+            dest.write_bytes(data)
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+        return _print_pdf(dest)
 
     def save_document_file(
         self, title: str, base64_data: str, folder: str = ""

@@ -47,6 +47,7 @@ from app.models.vendor_credits import (
 
 # Phase 3: Productivity
 from app.models.recurring import RecurringInvoice, RecurringInvoiceLine
+from app.models.memorized import MemorizedTransaction  # noqa: F401
 
 # Phase 4: Communication & Export
 from app.models.email_log import EmailLog

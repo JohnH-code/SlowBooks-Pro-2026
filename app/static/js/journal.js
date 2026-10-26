@@ -117,6 +117,7 @@ const JournalPage = {
             </div>
             <div class="form-actions">
                 ${JournalPage.canVoid(entry) ? `<button data-destructive data-accountant-ok class="btn btn-danger" onclick="JournalPage.void(${entry.id})">Void</button>` : ''}
+                ${(typeof Memorized !== "undefined" ? Memorized.button({ transaction_id: entry.id }, entry.description || 'Journal entry') : "")}
                 <button class="btn btn-secondary" onclick="closeModal()">Close</button>
             </div>`);
         JournalPage.loadAttachments(entry.id);

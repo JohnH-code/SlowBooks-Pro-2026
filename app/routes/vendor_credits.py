@@ -47,8 +47,8 @@ from app.services.inventory_service import get_inventory_asset_account_id
 from app.services.closing_date import check_closing_date
 from app.services.numbering import next_vendor_credit_number
 from app.services.purchase_posting import (
+    purchase_tax,
     expense_account_for,
-    spread,
     unit_cost_with_tax,
 )
 
@@ -171,7 +171,7 @@ def create_vendor_credit(data: VendorCreditCreate, db: Session = Depends(get_db)
     # The mirror of a bill: tax on a purchase was part of what the lines
     # cost, so the tax coming back reduces those same lines. It never
     # credits Sales Tax Payable, which is the tax owed on sales.
-    tax_shares = spread(tax_amount, amounts)
+    tax_shares, itc_account = purchase_tax(db, tax_amount, amounts)
 
     for i, line_data in enumerate(data.lines):
         amt = amounts[i]
@@ -249,6 +249,15 @@ def create_vendor_credit(data: VendorCreditCreate, db: Session = Depends(get_db)
                 }
             )
 
+    if itc_account:
+        journal_lines.append(
+            {
+                "account_id": itc_account,
+                "debit": Decimal("0"),
+                "credit": _q(tax_amount),
+                "description": "GST/HST",
+            }
+        )
     ap_id = get_ap_account_id(db)
     journal_lines.append(
         {

@@ -171,7 +171,7 @@ def test_purchase_account_pickers_offer_cost_of_goods_sold():
     assert (
         "PurchaseAccounts.filter(accounts, v.default_expense_account_id)" in vendor_form
     )
-    expense_form = _method(_js("expenses.js"), "async showForm()")
+    expense_form = _method(_js("expenses.js"), "async showForm(opts = {})")
     assert "PurchaseAccounts.filter(accounts)" in expense_form
     card_form = _method(_js("cc_charges.js"), "async showForm()")
     assert "account_type=expense" not in card_form

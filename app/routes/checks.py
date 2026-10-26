@@ -2,6 +2,7 @@
 # Check Printing — Generate check PDFs (standard 3-per-page format)
 # ============================================================================
 
+import re
 from datetime import date
 from decimal import Decimal
 
@@ -95,11 +96,35 @@ def register_check_data(db: Session, txn_id: int) -> dict:
         amount = debit if debit > 0 else -credit
         details.append({"description": name or "Payment", "amount": amount})
     memo = (bank_line.description or "").strip()
+    # "426 · QB #3": a QuickBooks cheque's number and its import reference
+    number = re.split(r"\s*·\s*QB #", txn.reference or "")[0].strip()
+    if number.startswith("QB #"):
+        number = ""
+    # the vendor's address under the payee, for a window envelope
+    address = []
+    vendor = (
+        db.get(Vendor, txn.source_id)
+        if txn.source_type == "expense" and txn.source_id
+        else None
+    )
+    if vendor is not None:
+        from app.services.addresses import city_line
+
+        address = [
+            line
+            for line in (
+                vendor.address1,
+                vendor.address2,
+                city_line(vendor.city, vendor.state, vendor.zip),
+            )
+            if line
+        ]
     return {
         "payee": payee,
+        "payee_address": address,
         "date": txn.date,
         "amount": bank_line.credit,
-        "check_number": txn.reference or "",
+        "check_number": number,
         "memo": "" if memo == payee else memo,
         "details": details,
     }
@@ -128,6 +153,7 @@ def test_print_check(
         "details": [{"description": "Alignment test", "amount": Decimal("1234.56")}],
     }
     company = dict(get_settings(db))
+    _cheque_style(check_data, company)
     if check_stock is not None:
         if check_stock not in ENUM_SETTINGS["check_stock"]:
             raise HTTPException(
@@ -152,11 +178,26 @@ def test_print_check(
     )
 
 
+def _cheque_style(check_data: dict, company: dict) -> None:
+    """Where the cheque sits on the voucher stock (Settings); a Canadian company's
+    cheque says Cheque and dates it the CPA way (YYYYMMDD under a guide)."""
+    layout = (company.get("cheque_layout") or "bottom").lower()
+    check_data["layout"] = layout if layout in ("top", "middle", "bottom") else "bottom"
+    if (company.get("sales_tax_system") or "") == "canada" or (
+        company.get("home_currency") or ""
+    ).upper() == "CAD":
+        check_data["word"] = "Cheque"
+        d = check_data.get("date")
+        if d is not None:
+            check_data["cpa_date"] = d.strftime("%Y%m%d")
+
+
 @router.get("/print")
 def print_check(
     payment_id: int = Query(default=None),
     bill_payment_id: int = Query(default=None),
     transaction_id: int = Query(default=None),
+    expense_id: int = Query(default=None),
     db: Session = Depends(get_db),
 ):
     """Generate a check PDF for a bill payment, or for a check written
@@ -212,14 +253,17 @@ def print_check(
                     "amount": bp.amount - applied,
                 }
             )
-    elif transaction_id:
-        check_data = register_check_data(db, transaction_id)
+    elif transaction_id or expense_id:
+        # expense_id: the same thing, as an expense's own id (it is the
+        # expense's transaction)
+        check_data = register_check_data(db, transaction_id or expense_id)
     else:
         raise HTTPException(
             status_code=400, detail="Provide bill_payment_id or transaction_id"
         )
 
     company = get_settings(db)
+    _cheque_style(check_data, company)
     pdf_bytes = generate_check_pdf(check_data, company)
     return Response(
         content=pdf_bytes,

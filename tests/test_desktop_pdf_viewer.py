@@ -138,7 +138,7 @@ def test_show_in_folder_shows_the_windows_file(home, launched, monkeypatch):
 
 def test_the_bridge_takes_no_path_from_the_page():
     public = [n for n in vars(dl.DocumentViewerApi) if not n.startswith("_")]
-    assert sorted(public) == ["open_in_default_app", "show_in_folder"]
+    assert sorted(public) == ["open_in_default_app", "print_document", "show_in_folder"]
     for name in public:
         code = getattr(dl.DocumentViewerApi, name).__code__
         assert code.co_argcount == 1, name  # self only
@@ -251,12 +251,37 @@ def test_the_toolbar_works(tmp_path):
     assert got["note_after_show"] == ""
     assert got["note_after_open"] == "No app opens PDFs on this computer."
     assert got["prevented"] == 2  # Cmd+P and Cmd+S, not Cmd+X
+    assert got["print_ready"]
+    # Cmd+P prints; Cmd+S opens the PDF app (to save a copy)
     assert got["calls"] == [
         "show_in_folder",
         "open_in_default_app",
-        "open_in_default_app",
+        "print_document",
         "open_in_default_app",
     ]
+
+
+def test_print_shows_the_print_dialog(home, launched, monkeypatch):
+    """Print: Preview's Print dialog on a Mac; refused (no Automation
+    consent), the PDF opens in Preview with a note to press Cmd+P."""
+    path = _saved(home)
+    monkeypatch.setattr(dl.sys, "platform", "darwin")
+    runs = []
+
+    class Done:
+        returncode = 0
+
+    monkeypatch.setattr(
+        dl.subprocess, "run", lambda args, **kw: runs.append(args) or Done()
+    )
+    assert dl.DocumentViewerApi(path).print_document() == {"success": True}
+    assert runs[0][0] == "osascript" and "with print dialog" in runs[0][2]
+    assert str(path.resolve()) in runs[0][2] or str(path) in runs[0][2]
+
+    Done.returncode = 1
+    got = dl.DocumentViewerApi(path).print_document()
+    assert got["success"] and "Cmd+P" in got["note"]
+    assert launched[-1][:3] == ["open", "-a", "Preview"]
 
 
 def test_an_attachment_is_saved_with_the_documents(home, windows):
@@ -282,3 +307,24 @@ def test_an_attachment_is_saved_with_the_documents(home, windows):
         "customers.csv", base64.b64encode(b"Name").decode(), "../../elsewhere"
     )
     assert Path(export["path"]).parent.name == "Reports"
+
+
+def test_print_keeps_no_copy_in_the_users_folders(
+    home, launched, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(dl.sys, "platform", "darwin")
+    sent = []
+
+    class Done:
+        returncode = 0
+
+    monkeypatch.setattr(
+        dl.subprocess, "run", lambda args, **kw: sent.append(args) or Done()
+    )
+    pdf = base64.b64encode(b"%PDF-1.7 invoice").decode()
+    got = dl.PickerApi(3001).print_document_pdf("Invoice_1002.pdf", pdf)
+    assert got == {"success": True}
+    assert not (home / "Documents" / "SlowBooks Pro").exists()
+    spooled = list((tmp_path / "data" / "print").glob("*.pdf"))
+    assert len(spooled) == 1 and spooled[0].name.endswith("Invoice_1002.pdf")
+    assert str(spooled[0]) in sent[0][2]

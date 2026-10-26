@@ -63,7 +63,7 @@ function sourceWord(type) {
         iif_import: 'IIF import', depreciation: 'Depreciation',
         asset_acquisition: 'Asset acquisition', asset_disposal: 'Asset disposal',
         qbo_ledger: 'QuickBooks import', qbo_journal: 'QuickBooks journal', qbo_cogs: 'QuickBooks cost of goods',
-        qbo_export_import: 'QuickBooks Online export', xero_import: 'Xero import', myob_import: 'MYOB import',
+        qbo_export_import: 'QuickBooks Online export', qbd_import: 'QuickBooks Desktop', xero_import: 'Xero import', myob_import: 'MYOB import',
         sage_import: 'Sage 50 import', wave_import: 'Wave import', zoho_import: 'Zoho Books import',
         gnucash_import: 'GnuCash import', qb_ledger_import: 'QuickBooks Desktop import',
     };

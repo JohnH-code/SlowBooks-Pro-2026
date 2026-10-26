@@ -58,6 +58,10 @@ ENUM_SETTINGS = {
     "warn_date_future": frozenset({"true", "false"}),
     "warn_duplicate_check_number": frozenset({"true", "false"}),
     "warn_edit_transaction": frozenset({"true", "false"}),
+    "sales_tax_system": frozenset({"us", "canada"}),
+    "cheque_layout": frozenset({"top", "middle", "bottom"}),
+    "hst_filing_frequency": frozenset({"none", "monthly", "quarterly", "annual"}),
+    "hst_year_end_month": frozenset({str(m) for m in range(1, 13)}),
 }
 
 

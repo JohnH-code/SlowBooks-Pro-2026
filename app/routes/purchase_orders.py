@@ -25,8 +25,8 @@ from app.services.accounting import _q, compute_line_totals
 from app.services.numbering import next_po_number
 from app.services.request_utils import content_disposition
 from app.services.purchase_posting import (
+    purchase_tax,
     expense_account_for,
-    spread,
     unit_cost_with_tax,
 )
 
@@ -311,7 +311,7 @@ def convert_to_bill(
     lines = list(po.lines)
     amounts = [_q(Decimal(str(ln.quantity)) * Decimal(str(ln.rate))) for ln in lines]
     tax_amount = _q(po.tax_amount or 0)
-    tax_shares = spread(tax_amount, amounts)
+    tax_shares, itc_account = purchase_tax(db, tax_amount, amounts)
 
     # Where each line posts, decided before anything is written so a
     # refused line leaves no bill behind.
@@ -420,6 +420,15 @@ def convert_to_bill(
                 }
             )
 
+    if itc_account and journal_lines:
+        journal_lines.append(
+            {
+                "account_id": itc_account,
+                "debit": tax_amount,
+                "credit": Decimal("0"),
+                "description": "GST/HST",
+            }
+        )
     if journal_lines:
         journal_lines.append(
             {

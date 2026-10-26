@@ -196,10 +196,12 @@ const SettingsPage = {
 
     async render() {
         const s = await API.get('/settings');
+        const liabilities = await API.get('/accounts').then(a => a.filter(x => x.account_type === 'liability' && !x.bank_kind)).catch(() => []);
         const logo = s.company_logo_path ? await API.get('/uploads/logo').catch(() => null) : null;
         // what the books hold; the closing date's state line describes this
         SettingsPage._savedClosingDate = s.closing_date || '';
         setTimeout(() => {
+            SettingsPage.showTaxSystem();
             SettingsPage.loadBackups();
             SettingsPage.loadCompanyFile();
             SettingsPage.loadLegacyFiles();
@@ -338,6 +340,43 @@ const SettingsPage = {
                                 <option value="letter" ${s.pdf_paper_size !== 'a4' ? 'selected' : ''}>US Letter</option>
                                 <option value="a4" ${s.pdf_paper_size === 'a4' ? 'selected' : ''}>A4</option>
                             </select></div>
+                    </div>
+                </div>
+
+                <div class="settings-section" role="group" aria-labelledby="settings-h-sales-tax">
+                    <h3 id="settings-h-sales-tax">Currency &amp; Sales Tax</h3>
+                    <div class="form-grid">
+                        <div class="form-group"><label for="settings-home-currency">Home currency</label>
+                            <select id="settings-home-currency" name="home_currency" title="The currency the books are kept in. A bill or invoice in any other currency asks for an exchange rate.">
+                                ${[...new Set(['CAD', 'USD', 'EUR', 'GBP', (s.home_currency || 'USD').toUpperCase()])].map(c =>
+                                    `<option ${(s.home_currency || 'USD').toUpperCase() === c ? 'selected' : ''}>${c}</option>`).join('')}
+                            </select></div>
+                        <div class="form-group"><label for="settings-tax-system">Tax system</label>
+                            <select id="settings-tax-system" name="sales_tax_system" onchange="SettingsPage.showTaxSystem()">
+                                <option value="us" ${s.sales_tax_system !== 'canada' ? 'selected' : ''}>US sales tax</option>
+                                <option value="canada" ${s.sales_tax_system === 'canada' ? 'selected' : ''}>Canada — GST/HST</option>
+                            </select></div>
+                        <div class="form-group" data-hst><label for="settings-hst-frequency">GST/HST filing</label>
+                            <select id="settings-hst-frequency" name="hst_filing_frequency">
+                                ${[['none','Not registered'],['monthly','Monthly'],['quarterly','Quarterly'],['annual','Annually']].map(([v, l]) =>
+                                    `<option value="${v}" ${(s.hst_filing_frequency || 'quarterly') === v ? 'selected' : ''}>${l}</option>`).join('')}
+                            </select></div>
+                        <div class="form-group" data-hst><label for="settings-hst-account">GST/HST account</label>
+                            <select id="settings-hst-account" name="hst_account_id">
+                                <option value="">Choose…</option>
+                                ${liabilities.map(a => `<option value="${a.id}" ${String(s.hst_account_id) === String(a.id) ? 'selected' : ''}>${escapeHtml(a.account_number || '')} ${escapeHtml(a.name)}</option>`).join('')}
+                            </select></div>
+                        <div class="form-group" data-hst><label for="settings-hst-rate">GST/HST rate (%)</label>
+                            <input id="settings-hst-rate" name="hst_rate" type="number" min="0" max="100" step="0.0001" value="${escapeHtml(s.hst_rate || '13')}"></div>
+                        <div class="form-group" data-hst><label for="settings-hst-year-end">Fiscal year ends</label>
+                            <select id="settings-hst-year-end" name="hst_year_end_month">
+                                ${['January','February','March','April','May','June','July','August','September','October','November','December'].map((m, i) =>
+                                    `<option value="${i + 1}" ${String(s.hst_year_end_month || '12') === String(i + 1) ? 'selected' : ''}>${m}</option>`).join('')}
+                            </select></div>
+                        <div class="form-group" data-hst><label for="settings-hst-number">GST/HST number</label>
+                            <input id="settings-hst-number" name="hst_registration_number" placeholder="123456789 RT0001" value="${escapeHtml(s.hst_registration_number || '')}"></div>
+                        <div class="form-group full-width" data-hst style="font-size:11px; color:var(--text-muted);">
+                            GST/HST charged on sales and paid on purchases both go to the GST/HST account; the GST/HST Return report (Reports) gives the figures for each filing period. Set the Default Tax Rate above to the same rate.</div>
                     </div>
                 </div>
 
@@ -763,6 +802,11 @@ const SettingsPage = {
                             </select>
                             <div style="font-size:10px; color:var(--text-muted); margin-top:4px;">Pre-printed stock already carries the "Pay to the order of", memo and signature lines. Choose it to print only the values — payee, amount, amount in words, date and memo — in their places, with no labels, lines or borders. The two stubs are unchanged either way.</div>
                         </div>
+                        <div class="form-group"><label for="settings-cheque-layout">Where the check sits on the voucher</label>
+                            <select id="settings-cheque-layout" name="cheque_layout">
+                                ${[['top', 'On top'], ['middle', 'In the middle'], ['bottom', 'At the bottom']].map(([v, l]) =>
+                                    `<option value="${v}" ${(s.cheque_layout || 'top') === v ? 'selected' : ''}>${l}</option>`).join('')}
+                            </select></div>
                         <div class="form-group"><label>Horizontal nudge (in)</label>
                             <input name="check_nudge_x_in" type="number" min="-0.5" max="0.5" step="0.01"
                                 title="Inches, -0.5 to 0.5, in 0.01 steps"
@@ -1601,6 +1645,11 @@ const SettingsPage = {
         const keep = (SettingsPage._hiddenMenuStored || []).filter(k => !offered.has(k));
         const hide = boxes.filter(b => !b.checked).map(b => b.dataset.showMenu);
         return [...new Set([...keep, ...hide])];
+    },
+
+    showTaxSystem() {
+        const canada = ($('#settings-tax-system') || {}).value === 'canada';
+        document.querySelectorAll('[data-hst]').forEach(el => { el.style.display = canada ? '' : 'none'; });
     },
 
     async save(e) {

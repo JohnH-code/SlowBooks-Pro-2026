@@ -306,6 +306,7 @@ const InvoicesPage = {
                 <button class="btn btn-secondary" data-invoice-logo-action onclick="window.open('/api/invoices/${inv.id}/pdf','_blank')">Save PDF</button>
                 <button class="btn btn-secondary" data-invoice-logo-action onclick="window.open('/api/invoices/${inv.id}/print-preview','_blank')">Print</button>
                 <button class="btn btn-secondary" onclick="InvoicesPage.duplicate(${inv.id})">Duplicate</button>
+                ${(typeof Memorized !== "undefined" ? Memorized.button({ invoice_id: inv.id }, inv.customer_name || T('Invoice')) : "")}
                 <button class="btn btn-secondary" data-invoice-logo-action onclick="InvoicesPage.emailInvoice(${inv.id})">Email ${T('Invoice')}</button>
                 <button class="btn btn-secondary" onclick="InvoicesPage.copyPaymentLink(${inv.id})">Copy Payment Link</button>
                 ${inv.checkout_provider && inv.status !== 'paid' && inv.status !== 'void' ? `<button class="btn btn-secondary" onclick="InvoicesPage.checkPaymentStatus(${inv.id}, '${inv.checkout_provider}')">Check Payment Status</button>` : ''}

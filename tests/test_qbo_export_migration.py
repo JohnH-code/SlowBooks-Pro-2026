@@ -382,5 +382,5 @@ def test_the_page_takes_a_zip_or_a_workbook():
     js = (Path(__file__).resolve().parents[1] / "app/static/js/migration.js").read_text(
         encoding="utf-8"
     )
-    assert 'accept=".csv,.txt,.xlsx,.zip"' in js
+    assert 'accept=".csv,.txt,.xlsx,.zip,.iif"' in js
     assert "upload the Export data zip as downloaded" in js

@@ -72,6 +72,7 @@ const App = {
         '/vendor-credits/:id': { page: 'vendor-credits', label: 'Vendor Credit',  document: true, render: (id) => App.withDocument(() => VendorCreditsPage.render(), () => VendorCreditsPage.view(id)) },
         // Phase 3: Productivity
         '/recurring':     { page: 'recurring',       label: 'Recurring Invoices', render: () => RecurringPage.render() },
+        '/memorized':     { page: 'memorized',       label: 'Memorized Transactions', render: () => MemorizedPage.render() },
         '/batch-payments': { page: 'batch-payments', label: 'Batch Payments',     render: () => BatchPaymentsPage.render() },
         // Phase 4: CSV Import/Export
         '/csv':           { page: 'csv',             label: 'CSV Import/Export',  render: () => App.renderCSV() },
@@ -1393,6 +1394,58 @@ const App = {
         return out;
     },
 
+    // Clean Up Unused Accounts: every account with nothing posted to it and
+    // nothing pointing at it, ticked, to delete in one go. The built-in
+    // accounts the software posts to by number are listed as kept.
+    async showUnusedAccounts() {
+        let data;
+        try { data = await API.get('/accounts/unused'); } catch (err) { toast(err.message, 'error'); return; }
+        const row = a => `<tr><td><input type="checkbox" data-unused value="${a.id}" checked aria-label="Delete ${escapeHtml(a.name)}"></td>
+            <td>${escapeHtml(a.account_number)}</td><td>${escapeHtml(a.name)}${a.is_active ? '' : ' <span style="color:var(--gray-500)">(inactive)</span>'}</td><td>${escapeHtml(a.account_type)}</td></tr>`;
+        // A built-in bank or card account (1000 Checking, 2100 Credit Card)
+        // can hand its number to the company's own account and go.
+        const swappable = data.kept.filter(a => a.replace_with && a.replace_with.length);
+        const others = data.kept.filter(a => !(a.replace_with && a.replace_with.length));
+        const swaps = swappable.length ? `
+            <p style="font-size:12px; margin-top:10px;">Built-in ${swappable.length === 1 ? 'account' : 'accounts'} you don't use. Slowbooks reaches ${swappable.length === 1 ? 'it' : 'each'} by number (the bank a bill payment defaults to, the card charges post to), so the number moves to your own account and the empty one is deleted:</p>
+            ${swappable.map(a => `<div style="font-size:12px; margin:4px 0;"><label style="font-weight:normal;"><input type="checkbox" data-swap="${a.id}" checked style="width:auto;">
+                Replace ${escapeHtml(`${a.account_number} ${a.name}`)} with</label>
+                <select data-swap-to="${a.id}" aria-label="Replacement for ${escapeHtml(a.name)}">${a.replace_with.map(o => `<option value="${o.id}">${escapeHtml(o.name)}</option>`).join('')}</select></div>`).join('')}` : '';
+        const kept = others.length ? `<p style="font-size:11px; color:var(--gray-500); margin-top:8px;">Also unused but kept, because Slowbooks posts to them by number: ${others.map(a => escapeHtml(`${a.account_number} ${a.name}`)).join(', ')}.</p>` : '';
+        const anything = data.delete.length || swappable.length;
+        openModal('Clean Up Unused Accounts', anything ? `
+            ${data.delete.length ? `<p style="font-size:12px;">These ${data.delete.length} accounts have never been used — nothing posted to them, and no item, vendor, budget or sub-account points to them. Untick any you want to keep.</p>
+            <p style="font-size:11px;"><a href="#" onclick="document.querySelectorAll('[data-unused]').forEach(c => c.checked = !c.checked); return false;">Invert selection</a></p>
+            <div class="table-container" style="max-height:50vh; overflow:auto;"><table>
+                <thead><tr><th scope="col"></th><th scope="col">Number</th><th scope="col">Name</th><th scope="col">Type</th></tr></thead>
+                <tbody>${data.delete.map(row).join('')}</tbody></table></div>` : ''}
+            ${swaps}
+            ${kept}
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-danger" data-destructive onclick="App.removeUnusedAccounts()">Delete selected</button>
+            </div>` : `<p>Every account is in use — nothing to clean up.</p>${kept}
+            <div class="form-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`);
+    },
+
+    async removeUnusedAccounts() {
+        const ids = [...document.querySelectorAll('[data-unused]:checked')].map(c => parseInt(c.value));
+        const replace = {};
+        document.querySelectorAll('[data-swap]:checked').forEach(c => {
+            const to = document.querySelector(`[data-swap-to="${c.dataset.swap}"]`);
+            if (to && to.value) replace[c.dataset.swap] = parseInt(to.value);
+        });
+        const n = ids.length + Object.keys(replace).length;
+        if (!n) { toast('Nothing selected', 'error'); return; }
+        if (!confirm(`Delete ${n} unused account${n === 1 ? '' : 's'}? This can't be undone.`)) return;
+        try {
+            const r = await API.post('/accounts/remove-unused', { account_ids: ids, replace });
+            toast(`${r.deleted} account${r.deleted === 1 ? '' : 's'} deleted`);
+            closeModal();
+            App.refresh();
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
     async renderAccounts() {
         const [accounts, detailTypes] = await Promise.all([API.get('/accounts'), App._detailTypes()]);
         const detailOrder = detailTypes.map(d => d.value);
@@ -1420,6 +1473,7 @@ const App = {
                     ${inactiveCount ? `<button class="btn btn-sm btn-secondary" onclick="App.toggleInactiveAccounts()">${App._showInactiveAccounts ? 'Hide' : 'Show'} ${inactiveCount} inactive</button> ` : ''}
                     <button class="btn btn-secondary" data-write onclick="App.showChartImport()">Import…</button>
                     <button class="btn btn-secondary" data-write onclick="App.showSeededCleanup()">Remove unused seeded accounts…</button>
+                    <button class="btn btn-secondary" data-write onclick="App.showUnusedAccounts()">Clean Up Unused…</button>
                     <button class="btn btn-primary" onclick="App.showAccountForm()">New Account</button>
                 </div>
             </div>

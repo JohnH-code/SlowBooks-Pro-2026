@@ -64,6 +64,10 @@ const ctx = {
   document: { addEventListener() {}, querySelector: () => null, querySelectorAll: () => [] },
   escapeHtml: (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
   formatDate: (s) => s || '',
+  // no DOM here: the attachments list a view fills after it opens finds
+  // nothing to fill
+  $: () => null,
+  formatFileSize: (n) => String(n),
   sourceWord: (s) => String(s || ''),
   // utils.js's reader of address dates (NEW-35): the register asks it
   // for its filter; no query here, so nothing is ignored

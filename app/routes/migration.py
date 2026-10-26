@@ -16,6 +16,7 @@ from app.database import get_db
 from app.services import (
     gnucash_import,
     myob_import,
+    qbd_import,
     qbo_export_import,
     sage_import,
     wave_import,
@@ -38,6 +39,10 @@ SOURCES = {
     # QuickBooks Online's own Export data bundle, no Intuit developer app
     # needed: the zip as downloaded, or its workbooks, or those saved as CSV.
     "qbo_export": ("QuickBooks Online export", qbo_export_import, "qbo_export_import"),
+    # QuickBooks Desktop: the IIF lists, the Journal report (every
+    # transaction since the first day) and the Balance Sheet and P&L by
+    # year to check it against, plus the Attach folder if there is one.
+    "qbd": ("QuickBooks Desktop (full history)", qbd_import, "qbd_import"),
 }
 
 
@@ -155,12 +160,25 @@ def _members(filename: str, content: bytes) -> list[tuple[str, bytes]]:
     return members
 
 
-async def bundle_from_uploads(files: list[UploadFile], classify) -> dict:
+async def bundle_from_uploads(
+    files: list[UploadFile], classify, keep_binary=None
+) -> dict:
     bundle: dict[str, str] = {}
     unrecognized = []
     for file in files:
         content = await read_limited(file, label=f"Migration file {file.filename}")
         zipped = (file.filename or "").lower().endswith(".zip")
+        # A source may want an upload whole, as bytes (QuickBooks Desktop's
+        # Attach folder, whose folder names are the transaction IDs).
+        binary_kind = keep_binary(file.filename, content) if keep_binary else None
+        if binary_kind:
+            if binary_kind in bundle:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Upload one {binary_kind} zip at a time ({file.filename})",
+                )
+            bundle[binary_kind] = content
+            continue
         for name, data in _members(file.filename, content):
             kind = classify(name)
             if kind == "skip" or (not kind and zipped):
@@ -219,7 +237,9 @@ async def migration_dry_run(
     source: str, files: list[UploadFile] = File(...), db: Session = Depends(get_db)
 ):
     _, module, _ = _source(source)
-    bundle = await bundle_from_uploads(files, module.classify_filename)
+    bundle = await bundle_from_uploads(
+        files, module.classify_filename, getattr(module, "keep_binary", None)
+    )
     return module.dry_run(db, bundle)
 
 
@@ -228,7 +248,9 @@ async def migration_import(
     source: str, files: list[UploadFile] = File(...), db: Session = Depends(get_db)
 ):
     _, module, chart_source = _source(source)
-    bundle = await bundle_from_uploads(files, module.classify_filename)
+    bundle = await bundle_from_uploads(
+        files, module.classify_filename, getattr(module, "keep_binary", None)
+    )
     result = module.run_import(db, bundle)
     if result["ok"]:
         from datetime import date

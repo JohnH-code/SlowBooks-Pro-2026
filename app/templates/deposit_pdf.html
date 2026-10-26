@@ -60,7 +60,7 @@
             <div><div class="label">Deposited to</div><div class="value">{{ deposit.account_name }}</div></div>
             <div><div class="label">Date</div><div class="value">{{ deposit.date | fdate }}</div></div>
             {% if deposit.reference %}<div><div class="label">Slip #</div><div class="value">{{ deposit.reference }}</div></div>{% endif %}
-            <div><div class="label">Items</div><div class="value">{{ deposit.payments | length }}</div></div>
+            <div><div class="label">Items</div><div class="value">{{ (deposit.payments | length) + (deposit.other_lines | default([]) | length) }}</div></div>
         </div>
     </div>
 
@@ -82,7 +82,18 @@
         {% endfor %}
         </tbody>
     </table>
-    {% else %}
+    {% endif %}
+    {% if deposit.other_lines %}
+    <table class="items">
+        <thead><tr><th>From account</th><th>Received from / memo</th><th class="r">Amount</th></tr></thead>
+        <tbody>
+        {% for o in deposit.other_lines %}
+            <tr><td class="nw">{{ o.account_name }}</td><td class="desc">{{ o.description }}</td><td class="r">{{ o.amount | currency }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+    {% if not deposit.payments and not deposit.other_lines %}
     <p class="note">{% if deposit.voided %}This deposit is void: its payments went back to be deposited again.{% else %}This deposit was recorded as an amount, without the list of payments it took.{% endif %}</p>
     {% endif %}
 

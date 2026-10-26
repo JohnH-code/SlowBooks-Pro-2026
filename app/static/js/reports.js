@@ -27,6 +27,7 @@ const ReportsPage = {
         'ar-aging':             { label: () => T('Accounts Receivable Aging'), open: (p) => ReportsPage.arAging(p), asOf: true },
         'ap-aging':             { label: 'Accounts Payable Aging',    open: (p) => ReportsPage.apAging(p), asOf: true },
         'sales-tax':            { label: 'Sales Tax Report',   open: (p) => ReportsPage.salesTax(p) },
+        'gst-hst-return':       { label: 'GST/HST Return',     open: (p) => ReportsPage.gstHstReturn(p) },
         'general-ledger':       { label: 'General Ledger',     open: (p) => ReportsPage.generalLedger(p), keep: ['class_id'] },
         'income-by-customer':   { label: () => T('Income by Customer'), open: (p) => ReportsPage.incomeByCustomer(p) },
         'past-customers':       { label: () => Terms.text('Past customers'), open: (p) => ReportsPage.pastCustomers(p) },
@@ -383,6 +384,7 @@ const ReportsPage = {
             card('ar-aging', T('A/R Aging'), 'Outstanding receivables by age'),
             card('ap-aging', 'A/P Aging', 'Outstanding payables by age'),
             card('sales-tax', 'Sales Tax', 'Tax collected by invoice'),
+            card('gst-hst-return', 'GST/HST Return', 'Canada: tax collected, input tax credits and net tax for a filing period'),
             card('general-ledger', 'General Ledger', 'All journal entries by account'),
             card('income-by-customer', T('Income by Customer'), Terms.isNonprofit() ? 'Contribution totals per donor' : 'Sales totals per customer'),
             card('past-customers', Terms.text('Past customers'), Terms.text('Past customers: a mailing list by service address and last job date')),
@@ -1829,12 +1831,90 @@ const ReportsPage = {
                         ${grouped('liabilities')}
                         ${total('Total Liabilities', data.total_liabilities, p.total_liabilities, sub)}
                         ${head(T('Equity'))}
-                        ${section(data.equity)}
+                        ${section('equity')}
                         ${total(T('Total Equity'), data.total_equity, p.total_equity, sub)}
                         ${total(T('Liabilities + Equity'), data.total_liabilities + data.total_equity, (p.total_liabilities || 0) + (p.total_equity || 0), 'font-weight:700; background:var(--primary-light);')}
                     </tbody>
                 </table></div>`;
         }, "As Of", true, { reportType: 'balance_sheet', view: 'balance-sheet', prefill, params: bsParams, toolbar: opts.toolbar + ReportsPage._compareToolbar(bsParams, 'Compare to same date last year'), wide: bsParams.compare === 'prior_year' });
+    },
+
+    // Canada's GST/HST return for any period: the company's filing periods
+    // in a picker beside the dates, the one to file now first.
+    async gstHstReturn(prefill) {
+        let info = { enabled: false, periods: [], due: null };
+        try { info = await API.get('/reports/gst-hst-return/periods'); } catch (e) { /* shown below */ }
+        const start = (prefill && prefill.start_date) || (info.due && info.due.start);
+        const end = (prefill && prefill.end_date) || (info.due && info.due.end);
+        const fill = start && end ? { ...(prefill || {}), start_date: start, end_date: end } : prefill;
+        const label = p => `${formatDate(p.start)} – ${formatDate(p.end)}`;
+        const picker = info.periods.length ? `
+            <div class="form-group"><label for="hst-period">Filing period</label>
+                <select id="hst-period" onchange="ReportsPage.pickHstPeriod(this.value)">
+                    <option value="">Choose…</option>
+                    ${info.periods.map(p => `<option value="${p.start}|${p.end}">${label(p)}${info.due && info.due.start === p.start ? ' (to file)' : ''}</option>`).join('')}
+                </select></div>` : '';
+        const money = v => formatCurrency(v);
+        await ReportsPage.openPeriodModal('GST/HST Return', 'last_quarter', async (_period, range) => {
+            const d = await API.get(`/reports/gst-hst-return?start_date=${range.start}&end_date=${range.end}`);
+            if (!d.enabled) {
+                return `<div class="empty-state"><p>GST/HST isn't turned on for this company. In Settings → Sales Tax, choose "Canada — GST/HST" and the GST/HST account.</p></div>`;
+            }
+            const line = (no, text, v, strong) => `<tr${strong ? ' style="font-weight:700;"' : ''}><td style="width:60px;">${no}</td><td>${text}</td><td class="amount">${money(v)}</td></tr>`;
+            // The detail in three groups, each subtotalled to its line: the
+            // sales to 103, the purchases to 106, and the payments and
+            // refunds to the Receiver General (not on the return) to the
+            // reconciliation below.
+            const groups = [
+                ['sale', 'Sales — GST/HST collected', 'Total collected (line 103)', d.line_103],
+                ['purchase', 'Purchases — input tax credits', 'Total ITCs (line 106)', d.line_106],
+                ['payment', 'Payments and refunds to the Receiver General', 'Total paid (refunds less)', d.payments_in_period],
+            ];
+            const detail = groups.map(([kind, title, totalLabel, total]) => {
+                const items = d.transactions.filter(t => t.side === kind);
+                if (!items.length) return '';
+                return `<tr><td colspan="4" style="font-weight:700; background:var(--gray-50);">${title} (${items.length})</td></tr>`
+                    + items.map(t => `<tr>
+                        <td style="padding-left:18px;">${formatDate(t.date)}</td><td>${escapeHtml(t.reference)}</td><td>${escapeHtml(t.description)}</td>
+                        <td class="amount">${money(t.tax)}</td></tr>`).join('')
+                    + `<tr style="font-weight:700;"><td colspan="3" style="padding-left:18px;">${totalLabel}</td><td class="amount" style="border-top:1px solid var(--gray-400);">${money(total)}</td></tr>`;
+            }).join('');
+            const rec = (text, v, strong) => `<tr${strong ? ' style="font-weight:700;"' : ''}><td>${text}</td><td class="amount">${money(v)}</td></tr>`;
+            const reconcile = `
+                <div class="table-container" style="margin:10px 0 12px;"><table><tbody>
+                    ${rec(`${escapeHtml(d.account_name)} balance at ${formatDate(d.start_date)} (start)`, d.opening_balance)}
+                    ${rec('Add: net tax for the period (line 109)', d.line_109)}
+                    ${rec('Less: payments and refunds in the period', -d.payments_in_period)}
+                    ${rec(`${escapeHtml(d.account_name)} balance at ${formatDate(d.end_date)}`, d.closing_balance, true)}
+                </tbody></table></div>
+                ${d.ties ? '' : '<p style="color:var(--danger); font-size:12px;">The figures above do not add up to the account\'s balance — please report this.</p>'}`;
+            return `
+                <p style="margin-bottom:8px; color:var(--gray-500);">${formatDate(d.start_date)} — ${formatDate(d.end_date)}${d.registration_number ? ` · ${escapeHtml(d.registration_number)}` : ''} · ${escapeHtml(d.account_name)}</p>
+                <div class="table-container"><table><tbody>
+                    ${line('101', 'Sales and other revenue', d.line_101)}
+                    ${line('103', 'GST/HST collected or collectible', d.line_103)}
+                    ${line('105', 'Total GST/HST and adjustments for the period', d.line_105, true)}
+                    ${line('106', 'Input tax credits (ITCs) for the current period', d.line_106)}
+                    ${line('108', 'Total ITCs and adjustments', d.line_108, true)}
+                    ${line('109', d.line_109 >= 0 ? 'Net tax (owing)' : 'Net tax (refund)', d.line_109, true)}
+                </tbody></table></div>
+                <h4 style="font-size:12px; margin:12px 0 0;">${escapeHtml(d.account_name)} account</h4>
+                ${reconcile}
+                <details><summary style="cursor:pointer; font-size:12px;">The ${d.transactions.length} transactions behind it, by group</summary>
+                <div class="table-container"><table>
+                    <thead><tr><th scope="col">Date</th><th scope="col">Ref</th><th scope="col">Description</th><th scope="col" class="amount">GST/HST</th></tr></thead>
+                    <tbody>${detail}</tbody></table></div></details>`;
+        }, 'Dates', false, { reportType: 'gst_hst_return', view: 'gst-hst-return', prefill: fill, toolbar: picker });
+    },
+
+    pickHstPeriod(value) {
+        if (!value) return;
+        const [start, end] = value.split('|');
+        const sel = $('#report-period-select');
+        if (sel) sel.value = 'custom';
+        $('#report-custom-start').value = start;
+        $('#report-custom-end').value = end;
+        ReportsPage.refresh();
     },
 
     async salesTax(prefill) {
