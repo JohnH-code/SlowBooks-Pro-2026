@@ -212,6 +212,7 @@ _WORDS = {
     "qbo_journal": "QuickBooks journal",
     "qbo_cogs": "QuickBooks cost of goods",
     "qbo_export_import": "QuickBooks Online export",
+    "qbd_import": "QuickBooks Desktop",
     "xero_import": "Xero import",
     "myob_import": "MYOB import",
     "sage_import": "Sage 50 import",

@@ -6,7 +6,7 @@
     @page { size: letter; margin: 0.25in 0.5in; }
     body { font-family: 'Courier New', Courier, monospace; font-size: 10pt; color: #000; }
     .check-page { height: 10in; display: flex; flex-direction: column; }
-    .stub:last-child { border-bottom: none; }
+    .stub:last-child { border-bottom: 0; }
     .check-area + .stub { border-top: 1px dashed #999; }
     .cpa-date { font-size: 10pt; letter-spacing: 3px; }
     .cpa-guide { font-size: 6pt; color: #666; letter-spacing: 6px; }
@@ -45,7 +45,8 @@
     .pay-to-line, .amount-words, .memo-text { border-bottom: none; }
     .amount-box { border-color: transparent; }
     .check-company, .check-company-addr, .check-number,
-    .check-date-label, .cpa-guide, .pay-to-label, .memo-label, .signature-line { visibility: hidden; }
+    .check-date-label, .pay-to-label, .memo-label, .signature-line { visibility: hidden; }
+    .cpa-guide { visibility: hidden; }
 </style>
 {%- endif %}
 </head>

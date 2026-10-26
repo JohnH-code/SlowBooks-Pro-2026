@@ -359,7 +359,7 @@ const DepositsPage = {
                 cents += Math.round((parseFloat(cb.dataset.amount) || 0) * 100);
             }
         });
-        const total = cents / 100;
+        const ticked = cents / 100;
         const others = DepositsPage._otherLines();
         if (others.some(l => !l.account_id || !l.amount)) { toast('Each other deposit line needs an account and an amount', 'error'); return; }
 
@@ -374,13 +374,14 @@ const DepositsPage = {
             const result = await API.post('/deposits', {
                 deposit_to_account_id: parseInt(bankAcctId),
                 date: $('#deposit-date').value,
-                total: lineIds.length ? total : null,
+                total: lineIds.length ? ticked : null,
                 reference: $('#deposit-ref')?.value || null,
                 class_id: $('#deposit-class')?.value ? parseInt($('#deposit-class').value) : null,
                 line_ids: lineIds,
                 other_lines: others,
             });
-            toastPosted(`Deposited ${formatCurrency(result.amount)}`);
+            const total = result.amount;  // the payments and the other lines
+            toastPosted(`Deposited ${formatCurrency(total)}`);
             App.navigate('#/deposits');
         } catch (err) { toast(err.message, 'error'); }
     },
