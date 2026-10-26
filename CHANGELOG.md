@@ -5,6 +5,18 @@ Notable changes between releases. Format roughly follows
 used during development is captured here so the README can stay focused
 on what the software does, not on what sprint shipped what.
 
+### v2.29.2 — A register line opens over the register
+
+**A register line opens over the register.** Clicking a line in a bank or
+card register used to go to the posting's own address, which drew that
+document's whole list first: for a journal entry, every journal entry in the
+company, which took minutes on a file with years of imported history. Closing
+it then left you on Journal Entries instead of the register. The line's
+posting now opens over the register, with nothing else loaded, and Close
+comes back to the register where you were. Opening a document by its address
+(a bookmark, a report's drill-down) is unchanged; Ctrl-click still opens it
+in a new tab.
+
 ### v2.29.1 — Profit & Loss Detail, Bill Quick Entry, and pre-printed checks
 
 **Profit & Loss Detail** (#477). A new report on the Report Center with every

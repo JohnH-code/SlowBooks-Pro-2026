@@ -1,4 +1,10 @@
 {
+  "2.29.2": {
+    "title": "A register line opens over the register",
+    "items": [
+      "Clicking a line in a bank or card register opens its entry right away over the register, instead of loading every journal entry first, and Close brings you back to the register."
+    ]
+  },
   "2.29.1": {
     "title": "Profit & Loss Detail, Bill Quick Entry, and pre-printed checks",
     "items": [
