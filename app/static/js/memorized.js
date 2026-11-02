@@ -42,6 +42,7 @@ const MemorizedPage = {
             <div class="page-header">
                 <h2>Memorized Transactions</h2>
                 <div class="btn-group">
+                    <button class="btn btn-primary" onclick="MemorizedPage.showChequeForm()">+ Memorized Cheque</button>
                     <button class="btn btn-primary" onclick="MemorizedPage.showBillForm()">+ Memorized Bill</button>
                     <button class="btn btn-primary" onclick="MemorizedPage.showJournalForm()">+ Memorized Journal Entry</button>
                     <button class="btn btn-secondary" onclick="RecurringPage.showForm()">+ Recurring ${T('Invoice')}</button>
@@ -79,7 +80,7 @@ const MemorizedPage = {
             : `${held.length} scheduled document${held.length === 1 ? '' : 's'} could not be entered`;
         if (n) toastPosted(sentence);
         const items = (run.entered || []).map(e => {
-            const href = e.kind === 'bill' ? `#/bills/${e.document_id}` : `#/journal/${e.document_id}`;
+            const href = MemorizedPage.documentHref(e.kind, e.document_id);
             return `<li><a href="${href}">${escapeHtml(e.name)}</a> dated ${formatDate(e.date)}</li>`;
         });
         (run.invoice_ids || []).forEach(id => items.push(`<li><a href="#/invoices/${id}">Recurring ${T('invoice')}</a></li>`));
@@ -123,7 +124,16 @@ const MemorizedPage = {
 
     kindWord(r) {
         if (r.kind === 'invoice') return `Recurring ${T('invoice')}`;
+        if (r.kind === 'expense') return 'Memorized cheque';
         return r.kind === 'bill' ? 'Memorized bill' : 'Memorized journal entry';
+    },
+
+    // Where an entered document opens: a cheque or card charge is an expense.
+    documentHref(kind, id) {
+        if (kind === 'invoice') return `#/invoices/${id}`;
+        if (kind === 'bill') return `#/bills/${id}`;
+        if (kind === 'expense') return `#/expenses/${id}`;
+        return `#/journal/${id}`;
     },
 
     // The Mode column. A recurring invoice's row (mode 'generate') is made
@@ -147,9 +157,7 @@ const MemorizedPage = {
     // The document entered last, as a link to it.
     lastEnteredHtml(r) {
         if (!r.last_entered_on) return '<span style="color:var(--text-muted);">never</span>';
-        const href = r.last_document_id
-            ? (r.kind === 'invoice' ? `#/invoices/${r.last_document_id}` : r.kind === 'bill' ? `#/bills/${r.last_document_id}` : `#/journal/${r.last_document_id}`)
-            : null;
+        const href = r.last_document_id ? MemorizedPage.documentHref(r.kind, r.last_document_id) : null;
         const when = formatDate(r.last_entered_on);
         return href ? `<a href="${href}">${when}</a>` : when;
     },
@@ -193,7 +201,7 @@ const MemorizedPage = {
         openModal(`Enter ${r ? escapeHtml(r.name) : 'now'}`, `
             <form onsubmit="MemorizedPage.doEnter(event, '${kind}', ${Number(id)})">
                 <input type="hidden" name="occurrence" value="${r ? escapeHtml(r.next_date) : ''}">
-                <p style="margin-bottom:8px;">Enter the ${kind === 'invoice' ? T('invoice') : kind === 'bill' ? 'bill' : 'journal entry'} dated:</p>
+                <p style="margin-bottom:8px;">Enter the ${kind === 'invoice' ? T('invoice') : kind === 'bill' ? 'bill' : kind === 'expense' ? 'cheque' : 'journal entry'} dated:</p>
                 <div class="form-group">
                     <label style="font-weight:normal;"><input type="radio" name="dated" value="" checked> The scheduled date, ${formatDate(scheduled)}</label>
                 </div>
@@ -263,6 +271,7 @@ const MemorizedPage = {
     edit(kind, id) {
         if (kind === 'invoice') return RecurringPage.showForm(id);
         if (kind === 'bill') return MemorizedPage.showBillForm(id);
+        if (kind === 'expense') return MemorizedPage.showChequeForm(id);
         return MemorizedPage.showJournalForm(id);
     },
 
@@ -352,6 +361,151 @@ const MemorizedPage = {
         };
         data[isNew ? 'start_date' : 'next_date'] = form.next_date.value;
         return data;
+    },
+
+    // ----------------------------------------------------------- a memorized cheque
+
+    // A cheque or card charge kept with a schedule (John's build): the
+    // payee, the account it is paid from, and its lines, as Enter Expense
+    // takes them. A line's amount includes its GST/HST when marked H.
+    async showChequeForm(id = null, prefill = null) {
+        const [vendors, accounts, payees, settings, mem] = await Promise.all([
+            API.get('/vendors?active_only=true'),
+            API.get('/accounts'),
+            API.get('/expenses/payees').catch(() => []),
+            API.get('/settings').catch(() => ({})),
+            id ? API.get(`/memorized/${id}`) : Promise.resolve(null),
+        ]);
+        const m = mem || Object.assign({ mode: 'remind', frequency: 'monthly', interval: 1, lines: [] }, prefill || {});
+        const canada = settings.sales_tax_system === 'canada' && !!settings.hst_account_id;
+        MemorizedPage._chequeCanada = canada;
+        MemorizedPage._chequeAccounts = PurchaseAccounts.filter(accounts, ...m.lines.map(l => l.account_id));
+        const paidFrom = accounts.filter(a => a.bank_kind);
+        const classGroup = await classFormGroupHtml(m.class_id);
+        const jobGroup = await jobFormGroupHtml(m.job_id || null);
+        const payeeOpts = `<option value="">Choose...</option>
+            <optgroup label="Vendors">${vendors.map(v => `<option value="${v.id}" ${m.vendor_id === v.id ? 'selected' : ''}>${escapeHtml(v.name)}</option>`).join('')}</optgroup>
+            ${payees.length || m.payee ? `<optgroup label="Other payees">${[...new Set([...(m.payee ? [m.payee] : []), ...payees])].map(n => `<option value="payee:${escapeHtml(n)}" ${!m.vendor_id && m.payee === n ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}</optgroup>` : ''}`;
+        openModal(id ? `Edit Memorized Cheque: ${escapeHtml(m.name)}` : 'New Memorized Cheque', `
+            <form id="mem-form" aria-labelledby="modal-title" onsubmit="MemorizedPage.saveCheque(event, ${id ? Number(id) : 'null'})">
+                <div class="form-grid">
+                    ${MemorizedPage.scheduleFieldsHtml(m, !id)}
+                    <div class="form-group"><label for="mem-payee">Payee *</label>
+                        <select id="mem-payee" name="payee_choice" required>${payeeOpts}</select></div>
+                    <div class="form-group"><label>Paid From *</label>
+                        <select name="paid_from_account_id" required>${paidFrom.map(a => `<option value="${a.id}" ${m.paid_from_account_id === a.id ? 'selected' : ''}>${accountLabel(a)}</option>`).join('')}</select></div>
+                    <div class="form-group"><label>Cheque number</label>
+                        <input name="reference" value="${escapeHtml(m.reference || '')}" placeholder="left blank: the next number"></div>
+                    ${classGroup}${jobGroup}
+                    <div class="form-group full-width"><label>Memo</label>
+                        <input name="notes" value="${escapeHtml(m.notes || '')}"></div>
+                </div>
+                <h3 style="margin:12px 0 8px;font-size:14px;">Lines</h3>
+                <div class="table-container"><table class="line-items-table">
+                    <thead><tr><th scope="col">Account *</th><th scope="col">Memo</th>${canada ? `<th scope="col" title="H: the amount includes GST/HST at ${escapeHtml(settings.hst_rate || '13')}%">Tax</th>` : ''}<th scope="col" class="col-amount">Amount</th><th scope="col"></th></tr></thead>
+                    <tbody id="mem-cheque-lines"></tbody>
+                </table></div>
+                <button type="button" class="btn btn-sm btn-secondary" style="margin-top:8px;" onclick="MemorizedPage.addChequeLine()">+ Add Line</button>
+                <div class="invoice-totals"><div class="total-row grand-total"><span class="label">Each cheque</span><span class="value" id="mem-cheque-total">$0.00</span></div></div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">${id ? 'Save Changes' : 'Memorize'}</button>
+                </div>
+            </form>`, { wide: true });
+        if (!m.paid_from_account_id) {
+            const pf = $('#mem-form').paid_from_account_id;
+            const checking = paidFrom.find(a => a.account_number === '1000') || paidFrom[0];
+            if (pf && checking) pf.value = checking.id;
+        }
+        const lines = m.lines.length ? m.lines : [{}];
+        lines.forEach(l => MemorizedPage.addChequeLine(l));
+    },
+
+    addChequeLine(l = {}) {
+        const amount = l.debit != null ? l.debit : l.amount;
+        const tax = l.tax_code === undefined ? (MemorizedPage._chequeCanada ? 'H' : '') : (l.tax_code || '');
+        $('#mem-cheque-lines').insertAdjacentHTML('beforeend', `<tr>
+            <td><select class="line-account" required><option value="">Choose...</option>${PurchaseAccounts.options(MemorizedPage._chequeAccounts, l.account_id)}</select></td>
+            <td><input class="line-desc" maxlength="300" value="${escapeHtml(l.description || '')}"></td>
+            ${MemorizedPage._chequeCanada ? `<td><select class="line-tax" aria-label="GST/HST"><option value="H" ${tax === 'H' ? 'selected' : ''}>H</option><option value="" ${tax === 'H' ? '' : 'selected'}>—</option></select></td>` : ''}
+            <td class="col-amount"><input class="line-amt money" type="number" step="0.01" min="0.01" value="${amount ? Number(amount).toFixed(2) : ''}" oninput="MemorizedPage.chequeTotal()"></td>
+            <td><button type="button" class="btn btn-sm btn-secondary" aria-label="Remove line" onclick="if (document.querySelectorAll('#mem-cheque-lines tr').length > 1) { this.closest('tr').remove(); MemorizedPage.chequeTotal(); }">&times;</button></td>
+        </tr>`);
+        MemorizedPage.chequeTotal();
+    },
+
+    chequeTotal() {
+        const total = Array.from(document.querySelectorAll('#mem-cheque-lines .line-amt')).reduce((t, i) => t + (parseFloat(i.value) || 0), 0);
+        const el = $('#mem-cheque-total');
+        if (el) el.textContent = formatCurrency(total);
+        return total;
+    },
+
+    async saveCheque(e, id) {
+        e.preventDefault();
+        const form = e.target;
+        const lines = Array.from(document.querySelectorAll('#mem-cheque-lines tr')).map(row => ({
+            account_id: parseInt(row.querySelector('.line-account').value, 10) || null,
+            description: row.querySelector('.line-desc').value || null,
+            amount: parseFloat(row.querySelector('.line-amt').value) || 0,
+            tax_code: row.querySelector('.line-tax') ? (row.querySelector('.line-tax').value || null) : null,
+        }));
+        if (lines.some(l => !l.account_id || !(l.amount > 0))) { toast('Each line needs an account and an amount', 'error'); return; }
+        const picked = form.payee_choice.value;
+        const body = {
+            ...MemorizedPage.scheduleFromForm(form, !id),
+            vendor_id: picked && !picked.startsWith('payee:') ? parseInt(picked, 10) : null,
+            payee: picked.startsWith('payee:') ? picked.slice(6) : null,
+            paid_from_account_id: parseInt(form.paid_from_account_id.value, 10),
+            reference: form.reference.value.trim() || null,
+            notes: form.notes.value || null,
+            class_id: classIdFromForm(form),
+            job_id: jobIdFromForm(form),
+            lines,
+        };
+        try {
+            if (id) { await API.put(`/memorized/${id}`, body); toast('Memorized cheque updated'); }
+            else { await API.post('/memorized', { kind: 'expense', ...body }); toast('Cheque memorized'); }
+            closeModal();
+            App.navigate('#/memorized');
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
+    // From an expense's page: the same form, filled from the cheque or
+    // charge. A GST/HST line in it is folded back into the H lines.
+    async memorizeExpense(expenseId) {
+        const [x, settings] = await Promise.all([
+            API.get(`/expenses/${expenseId}`),
+            API.get('/settings').catch(() => ({})),
+        ]);
+        const hstAccount = settings.sales_tax_system === 'canada' ? parseInt(settings.hst_account_id, 10) : null;
+        const rate = parseFloat(settings.hst_rate || '13') / 100;
+        const taxLines = (x.lines || []).filter(l => hstAccount && l.account_id === hstAccount);
+        const net = (x.lines || []).filter(l => !taxLines.includes(l));
+        const taxed = taxLines.length > 0;
+        const lines = net.map(l => ({
+            account_id: l.account_id,
+            description: l.description === x.payee ? '' : l.description,
+            amount: taxed ? Math.round(l.amount * (1 + rate) * 100) / 100 : l.amount,
+            tax_code: taxed ? 'H' : '',
+        }));
+        closeModal();
+        MemorizedPage.showChequeForm(null, {
+            name: x.payee || 'Cheque',
+            vendor_id: x.vendor_id,
+            payee: x.vendor_id ? null : x.payee,
+            paid_from_account_id: null,
+            notes: x.memo || '',
+            lines,
+        });
+        // the account it was paid from, by name (the expense gives the name)
+        setTimeout(() => {
+            const pf = $('#mem-form') && $('#mem-form').paid_from_account_id;
+            if (pf) {
+                const opt = Array.from(pf.options).find(o => o.textContent.includes(x.paid_from_account_name));
+                if (opt) pf.value = opt.value;
+            }
+        }, 0);
     },
 
     // ----------------------------------------------------------- a memorized bill

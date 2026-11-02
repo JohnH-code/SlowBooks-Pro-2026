@@ -20,6 +20,7 @@ from app.database import get_db
 from app.models.contacts import Vendor
 from app.models.memorized import (
     KIND_BILL,
+    KIND_EXPENSE,
     KIND_JOURNAL,
     MemorizedTransaction,
     MemorizedTransactionLine,
@@ -52,7 +53,7 @@ from app.services.memorized_service import (
 
 router = APIRouter(prefix="/api/memorized", tags=["memorized"])
 
-_DOC_WORD = {KIND_BILL: "bill", KIND_JOURNAL: "journal entry"}
+_DOC_WORD = {KIND_BILL: "bill", KIND_JOURNAL: "journal entry", KIND_EXPENSE: "cheque"}
 
 
 def _get(db: Session, mem_id: int) -> MemorizedTransaction:
@@ -74,6 +75,7 @@ def _response(
     resp.status = status_of(mem)
     resp.is_due = is_due(mem, as_of)
     resp.vendor_name = mem.vendor.name if mem.vendor else None
+    resp.paid_from_account_name = mem.paid_from.name if mem.paid_from else None
     resp.amount = amount_of(mem)
     for line, out in zip(mem.lines, resp.lines):
         if mem.kind == KIND_BILL and line.quantity is not None:
@@ -99,6 +101,8 @@ def _check_with_books(db: Session, data: MemorizedCreate) -> None:
                     "least one line."
                 ),
             )
+    elif data.kind == KIND_EXPENSE:
+        _check_cheque_with_books(db, data)
     else:
         from app.routes.journal import _journal_lines
 
@@ -108,6 +112,44 @@ def _check_with_books(db: Session, data: MemorizedCreate) -> None:
             lines=[ln.as_journal_line() for ln in data.lines],
         )
         _journal_lines(db, entry, basis=data.basis or BASIS_BOTH)
+
+
+def _check_cheque_with_books(db: Session, data: MemorizedCreate) -> None:
+    """A memorized cheque's accounts: paid from a bank or card account, to
+    accounts that exist and are not that one, a vendor that exists; a line
+    marked H needs the company's GST/HST."""
+    from app.models.accounts import Account
+
+    paid = db.get(Account, data.paid_from_account_id)
+    if paid is None or not paid.bank_kind:
+        raise HTTPException(
+            status_code=400,
+            detail="A memorized cheque is paid from a bank or credit card account",
+        )
+    if data.vendor_id is not None and db.get(Vendor, data.vendor_id) is None:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    for i, line in enumerate(data.lines, 1):
+        if db.get(Account, line.account_id) is None:
+            raise HTTPException(
+                status_code=404, detail=f"Line {i}: the account was not found"
+            )
+        if line.account_id == paid.id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Line {i}: the account is the one the cheque is paid from",
+            )
+    if any(line.tax_code == "H" for line in data.lines):
+        from app.services import hst
+
+        if hst.account_id(db) is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "A line is marked for GST/HST, but this company does not "
+                    "charge it. Turn on GST/HST in Settings, or leave the tax "
+                    "code off."
+                ),
+            )
 
 
 def _write_lines(db: Session, mem: MemorizedTransaction, lines) -> None:
@@ -130,8 +172,9 @@ def _write_lines(db: Session, mem: MemorizedTransaction, lines) -> None:
                 item_id=line.item_id if mem.kind == KIND_BILL else None,
                 quantity=line.quantity if mem.kind == KIND_BILL else None,
                 rate=line.rate if mem.kind == KIND_BILL else None,
-                debit=line.debit if mem.kind == KIND_JOURNAL else None,
+                debit=line.debit if mem.kind in (KIND_JOURNAL, KIND_EXPENSE) else None,
                 credit=line.credit if mem.kind == KIND_JOURNAL else None,
+                tax_code=line.tax_code if mem.kind == KIND_EXPENSE else None,
             )
         )
 
@@ -153,6 +196,8 @@ _HEADER_FIELDS = (
     "basis",
     "class_id",
     "job_id",
+    "paid_from_account_id",
+    "payee",
 )
 
 
@@ -170,9 +215,14 @@ def list_schedules(
     (`/api/recurring/{id}`), a bill or journal row's a memorized schedule
     (`/api/memorized/{id}`). The two can be equal, so a row is named by its
     `kind` and `id` together."""
-    if kind is not None and kind not in ("invoice", KIND_BILL, KIND_JOURNAL):
+    if kind is not None and kind not in (
+        "invoice",
+        KIND_BILL,
+        KIND_JOURNAL,
+        KIND_EXPENSE,
+    ):
         raise HTTPException(
-            status_code=422, detail="kind must be invoice, bill or journal"
+            status_code=422, detail="kind must be invoice, bill, journal or expense"
         )
     return schedule_rows(db, as_of, due_only=due, kind=kind)
 
@@ -226,7 +276,11 @@ def create_memorized(data: MemorizedCreate, db: Session = Depends(get_db)):
         anchor_day=data.start_date.day,
         end_date=data.end_date,
         occurrences_limit=data.occurrences,
-        vendor_id=data.vendor_id if data.kind == KIND_BILL else None,
+        vendor_id=data.vendor_id if data.kind in (KIND_BILL, KIND_EXPENSE) else None,
+        paid_from_account_id=(
+            data.paid_from_account_id if data.kind == KIND_EXPENSE else None
+        ),
+        payee=data.payee if data.kind == KIND_EXPENSE else None,
         bill_number=(data.bill_number or "").strip() or None,
         terms=data.terms,
         tax_rate=data.tax_rate,
@@ -279,6 +333,7 @@ def update_memorized(mem_id: int, data: MemorizedUpdate, db: Session = Depends(g
                 "rate": None if ln.rate is None else float(ln.rate),
                 "debit": ln.debit or 0,
                 "credit": ln.credit or 0,
+                "tax_code": ln.tax_code,
             }
             for ln in mem.lines
         ]

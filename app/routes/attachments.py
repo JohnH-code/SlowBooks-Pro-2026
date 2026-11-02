@@ -46,6 +46,9 @@ _ENTITY_TYPE_DIRS = {
     # receipt too, keyed by the entry's id, so it need not be re-entered as
     # an Expense just to hold the file (#600).
     "bank_entry": "bank_entry",
+    # The deposit slip, the cheque copy or the letter that came with a
+    # deposit (QuickBooks keeps these on the deposit too).
+    "deposit": "deposit",
 }
 
 # Whitelist of MIME types we accept for attachments. An attachment is served

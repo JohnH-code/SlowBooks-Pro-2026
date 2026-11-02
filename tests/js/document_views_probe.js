@@ -68,6 +68,10 @@ const ctx = {
   accountWords: (a, name = null, sep = ' - ') => { const n = name !== null ? name : (a.name || ''); return a.account_number ? `${a.account_number}${sep}${n}` : n; },
   accountLabel: (a, name = null, sep = ' - ') => { const n = name !== null ? name : (a.name || ''); const w = a.account_number ? `${a.account_number}${sep}${n}` : n; return String(w).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); },
   formatDate: (s) => s || '',
+  // no DOM here: the attachments list a view fills after it opens finds
+  // nothing to fill
+  $: () => null,
+  formatFileSize: (n) => String(n),
   sourceWord: (s) => String(s || ''),
   // utils.js's reader of address dates (NEW-35): the register asks it
   // for its filter; no query here, so nothing is ignored

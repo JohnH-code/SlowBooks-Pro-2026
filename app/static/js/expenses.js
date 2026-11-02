@@ -58,11 +58,28 @@ const ExpensesPage = {
         return accounts.filter(a => a.bank_kind);
     },
 
+    // Back to the list the form or the void came from: Credit Card Charges
+    // lists card charges too.
+    _backTo() {
+        if ((location.hash || '').startsWith('#/cc-charges')) App.refresh();
+        else App.navigate('#/expenses');
+    },
+
+    // showForm({ card: true }): a credit card charge, the form starting on
+    // the card
     async showForm() {
-        const [vendors, accounts] = await Promise.all([
+        const opts = arguments[0] || {};
+        const [vendors, accounts, payees, settings] = await Promise.all([
             API.get('/vendors?active_only=true'),
             API.get('/accounts'),
+            API.get('/expenses/payees').catch(() => []),
+            API.get('/settings').catch(() => ({})),
         ]);
+        // A Canadian registrant's lines carry a GST/HST code; the amounts
+        // typed include the tax, as a receipt shows them.
+        ExpensesPage._canada = settings.sales_tax_system === 'canada' && !!settings.hst_account_id;
+        ExpensesPage._hstRate = settings.hst_rate || '13';
+        ExpensesPage._hstAccount = parseInt(settings.hst_account_id, 10) || null;
         ExpensesPage._vendors = vendors;
         ExpensesPage._accounts = accounts;
         const classGroup = await classFormGroupHtml();
@@ -77,29 +94,32 @@ const ExpensesPage = {
         ExpensesPage._expenseAccounts = expenseAccts;
         const paidFrom = ExpensesPage.paidFromAccounts(accounts);
         const acctOpt = a => `<option value="${a.id}">${accountLabel(a)}</option>`;
-        const checking = paidFrom.find(a => /checking/i.test(a.name || '')) || paidFrom[0];
+        const checking = opts.card
+            ? (paidFrom.find(a => a.bank_kind === 'credit_card' && a.account_number === '2100') || paidFrom.find(a => a.bank_kind === 'credit_card') || paidFrom[0])
+            : (paidFrom.find(a => a.account_number === '1000') || paidFrom.find(a => /checking/i.test(a.name || '')) || paidFrom[0]);
 
         openModal('Enter Expense', `
             <form id="expense-form" data-skip-to="#expense-lines" data-skip-text="Skip to the lines" onsubmit="ExpensesPage.save(event)">
                 ${ScanHelper.scanRowHtml()}
                 <div class="form-grid">
-                    <div class="form-group"><label>Vendor *</label>
+                    <div class="form-group"><label>Payee *</label>
                         ${VendorQuickAdd.html(vendors, { id: 'expense-vendor', onchange: 'ExpensesPage.vendorSelected(this.value)' })}</div>
                     <div class="form-group"><label>Date *</label>
                         <input name="date" type="date" required value="${todayISO()}"></div>
                     <div class="form-group"><label>Paid From *</label>
-                        <select name="paid_from_account_id" required>${paidFrom.map(acctOpt).join('')}</select></div>
+                        <select name="paid_from_account_id" required onchange="ExpensesPage.nextNumber()">${paidFrom.map(acctOpt).join('')}</select></div>
                     <div class="form-group"><label title="What left the account; the lines below add up to it">Amount Paid *</label>
                         <input name="amount" class="money" type="number" step="0.01" min="0.01" required oninput="ExpensesPage.amountChanged()"></div>
                     <div class="form-group"><label>Reference</label>
-                        <input name="reference" placeholder="Receipt / check #"></div>
+                        <input name="reference" placeholder="Receipt / cheque #" oninput="this.dataset.auto=''"></div>
+                    <div class="form-group full-width" id="expense-quickfill-note" style="font-size:11px; color:var(--text-muted);"></div>
                     ${classGroup}${jobGroup}
                     <div class="form-group full-width"><label>Memo</label>
                         <textarea name="memo"></textarea></div>
                 </div>
                 <h3 style="margin:12px 0 8px;font-size:14px;">Lines</h3>
                 <div class="table-container table-container--scroll"><table class="line-items-table expense-lines-table">
-                    <thead><tr><th scope="col" title="Where the line is recorded">Account *</th><th scope="col">Memo</th>${ExpensesPage.jobHeadHtml()}${CostCodes.headHtml()}${CostTypes.headHtml()}${Nonprofit.headHtml()}<th scope="col" title="Billable to the job's customer">Bill?</th><th scope="col" class="col-amount">Amount</th><th scope="col"></th></tr></thead>
+                    <thead><tr><th scope="col" title="Where the line is recorded">Account *</th><th scope="col">Memo</th>${ExpensesPage.jobHeadHtml()}${CostCodes.headHtml()}${CostTypes.headHtml()}${Nonprofit.headHtml()}${ExpensesPage._canada ? `<th scope="col" title="H: the amount includes GST/HST at ${escapeHtml(ExpensesPage._hstRate)}%, claimed as an input tax credit">Tax</th>` : ''}<th scope="col" title="Billable to the job's customer">Bill?</th><th scope="col" class="col-amount">Amount</th><th scope="col"></th></tr></thead>
                     <tbody id="expense-lines">${ExpensesPage.lineHtml()}</tbody>
                 </table></div>
                 <button type="button" class="btn btn-sm btn-secondary" style="margin-top:8px;" onclick="ExpensesPage.addLine()">+ Add Line</button>
@@ -115,17 +135,75 @@ const ExpensesPage = {
             </form>`, { wide: true });
         const pf = document.querySelector('#expense-form [name="paid_from_account_id"]');
         if (pf && checking) pf.value = checking.id;
+        // Names cheques were written to that are not vendors (employees, the
+        // Receiver General, QuickBooks' Other Names), after the vendors.
+        const vsel = $('#expense-vendor');
+        if (vsel && payees && payees.length) {
+            vsel.insertAdjacentHTML('beforeend', `<optgroup label="Other payees">${payees.map(n =>
+                `<option value="payee:${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}</optgroup>`);
+        }
+        ExpensesPage.nextNumber();
         ScanHelper.wire(ExpensesPage._applyScan, ExpensesPage._applyScanField, ExpensesPage._scanFieldTarget);
     },
 
-    vendorSelected(vendorId) {
+    async vendorSelected(vendorId) {
         if (!vendorId || vendorId === VendorQuickAdd.NEW) return;
-        const vendor = ExpensesPage._vendors.find(v => v.id == vendorId);
+        const isPayee = String(vendorId).startsWith('payee:');
+        const vendor = isPayee ? null : ExpensesPage._vendors.find(v => v.id == vendorId);
         // the vendor's usual account goes on a line still waiting for one
         const sel = Array.from(document.querySelectorAll('#expense-lines .line-account')).find(a => !a.value);
         if (vendor && vendor.default_expense_account_id && sel) {
             sel.value = vendor.default_expense_account_id;
         }
+        // QuickFill: start from the last cheque or charge to this payee
+        const q = isPayee ? `payee=${encodeURIComponent(String(vendorId).slice(6))}` : `vendor_id=${vendorId}`;
+        let last = null;
+        try { last = await API.get(`/expenses/quickfill?${q}`); } catch (e) { return; }
+        ExpensesPage.applyQuickFill(last);
+    },
+
+    // Fill the form from an earlier expense, unless an amount was typed.
+    applyQuickFill(last) {
+        const form = $('#expense-form');
+        if (!form || !last || !last.lines || !last.lines.length) return;
+        const typed = (form.amount && form.amount.value) || ExpensesPage.rows().some(r => r.querySelector('.line-amt').value);
+        if (typed) return;
+        // a GST/HST line in the last one is figured again from the H lines
+        const isTax = l => ExpensesPage._canada && l.account_id === ExpensesPage._hstAccount;
+        const lines = last.lines.filter(l => !isTax(l));
+        const taxed = lines.length < last.lines.length;
+        $('#expense-lines').innerHTML = '';
+        for (const l of lines) {
+            const share = taxed ? Number(l.amount) * (1 + parseFloat(ExpensesPage._hstRate) / 100) : Number(l.amount);
+            ExpensesPage.addLine({ ...l, amount: Math.round(share * 100) / 100, tax_code: taxed ? 'H' : '' });
+        }
+        form.amount.value = Number(last.amount).toFixed(2);
+        if (last.paid_from_account_id && form.paid_from_account_id.querySelector(`option[value="${last.paid_from_account_id}"]`)) {
+            form.paid_from_account_id.value = last.paid_from_account_id;
+            ExpensesPage.nextNumber();
+        }
+        // a cent lost to rounding the tax back in goes on the first line
+        const left = ExpensesPage.recalc();
+        if (left !== 0 && Math.abs(left) <= 0.05) {
+            const first = ExpensesPage.rows()[0].querySelector('.line-amt');
+            first.value = (parseFloat(first.value) + left).toFixed(2);
+            ExpensesPage.recalc();
+        }
+        const status = $('#expense-quickfill-note');
+        if (status) status.textContent = `Filled in from the last one, ${formatDate(last.date)}: change anything that differs.`;
+    },
+
+    // The next cheque number for the bank account paid from, unless a
+    // number was typed. A credit card has none.
+    async nextNumber() {
+        const form = $('#expense-form');
+        if (!form) return;
+        const ref = form.reference;
+        if (ref.value && ref.dataset.auto !== '1') return;
+        let next = null;
+        try { next = (await API.get(`/expenses/next-number?account_id=${form.paid_from_account_id.value}`)).number; } catch (e) { /* none */ }
+        ref.value = next || '';
+        ref.dataset.auto = next ? '1' : '';
     },
 
     jobHeadHtml() { return (ExpensesPage._jobs || []).length ? `<th scope="col">${T('Job')}</th>` : ''; },
@@ -143,6 +221,7 @@ const ExpensesPage = {
                 <td>${AccountQuickAdd.picker(`<select class="line-account" required><option value="">Choose...</option>${acctOpts}</select>`, 'expense')}</td>
                 <td><input class="line-desc" value="${escapeHtml(l.description || '')}"></td>
                 ${jobCell}${CostCodes.cellHtml('line-cost-code', l.cost_code_id)}${CostTypes.cellHtml('line-cost-type', l.cost_type)}${ExpensesPage.fundCellsHtml(l)}
+                ${ExpensesPage._canada ? `<td><select class="line-tax" aria-label="GST/HST"><option value="H"${l.tax_code === '' ? '' : ' selected'}>H</option><option value=""${l.tax_code === '' ? ' selected' : ''}>—</option></select></td>` : ''}
                 <td style="text-align:center;"><input type="checkbox" class="line-billable" title="Billable"${l.is_billable ? ' checked' : ''}></td>
                 <td class="col-amount"><input class="line-amt money" type="number" step="0.01" min="0.01" value="${l.amount ? Number(l.amount).toFixed(2) : ''}" oninput="ExpensesPage.recalc()"></td>
                 <td><button type="button" class="btn btn-sm btn-secondary line-remove" aria-label="Remove line" title="Remove this line" onclick="ExpensesPage.removeLine(this)">&times;</button></td>
@@ -291,6 +370,7 @@ const ExpensesPage = {
                 class_id: Nonprofit.fundFromRow(row, 'line-function'),
                 ...Nonprofit.linePayload(row, 'line-function'),
                 is_billable: !!row.querySelector('.line-billable')?.checked,
+                ...(row.querySelector('.line-tax')?.value === 'H' ? { tax_code: 'H' } : {}),
             });
         });
         if (missing) {
@@ -311,10 +391,15 @@ const ExpensesPage = {
         if (!(await TxnWarn.ok(form))) return;
         if (!(await ClassWarn.ok(form, { rows: '#expense-lines tr', cls: 'line-function' }))) return;
         try {
-            const vendorId = await VendorQuickAdd.ensure('expense-vendor');
+            const picked = ($('#expense-vendor') || {}).value || '';
+            const otherPayee = picked.startsWith('payee:') ? picked.slice(6) : null;
+            const vendorId = otherPayee ? null : await VendorQuickAdd.ensure('expense-vendor');
             const body = {
                 date: form.date.value,
                 vendor_id: vendorId,
+                ...(otherPayee ? { payee: otherPayee } : {}),
+                // a line's GST/HST is inside its amount, as on the receipt
+                ...(ExpensesPage._canada ? { amounts_include_tax: true } : {}),
                 paid_from_account_id: paidFrom,
                 amount: parseFloat(form.amount.value),
                 lines,
@@ -330,7 +415,7 @@ const ExpensesPage = {
             await ScanHelper.attachAfterSave('expense', result.id);
             toastPosted('Expense recorded');
             closeModal();
-            App.navigate('#/expenses');
+            ExpensesPage._backTo();
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -342,7 +427,7 @@ const ExpensesPage = {
             await API.post(`/expenses/${id}/void`);
             toast('Expense voided');
             closeModal();
-            App.navigate('#/expenses');
+            ExpensesPage._backTo();
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -371,6 +456,7 @@ const ExpensesPage = {
             </div>
             <div class="form-actions">
                 ${x.printable ? `<button type="button" class="btn btn-secondary" onclick="window.open('/api/checks/print?transaction_id=${x.id}','_blank')">Print Check</button>` : ''}
+                ${isVoid ? '' : `<button type="button" class="btn btn-secondary" data-write title="Keep this cheque as a memorized transaction, to enter again on a schedule" onclick="MemorizedPage.memorizeExpense(${x.id})">Memorize</button>`}
                 ${isVoid ? '' : `<button data-destructive type="button" class="btn btn-danger" onclick="ExpensesPage.void(${x.id})">Void</button>`}
                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Close</button>
             </div>`);

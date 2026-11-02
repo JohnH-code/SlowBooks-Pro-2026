@@ -4,7 +4,9 @@
 # One step, no bill to pay later; the Scan Receipt flow lands here.
 # ============================================================================
 
+import re
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -12,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.accounts import Account
 from app.models.contacts import Vendor
-from app.models.transactions import Transaction
+from app.models.transactions import Transaction, TransactionLine
 from app.schemas.expenses import ExpenseCreate, ExpenseLineOut, ExpenseResponse
 from app.services.accounting import create_journal_entry, reversing_lines
 from app.services.job_costing import line_cost_type
@@ -57,22 +59,48 @@ def _memo_of(txn: Transaction, credit_line) -> str:
     return "" if line_desc == on_entry else line_desc
 
 
+def paid_from_line(txn: Transaction):
+    """The line money left by: the credit on a bank or card account (the
+    first, if another line credits something too), else the largest credit.
+    A simple expense has exactly one credit, so this is that line."""
+    credits = [ln for ln in txn.lines if (ln.credit or 0) > 0]
+    if not credits:
+        return None
+    banked = [ln for ln in credits if ln.account is not None and ln.account.bank_kind]
+    if banked:
+        return min(banked, key=lambda ln: ln.id or 0)
+    return max(credits, key=lambda ln: ln.credit)
+
+
 def _serialize(
-    txn: Transaction, db: Session, voided: bool | None = None
+    txn: Transaction,
+    db: Session,
+    voided: bool | None = None,
+    vendors: dict | None = None,
 ) -> ExpenseResponse:
     if voided is None:
         voided = txn.id in _void_ids(db, [txn.id])
-    # the expense's lines are the ledger's debit lines, in the order posted
-    debit_lines = sorted((ln for ln in txn.lines if ln.debit > 0), key=lambda x: x.id)
-    debit_line = debit_lines[0] if debit_lines else None
-    credit_line = next((ln for ln in txn.lines if ln.credit > 0), None)
-    vendor = (
-        db.query(Vendor).filter(Vendor.id == txn.source_id).first()
-        if txn.source_id
-        else None
+    credit_line = paid_from_line(txn)
+    # the expense's lines: every line but the one it was paid from, in the
+    # order posted (a GST/HST input tax credit is one of them; a cheque
+    # brought over from QuickBooks may carry a credit line too)
+    split = sorted(
+        (ln for ln in txn.lines if ln is not credit_line), key=lambda x: x.id or 0
     )
+    debit_line = split[0] if split else None
+    if vendors is not None:
+        vendor = vendors.get(txn.source_id) if txn.source_id else None
+    else:
+        vendor = (
+            db.query(Vendor).filter(Vendor.id == txn.source_id).first()
+            if txn.source_id
+            else None
+        )
     desc = txn.description or ""
     payee = vendor.name if vendor else desc.removeprefix("Expense: ").strip()
+    # the first line's account, as 2.31 gives it; the lists say "Split (N
+    # accounts)" from `lines`
+    account_name = debit_line.account.name if debit_line and debit_line.account else ""
     return ExpenseResponse(
         id=txn.id,
         date=txn.date,
@@ -83,7 +111,12 @@ def _serialize(
             ExpenseLineOut(
                 account_id=ln.account_id,
                 account_name=ln.account.name if ln.account else "",
-                amount=float(ln.debit),
+                account_number=(
+                    (ln.account.account_number or "") if ln.account else ""
+                ),
+                amount=float(
+                    Decimal(str(ln.debit or 0)) - Decimal(str(ln.credit or 0))
+                ),
                 description=ln.description or "",
                 class_id=ln.class_id,
                 job_id=ln.job_id,
@@ -93,15 +126,18 @@ def _serialize(
                 is_billable=bool(ln.is_billable),
                 line_order=i,
             )
-            for i, ln in enumerate(debit_lines)
+            for i, ln in enumerate(split)
         ],
-        expense_account_name=(
-            debit_line.account.name if debit_line and debit_line.account else ""
-        ),
+        expense_account_name=account_name,
         paid_from_account_name=(
             credit_line.account.name if credit_line and credit_line.account else ""
         ),
-        amount=float(sum((ln.debit for ln in debit_lines), Decimal("0"))),
+        paid_from_kind=(
+            (credit_line.account.bank_kind or "")
+            if credit_line and credit_line.account
+            else ""
+        ),
+        amount=float(credit_line.credit) if credit_line else 0.0,
         reference=txn.reference or "",
         # the memo typed on the expense, kept on its own (#648); a split's
         # debit lines carry their own (#599)
@@ -118,14 +154,117 @@ def _serialize(
 
 @router.get("", response_model=list[ExpenseResponse])
 def list_expenses(db: Session = Depends(get_db)):
+    from sqlalchemy.orm import selectinload
+
+    # One query each for the lines, their accounts and the vendors: a
+    # QuickBooks history brings thousands of cheques and card charges, and a
+    # query per expense took ten seconds for 6,000.
     txns = (
         db.query(Transaction)
+        .options(selectinload(Transaction.lines).selectinload(TransactionLine.account))
         .filter(Transaction.source_type == SOURCE_TYPE)
         .order_by(Transaction.date.desc(), Transaction.id.desc())
         .all()
     )
     voided = _void_ids(db, [t.id for t in txns])
-    return [_serialize(t, db, t.id in voided) for t in txns]
+    vendors = {v.id: v for v in db.query(Vendor).all()}
+    return [_serialize(t, db, t.id in voided, vendors) for t in txns]
+
+
+@router.get("/payees")
+def list_payees(db: Session = Depends(get_db)):
+    """Everyone an expense was ever paid to that has no vendor record: the
+    other names written on cheques (employees, the Receiver General,
+    QuickBooks' Other Names). QuickBooks offers them all in the Pay to the
+    Order of box."""
+    vendor_names = {(v.name or "").lower() for v in db.query(Vendor.name).all()}
+    seen: dict[str, str] = {}
+    for (desc,) in (
+        db.query(Transaction.description)
+        .filter(Transaction.source_type == SOURCE_TYPE)
+        .filter(Transaction.source_id.is_(None))
+        .distinct()
+    ):
+        name = (desc or "").removeprefix("Expense: ").strip()
+        if not name or name == "Expense" or name.lower() in vendor_names:
+            continue
+        seen.setdefault(name.lower(), name)
+    return sorted(seen.values(), key=str.lower)
+
+
+@router.get("/quickfill")
+def quickfill(
+    vendor_id: Optional[int] = None,
+    payee: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """The last expense paid to this vendor or payee (its accounts, amounts
+    and memos) for the form to start from, as QuickBooks' QuickFill does.
+    null when there is none."""
+    q = db.query(Transaction).filter(Transaction.source_type == SOURCE_TYPE)
+    if vendor_id:
+        vendor = db.get(Vendor, vendor_id)
+        names = [f"Expense: {vendor.name}"] if vendor else []
+        q = q.filter(
+            (Transaction.source_id == vendor_id) | (Transaction.description.in_(names))
+        )
+    elif payee:
+        q = q.filter(Transaction.description == f"Expense: {payee.strip()}")
+    else:
+        return None
+    voided_ids = {
+        sid
+        for (sid,) in db.query(Transaction.source_id).filter(
+            Transaction.source_type == VOID_SOURCE_TYPE
+        )
+    }
+    for txn in q.order_by(Transaction.date.desc(), Transaction.id.desc()).limit(20):
+        if txn.id in voided_ids:
+            continue
+        out = _serialize(txn, db, False)
+        credit = paid_from_line(txn)
+        return {
+            "id": out.id,
+            "date": out.date.isoformat(),
+            "amount": out.amount,
+            "paid_from_account_id": credit.account_id if credit else None,
+            # a blank memo was saved as the payee's name: not worth repeating
+            "lines": [
+                {
+                    **ln.model_dump(),
+                    "description": (
+                        "" if ln.description == out.payee else ln.description
+                    ),
+                }
+                for ln in out.lines
+            ],
+        }
+    return None
+
+
+@router.get("/next-number")
+def next_cheque_number(account_id: int, db: Session = Depends(get_db)):
+    """The next cheque number for a bank account: one more than the highest
+    number among its recent cheques (expenses and bill payments alike). A
+    credit card has none."""
+    acct = db.get(Account, account_id)
+    if acct is None or acct.bank_kind != "bank":
+        return {"number": None}
+    refs = (
+        db.query(Transaction.reference)
+        .join(TransactionLine, TransactionLine.transaction_id == Transaction.id)
+        .filter(TransactionLine.account_id == account_id, TransactionLine.credit > 0)
+        .filter(Transaction.reference.isnot(None), Transaction.reference != "")
+        .order_by(Transaction.date.desc(), Transaction.id.desc())
+        .limit(60)
+        .all()
+    )
+    numbers = []
+    for (ref,) in refs:
+        m = re.match(r"\s*(\d{1,7})(?:\s|$|·)", ref)
+        if m:
+            numbers.append(int(m.group(1)))
+    return {"number": str(max(numbers) + 1) if numbers else None}
 
 
 @router.get("/{expense_id}", response_model=ExpenseResponse)
@@ -205,6 +344,7 @@ def _line_specs(data: ExpenseCreate) -> list[dict]:
                 "is_billable": data.is_billable,
                 "function": data.function,
                 "set_function": "function" in data.model_fields_set,
+                "tax_code": data.tax_code,
             }
         ]
     if not data.lines:
@@ -235,10 +375,20 @@ def _line_specs(data: ExpenseCreate) -> list[dict]:
                 "is_billable": ln.is_billable,
                 "function": ln.function,
                 "set_function": "function" in ln.model_fields_set,
+                "tax_code": ln.tax_code,
             }
         )
     total = sum((sp["amount"] for sp in specs), Decimal("0"))
-    if data.amount is not None and Decimal(str(data.amount)) != total:
+    # GST/HST added on top of the lines is checked against the amount paid
+    # once it is figured (create_expense)
+    taxed_on_top = not data.amounts_include_tax and any(
+        sp["tax_code"] == "H" for sp in specs
+    )
+    if (
+        not taxed_on_top
+        and data.amount is not None
+        and Decimal(str(data.amount)) != total
+    ):
         raise HTTPException(
             status_code=422,
             detail=(
@@ -249,16 +399,71 @@ def _line_specs(data: ExpenseCreate) -> list[dict]:
     return specs
 
 
+def _gst_hst(db: Session, data: ExpenseCreate, specs: list[dict]):
+    """A Canadian registrant's GST/HST on the lines marked H: backed out of
+    an amount that includes it (a receipt's total) or added to it, and
+    claimed on one line to the GST/HST account as an input tax credit. The
+    specs' amounts become the net. (account, tax) — (None, 0) with no tax."""
+    if not any(sp["tax_code"] == "H" for sp in specs):
+        return None, Decimal("0")
+    from app.services import hst
+
+    itc_account = hst.account_id(db)
+    if itc_account is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A line is marked for GST/HST, but this company does not "
+                "charge it. Turn on GST/HST in Settings, or leave the tax "
+                "code off."
+            ),
+        )
+    tax_rate = hst.rate(db)
+    tax_total = Decimal("0")
+    for sp in specs:
+        if sp["tax_code"] != "H" or sp["account_id"] == itc_account:
+            continue
+        if data.amounts_include_tax:
+            sp["amount"], tax = hst.split_inclusive(sp["amount"], tax_rate)
+        else:
+            tax = (sp["amount"] * tax_rate).quantize(Decimal("0.01"), ROUND_HALF_UP)
+        tax_total += tax
+    return itc_account, tax_total
+
+
 @router.post("", response_model=ExpenseResponse, status_code=201)
 def create_expense(
     data: ExpenseCreate,
     db: Session = Depends(get_db),
     allow_duplicate_check_number: bool = Query(False),
 ):
+    txn = post_expense(db, data, allow_duplicate_check_number)
+    db.commit()
+    db.refresh(txn)
+    return _serialize(txn, db)
+
+
+def post_expense(
+    db: Session, data: ExpenseCreate, allow_duplicate_check_number: bool = False
+) -> Transaction:
+    """Check and post an expense, without committing: the route commits,
+    and a memorized cheque entered by the schedule posts through here in
+    the schedule's own transaction."""
     check_closing_date(db, data.date)
 
     specs = _line_specs(data)
-    amount = sum((sp["amount"] for sp in specs), Decimal("0"))
+    itc_account, tax_total = _gst_hst(db, data, specs)
+    amount = sum((sp["amount"] for sp in specs), Decimal("0")) + tax_total
+    if data.lines is not None and data.amount is not None and tax_total:
+        if Decimal(str(data.amount)) != amount:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"The lines and their GST/HST add up to ${amount:,.2f} but "
+                    f"the amount paid is ${Decimal(str(data.amount)):,.2f}; "
+                    "they must match"
+                ),
+            )
     expense_accounts = {}
     for sp in specs:
         acct = db.query(Account).filter(Account.id == sp["account_id"]).first()
@@ -316,6 +521,15 @@ def create_expense(
         if sp["set_function"]:
             line["function"] = sp["function"]
         journal_lines.append(line)
+    if tax_total:
+        journal_lines.append(
+            {
+                "account_id": itc_account,
+                "debit": tax_total,
+                "credit": Decimal("0"),
+                "description": "GST/HST",
+            }
+        )
     journal_lines.append(
         {
             "account_id": paid_from.id,
@@ -341,6 +555,5 @@ def create_expense(
     # the memo on its own (#648): "" when none was typed, which tells it
     # from an expense saved before the column existed
     txn.memo = memo
-    db.commit()
-    db.refresh(txn)
-    return _serialize(txn, db)
+    db.flush()
+    return txn

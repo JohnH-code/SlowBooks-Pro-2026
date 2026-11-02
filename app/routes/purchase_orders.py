@@ -27,8 +27,8 @@ from app.services.job_costing import line_cost_type
 from app.services.numbering import next_po_number
 from app.services.request_utils import content_disposition
 from app.services.purchase_posting import (
+    purchase_tax,
     expense_account_for,
-    spread,
     unit_cost_with_tax,
 )
 
@@ -729,7 +729,7 @@ def convert_to_bill(
     tax_rate = Decimal(str(po.tax_rate or 0))
     tax_amount = _q(subtotal * tax_rate)
     total = _q(subtotal + tax_amount)
-    tax_shares = spread(tax_amount, amounts)
+    tax_shares, itc_account = purchase_tax(db, tax_amount, amounts)
 
     # Where each line posts, decided before anything is written so a refused
     # line leaves no bill behind.
@@ -854,6 +854,15 @@ def convert_to_bill(
                 }
             )
 
+    if itc_account and journal_lines:
+        journal_lines.append(
+            {
+                "account_id": itc_account,
+                "debit": tax_amount,
+                "credit": Decimal("0"),
+                "description": "GST/HST",
+            }
+        )
     if journal_lines:
         # A/P takes the net; retainage held rides on 2050 (#553).
         journal_lines.append(

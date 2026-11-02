@@ -8,7 +8,7 @@ const CCChargesPage = {
         let html = `
             <div class="page-header">
                 <h2>Credit Card Charges</h2>
-                <button class="btn btn-primary" onclick="CCChargesPage.showForm()">+ Enter Charge</button>
+                <button class="btn btn-primary" onclick="ExpensesPage.showForm({ card: true })" title="On the expense form: split across accounts, GST/HST, memorize">+ Enter Charge</button>
             </div>`;
 
         if (charges.length === 0) {
@@ -26,7 +26,9 @@ const CCChargesPage = {
                     <td>${escapeHtml(c.card_account_name || '')}</td>
                     <td>${escapeHtml(c.reference || '')}</td>
                     <td class="amount">${formatCurrency(c.amount)}</td>
-                    <td>${voided ? '' : `<button data-destructive class="btn btn-sm btn-secondary" onclick="CCChargesPage.voidCharge(${c.id})">Void</button>`}</td>
+                    <td>${c.kind === 'expense'
+                        ? `<button class="btn btn-sm btn-secondary" onclick="ExpensesPage.showDetail(${c.id})">View</button>${voided ? '' : ` <button data-destructive class="btn btn-sm btn-secondary" onclick="ExpensesPage.void(${c.id})">Void</button>`}`
+                        : (voided ? '' : `<button data-destructive class="btn btn-sm btn-secondary" onclick="CCChargesPage.voidCharge(${c.id})">Void</button>`)}</td>
                 </tr>`;
             }
             html += '</tbody></table></div>';

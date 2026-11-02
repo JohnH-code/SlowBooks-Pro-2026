@@ -40,6 +40,7 @@ _ALLOWED_TYPES = {
     "ar_aging",
     "ap_aging",
     "sales_tax",
+    "gst_hst_return",
     "general_ledger",
     "adjusting_entries",  # the accountant's adjustments for a period (#341)
     "closing_date_exceptions",  # what moved inside a closed period (#342)

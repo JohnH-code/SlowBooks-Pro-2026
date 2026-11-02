@@ -25,6 +25,7 @@ from app.models.contacts import Vendor
 from app.models.invoices import Invoice
 from app.models.memorized import (
     KIND_BILL,
+    KIND_EXPENSE,
     KIND_JOURNAL,
     MODE_AUTO,
     MemorizedTransaction,
@@ -171,6 +172,8 @@ def journal_total(mem: MemorizedTransaction) -> Decimal:
 
 
 def amount_of(mem: MemorizedTransaction) -> Decimal:
+    # a cheque's lines are its debits, GST/HST included where marked H, so
+    # its amount is a journal entry's: the debits
     return bill_total(mem) if mem.kind == KIND_BILL else journal_total(mem)
 
 
@@ -399,6 +402,44 @@ def _enter_journal(db: Session, mem: MemorizedTransaction, on: date):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+def _enter_expense(db: Session, mem: MemorizedTransaction, on: date):
+    """A memorized cheque or card charge, posted as Enter Expense posts one
+    (routes.expenses.post_expense): the lines' amounts as typed, GST/HST
+    backed out of an H line, and the bank account's next cheque number when
+    the template fixes none."""
+    from app.routes.expenses import next_cheque_number, post_expense
+    from app.schemas.expenses import ExpenseCreate, ExpenseLineIn
+
+    reference = (mem.reference or "").strip()
+    if not reference and mem.paid_from_account_id:
+        reference = next_cheque_number(mem.paid_from_account_id, db)["number"] or ""
+    data = ExpenseCreate(
+        date=on,
+        vendor_id=mem.vendor_id,
+        payee=mem.payee,
+        paid_from_account_id=mem.paid_from_account_id,
+        lines=[
+            ExpenseLineIn(
+                account_id=ln.account_id,
+                amount=_q(ln.debit or 0),
+                description=ln.description,
+                class_id=ln.class_id,
+                job_id=ln.job_id,
+                tax_code=ln.tax_code,
+            )
+            for ln in mem.lines
+        ],
+        amounts_include_tax=True,
+        reference=reference or None,
+        memo=mem.notes,
+        class_id=mem.class_id,
+        job_id=mem.job_id,
+    )
+    # a number fixed on the template repeats by design (a loan's standing
+    # reference); the schedule never stops on it
+    return post_expense(db, data, allow_duplicate_check_number=True)
+
+
 def enter_memorized(
     db: Session,
     mem: MemorizedTransaction,
@@ -435,6 +476,9 @@ def enter_memorized(
         document_id = bill.id
     elif mem.kind == KIND_JOURNAL:
         txn = _enter_journal(db, mem, on)
+        document_id = txn.id
+    elif mem.kind == KIND_EXPENSE:
+        txn = _enter_expense(db, mem, on)
         document_id = txn.id
     else:
         raise HTTPException(
@@ -589,7 +633,11 @@ def row_of(mem: MemorizedTransaction, as_of: date) -> dict:
         "kind": mem.kind,
         "id": mem.id,
         "name": mem.name,
-        "party": mem.vendor.name if mem.kind == KIND_BILL and mem.vendor else None,
+        "party": (
+            (mem.vendor.name if mem.vendor else mem.payee)
+            if mem.kind in (KIND_BILL, KIND_EXPENSE)
+            else None
+        ),
         "mode": mem.mode,
         "frequency": mem.frequency,
         "interval": mem.interval or 1,
@@ -685,7 +733,7 @@ def schedule_rows(
     rows: list[dict] = []
     if kind in (None, "invoice"):
         rows.extend(_invoice_rows(db, as_of))
-    if kind in (None, KIND_BILL, KIND_JOURNAL):
+    if kind in (None, KIND_BILL, KIND_JOURNAL, KIND_EXPENSE):
         q = db.query(MemorizedTransaction)
         if kind:
             q = q.filter(MemorizedTransaction.kind == kind)

@@ -25,7 +25,23 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _move_aside_john_build_table() -> None:
+    """John's build: a company file opened by its 2.24 / 2.29 builds has
+    that build's own memorized_transactions (one JSON pattern a row).
+    It moves aside, its index with it, for f6a7b8c9d0e2 to carry over."""
+    insp = sa.inspect(op.get_bind())
+    if "memorized_transactions" not in insp.get_table_names():
+        return
+    columns = {c["name"] for c in insp.get_columns("memorized_transactions")}
+    if "payload" not in columns:
+        return
+    for index in insp.get_indexes("memorized_transactions"):
+        op.drop_index(index["name"], table_name="memorized_transactions")
+    op.rename_table("memorized_transactions", "john_memorized_old")
+
+
 def upgrade() -> None:
+    _move_aside_john_build_table()
     op.create_table(
         "memorized_transactions",
         sa.Column("id", sa.Integer(), nullable=False),

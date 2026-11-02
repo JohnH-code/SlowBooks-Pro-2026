@@ -38,9 +38,14 @@ const MigrationPage = {
                     QuickBooks Online, upload the Export data zip as downloaded, with
                     its <strong>A/R Aging Detail</strong> report beside it (Reports →
                     A/R Aging Detail → Export to Excel) to carry the open invoices and
-                    unapplied payments over.
+                    unapplied payments over. From <strong>QuickBooks Desktop</strong>,
+                    upload the lists <strong>.iif</strong>, the <strong>Journal</strong>
+                    report (dates All) and the <strong>Balance Sheet</strong> and
+                    <strong>Profit &amp; Loss</strong> by year as CSV; add the company's
+                    <strong>Attach</strong> folder as a zip with its attachment map to
+                    bring the documents too.
                 </p>
-                <input type="file" id="migration-files" aria-label="Files to import" multiple accept=".csv,.txt,.xlsx,.zip" onchange="MigrationPage.reset()">
+                <input type="file" id="migration-files" aria-label="Files to import" multiple accept=".csv,.txt,.xlsx,.zip,.iif" onchange="MigrationPage.reset()">
                 <div class="form-actions" style="margin-top:12px;" data-write>
                     <button class="btn btn-primary" onclick="MigrationPage.dryRun()">Dry Run</button>
                     <button class="btn btn-danger" id="migration-import-btn" disabled onclick="MigrationPage.doImport()">Import</button>
@@ -88,6 +93,9 @@ const MigrationPage = {
         const unapplied = imported ? data.imported_unapplied_payments : data.unapplied_payments;
         if (open != null) parts.push(n(open, 'open invoice'));
         if (unapplied != null) parts.push(n(unapplied, 'unapplied payment'));
+        // QuickBooks Desktop: documents from the Attach folder
+        const docs = imported ? data.imported_attachments : data.attachments;
+        if (docs) parts.push(n(docs, 'attachment'));
         return parts;
     },
 

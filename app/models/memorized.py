@@ -26,7 +26,10 @@ from app.database import Base
 
 KIND_BILL = "bill"
 KIND_JOURNAL = "journal"
-KINDS = (KIND_BILL, KIND_JOURNAL)
+# John's build: a cheque or card charge (an expense), as QuickBooks
+# memorizes a Write Cheques transaction
+KIND_EXPENSE = "expense"
+KINDS = (KIND_BILL, KIND_JOURNAL, KIND_EXPENSE)
 
 MODE_AUTO = "auto"
 MODE_REMIND = "remind"
@@ -79,6 +82,12 @@ class MemorizedTransaction(Base):
     )
     basis = Column(String(10), nullable=True)  # both | accrual | cash
 
+    # A cheque's or card charge's header (kind expense): the account it is
+    # paid from, and the payee when it is not a vendor (vendor_id); the
+    # reference is the cheque number when one is fixed, the memo in notes
+    paid_from_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
+    payee = Column(String(200), nullable=True)
+
     # Both
     class_id = Column(Integer, ForeignKey("classes.id"), nullable=True)
     job_id = Column(Integer, ForeignKey("jobs.id"), nullable=True)
@@ -89,6 +98,7 @@ class MemorizedTransaction(Base):
     )
 
     vendor = relationship("Vendor")
+    paid_from = relationship("Account", foreign_keys=[paid_from_account_id])
     lines = relationship(
         "MemorizedTransactionLine",
         back_populates="memorized",
@@ -125,9 +135,11 @@ class MemorizedTransactionLine(Base):
     quantity = Column(Numeric(12, 4), nullable=True)
     rate = Column(Numeric(17, 4), nullable=True)
 
-    # A journal line: one side or the other
+    # A journal line: one side or the other. A cheque's line: its amount
+    # as the debit, with the GST/HST code (H) when the amount includes it
     debit = Column(Numeric(15, 2), nullable=True)
     credit = Column(Numeric(15, 2), nullable=True)
+    tax_code = Column(String(2), nullable=True)
 
     memorized = relationship("MemorizedTransaction", back_populates="lines")
     account = relationship("Account")

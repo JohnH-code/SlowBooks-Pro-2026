@@ -245,7 +245,9 @@ def _sales_tax_ledger(
     from app.models.transactions import Transaction, TransactionLine
     from app.services import control_accounts
 
-    tax_id = control_accounts.find(db, "2200")
+    from app.services import hst
+
+    tax_id = hst.account_id(db) or control_accounts.find(db, "2200")
     if tax_id is None:
         return None
     account = db.get(Account, tax_id)

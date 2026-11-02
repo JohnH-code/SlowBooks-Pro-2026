@@ -20,6 +20,9 @@ class ExpenseLineIn(StrictModel):
     cost_type: Optional[str] = None
     function: Optional[str] = None  # nonprofit: program | management | fundraising
     is_billable: bool = False
+    # Canadian GST/HST: "H" = taxable, the tax is an input tax credit posted
+    # to the GST/HST account; "E" or none = no tax on the line.
+    tax_code: Optional[str] = Field(None, pattern="^(H|E)?$")
 
     _cost_type = field_validator("cost_type")(clean_line_cost_type)
 
@@ -46,6 +49,10 @@ class ExpenseCreate(StrictModel):
     cost_type: Optional[str] = None
     function: Optional[str] = None  # nonprofit: program | management | fundraising
     is_billable: bool = False
+    # the one-account form's GST/HST code (see ExpenseLineIn.tax_code)
+    tax_code: Optional[str] = Field(None, pattern="^(H|E)?$")
+    # the taxable amounts already include the GST/HST (a receipt's total)
+    amounts_include_tax: bool = False
 
     _cost_type = field_validator("cost_type")(clean_line_cost_type)
 
@@ -53,6 +60,7 @@ class ExpenseCreate(StrictModel):
 class ExpenseLineOut(BaseModel):
     account_id: int
     account_name: str = ""
+    account_number: str = ""
     amount: float
     description: str = ""
     class_id: Optional[int] = None
@@ -74,6 +82,8 @@ class ExpenseResponse(BaseModel):
     expense_account_name: str = ""
     lines: list[ExpenseLineOut] = []
     paid_from_account_name: str = ""
+    # bank | credit_card: a cheque prints only from a bank account
+    paid_from_kind: str = ""
     amount: float
     reference: str = ""
     memo: str = ""

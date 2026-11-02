@@ -10,7 +10,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.models.memorized import KIND_BILL, KINDS, MODES
+from app.models.memorized import KIND_BILL, KIND_EXPENSE, KINDS, MODES
 from app.models.transactions import BASES
 from app.schemas.bills import BillLineCreate
 from app.schemas.common import (
@@ -51,8 +51,19 @@ class MemorizedLineIn(StrictModel):
     # a journal line
     debit: Decimal = Decimal("0")
     credit: Decimal = Decimal("0")
+    # a cheque's line (kind expense): GST/HST code H when its amount
+    # includes the tax
+    tax_code: Optional[str] = None
 
     _cost_type = field_validator("cost_type")(clean_line_cost_type)
+
+    @field_validator("tax_code")
+    @classmethod
+    def _tax_code(cls, v):
+        v = (v or "").strip().upper() or None
+        if v not in (None, "H", "E"):
+            raise ValueError("tax_code must be H (GST/HST included) or left out")
+        return None if v == "E" else v
 
     def _dimensions(self) -> dict:
         out = {"is_billable": self.is_billable}
@@ -96,6 +107,21 @@ def _line_refusal(n: int, e: ValueError) -> ValueError:
 def _checked_lines(kind: str, lines: list[MemorizedLineIn]) -> list[MemorizedLineIn]:
     """The lines as the kind's own schema accepts them, priced (a bill
     line's amount alone becomes 1 x amount) and balanced (a journal)."""
+    if kind == KIND_EXPENSE:
+        # a cheque's lines: an account and an amount each (taken as `amount`
+        # or `debit`), stored as the debit
+        if not lines:
+            raise ValueError("a memorized cheque must have at least one line")
+        for i, line in enumerate(lines):
+            if line.account_id is None:
+                raise ValueError(f"line {i + 1}: choose an account")
+            amount = Decimal(
+                str(line.amount if line.amount is not None else line.debit or 0)
+            ).quantize(Decimal("0.01"))
+            if amount <= 0:
+                raise ValueError(f"line {i + 1}: the amount must be more than zero")
+            line.debit, line.credit, line.amount = amount, Decimal("0"), None
+        return lines
     if kind == KIND_BILL:
         if not lines:
             raise ValueError("a memorized bill must have at least one line")
@@ -135,7 +161,7 @@ def _checked_lines(kind: str, lines: list[MemorizedLineIn]) -> list[MemorizedLin
 
 
 class MemorizedCreate(StrictModel):
-    kind: str  # bill | journal
+    kind: str  # bill | journal | expense
     name: str
     mode: str = "remind"  # auto | remind
     frequency: str
@@ -159,6 +185,9 @@ class MemorizedCreate(StrictModel):
     # both
     class_id: Optional[int] = None
     job_id: Optional[int] = None
+    # a cheque or card charge (kind expense)
+    paid_from_account_id: Optional[int] = None
+    payee: Optional[str] = None
     lines: list[MemorizedLineIn] = []
 
     @field_validator("name")
@@ -176,7 +205,7 @@ class MemorizedCreate(StrictModel):
     def _kind(cls, v):
         v = (v or "").strip().lower()
         if v not in KINDS:
-            raise ValueError("kind must be bill or journal")
+            raise ValueError("kind must be bill, journal or expense")
         return v
 
     @field_validator("mode")
@@ -217,6 +246,12 @@ class MemorizedCreate(StrictModel):
         if self.kind == KIND_BILL:
             if self.vendor_id is None:
                 raise ValueError("a memorized bill needs a vendor")
+        elif self.kind == KIND_EXPENSE:
+            self.payee = (self.payee or "").strip()[:200] or None
+            if self.paid_from_account_id is None:
+                raise ValueError("a memorized cheque needs the account it is paid from")
+            if self.vendor_id is None and not self.payee:
+                raise ValueError("a memorized cheque needs a payee")
         elif not (self.description or "").strip():
             raise ValueError("a memorized journal entry needs a description")
         self.lines = _checked_lines(self.kind, self.lines)
@@ -247,6 +282,8 @@ class MemorizedUpdate(StrictModel):
     basis: Optional[str] = None
     class_id: Optional[int] = None
     job_id: Optional[int] = None
+    paid_from_account_id: Optional[int] = None
+    payee: Optional[str] = None
     lines: Optional[list[MemorizedLineIn]] = None
 
 
@@ -277,6 +314,7 @@ class MemorizedLineResponse(BaseModel):
     amount: Optional[Decimal] = None
     debit: Optional[Decimal] = None
     credit: Optional[Decimal] = None
+    tax_code: Optional[str] = None
     model_config = {"from_attributes": True}
 
     @field_serializer("quantity")
@@ -339,6 +377,9 @@ class MemorizedResponse(BaseModel):
     basis: Optional[str] = None
     class_id: Optional[int] = None
     job_id: Optional[int] = None
+    paid_from_account_id: Optional[int] = None
+    paid_from_account_name: Optional[str] = None
+    payee: Optional[str] = None
     amount: Decimal = Decimal("0")
     lines: list[MemorizedLineResponse] = []
     model_config = {"from_attributes": True}

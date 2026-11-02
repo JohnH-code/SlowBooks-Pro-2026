@@ -251,15 +251,18 @@ def test_the_views_the_links_open():
     assert [r[1] for r in dep["rows"]] == ["Salt &amp; Pine", "Walk-in"]
     assert dep["rows"][0][2] == "Payment from Salt &amp; Pine for Invoice #1002"
     assert dep["rows"][0][3] == "Check 4420"
-    assert 'onclick="DepositsPage.voidDeposit(31)">Void</button>' in dep["buttons"][0]
+    # the deposit's attachments come first (the slip, the cheque copy), then its actions
+    assert ">Attach</button>" in dep["buttons"][0]
+    assert 'onclick="DepositsPage.voidDeposit(31)">Void</button>' in dep["buttons"][1]
     # void: no payments, no Void, and why
     void = got["deposit 32"]
-    assert void["rows"] == [] and len(void["buttons"]) == 1
+    assert void["rows"] == [] and len(void["buttons"]) == 2  # Attach, Close
     assert "its payments went back on the Make Deposits list" in void["text"]
     # reconciled: no Void, and why; the slip is still there to print (#260)
     rec = got["deposit 33"]
     assert not any(">Void<" in b for b in rec["buttons"]), rec["buttons"]
     assert [re.search(r">([^<]*)</button>", b).group(1) for b in rec["buttons"]] == [
+        "Attach",
         "Save PDF",
         "Print",
         "Close",

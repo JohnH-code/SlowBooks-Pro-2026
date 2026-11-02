@@ -9,3 +9,4 @@ from app.routes.reports import duplicates  # noqa: F401  registers routes (#414)
 from app.routes.reports import items  # noqa: F401  registers routes (#435)
 from app.routes.reports import pl_detail  # noqa: F401  registers routes (#477)
 from app.routes.reports import construction  # noqa: F401  registers routes (#556)
+from app.routes.reports import gst_hst  # noqa: F401  registers routes
