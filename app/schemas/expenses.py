@@ -82,6 +82,7 @@ class ExpenseResponse(BaseModel):
     expense_account_name: str = ""
     lines: list[ExpenseLineOut] = []
     paid_from_account_name: str = ""
+    paid_from_account_id: Optional[int] = None
     # bank | credit_card: a cheque prints only from a bank account
     paid_from_kind: str = ""
     amount: float

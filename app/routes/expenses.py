@@ -132,6 +132,7 @@ def _serialize(
         paid_from_account_name=(
             credit_line.account.name if credit_line and credit_line.account else ""
         ),
+        paid_from_account_id=credit_line.account_id if credit_line else None,
         paid_from_kind=(
             (credit_line.account.bank_kind or "")
             if credit_line and credit_line.account
@@ -256,7 +257,9 @@ def next_cheque_number(account_id: int, db: Session = Depends(get_db)):
         .filter(TransactionLine.account_id == account_id, TransactionLine.credit > 0)
         .filter(Transaction.reference.isnot(None), Transaction.reference != "")
         .order_by(Transaction.date.desc(), Transaction.id.desc())
-        .limit(60)
+        # far enough back to reach the last numbered cheque among the
+        # e-transfers and card payments that carry none
+        .limit(1000)
         .all()
     )
     numbers = []

@@ -53,7 +53,7 @@ from app.services.memorized_service import (
 
 router = APIRouter(prefix="/api/memorized", tags=["memorized"])
 
-_DOC_WORD = {KIND_BILL: "bill", KIND_JOURNAL: "journal entry", KIND_EXPENSE: "cheque"}
+_DOC_WORD = {KIND_BILL: "bill", KIND_JOURNAL: "journal entry", KIND_EXPENSE: "expense"}
 
 
 def _get(db: Session, mem_id: int) -> MemorizedTransaction:

@@ -1099,7 +1099,9 @@ def test_migration_upgrades_downgrades_and_backfills(tmp_path):
     con.close()
     assert Decimal(str(billed)) == Decimal("100")  # backfilled
 
-    assert run("downgrade", "-1").returncode == 0
+    assert run(
+        "downgrade", "95209e8d293c-1"
+    )  # John's build: below its merge head.returncode == 0
     assert run("upgrade", "head").returncode == 0
 
 

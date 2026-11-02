@@ -902,7 +902,7 @@ def test_migration_upgrades_and_downgrades(tmp_path):
 
     up = run("upgrade", "head")
     assert up.returncode == 0, up.stderr
-    down = run("downgrade", "-1")
+    down = run("downgrade", "95209e8d293c-1")  # John's build: below its merge head
     assert down.returncode == 0, down.stderr
     again = run("upgrade", "head")
     assert again.returncode == 0, again.stderr

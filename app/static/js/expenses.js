@@ -91,7 +91,10 @@ const ExpensesPage = {
         // Expense and cost-of-goods accounts: materials are bought against
         // 5100 Materials Cost as often as against an expense (W-L18).
         const expenseAccts = PurchaseAccounts.filter(accounts);
-        ExpensesPage._expenseAccounts = expenseAccts;
+        // A cheque can go to any account, as QuickBooks' Write Cheques
+        // allows: a loan, an advance, a card it pays off. The expense and
+        // cost-of-goods accounts come first, the rest under Other.
+        ExpensesPage._expenseAccounts = expenseAccts.concat(accounts.filter(a => !expenseAccts.includes(a) && a.is_active !== false));
         const paidFrom = ExpensesPage.paidFromAccounts(accounts);
         const acctOpt = a => `<option value="${a.id}">${accountLabel(a)}</option>`;
         const checking = opts.card

@@ -79,7 +79,7 @@ def test_a_memorized_cheque_is_entered_as_an_expense(client, db_session, seed_ac
     )
     assert entered.status_code == 200, entered.text
     assert entered.json()["kind"] == "expense"
-    assert "cheque" in entered.json()["message"]
+    assert entered.json()["message"].startswith("Entered the expense dated")
     x = client.get(f"/api/expenses/{entered.json()['document_id']}").json()
     assert x["payee"] == "Alison St. Hill"
     assert x["reference"] == "427"

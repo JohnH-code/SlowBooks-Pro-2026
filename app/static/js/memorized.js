@@ -379,7 +379,10 @@ const MemorizedPage = {
         const m = mem || Object.assign({ mode: 'remind', frequency: 'monthly', interval: 1, lines: [] }, prefill || {});
         const canada = settings.sales_tax_system === 'canada' && !!settings.hst_account_id;
         MemorizedPage._chequeCanada = canada;
-        MemorizedPage._chequeAccounts = PurchaseAccounts.filter(accounts, ...m.lines.map(l => l.account_id));
+        // any account, as a cheque can go to a loan or a card it pays off:
+        // the expense and cost-of-goods accounts first, the rest under Other
+        const purchase = PurchaseAccounts.filter(accounts, ...m.lines.map(l => l.account_id));
+        MemorizedPage._chequeAccounts = purchase.concat(accounts.filter(a => !purchase.includes(a) && a.is_active !== false));
         const paidFrom = accounts.filter(a => a.bank_kind);
         const classGroup = await classFormGroupHtml(m.class_id);
         const jobGroup = await jobFormGroupHtml(m.job_id || null);
@@ -494,18 +497,10 @@ const MemorizedPage = {
             name: x.payee || 'Cheque',
             vendor_id: x.vendor_id,
             payee: x.vendor_id ? null : x.payee,
-            paid_from_account_id: null,
+            paid_from_account_id: x.paid_from_account_id,
             notes: x.memo || '',
             lines,
         });
-        // the account it was paid from, by name (the expense gives the name)
-        setTimeout(() => {
-            const pf = $('#mem-form') && $('#mem-form').paid_from_account_id;
-            if (pf) {
-                const opt = Array.from(pf.options).find(o => o.textContent.includes(x.paid_from_account_name));
-                if (opt) pf.value = opt.value;
-            }
-        }, 0);
     },
 
     // ----------------------------------------------------------- a memorized bill
