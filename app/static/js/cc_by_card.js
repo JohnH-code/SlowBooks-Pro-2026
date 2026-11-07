@@ -44,8 +44,11 @@
             </div>`;
         if (card) {
             html += `<p class="cc-card-note">${escapeHtml(card.name)}: ${formatCurrency(Math.abs(Number(card.balance || 0)))} owed.
-                <a href="#/banking/${card.id}">Open its register</a></p>`;
+                <a href="#/banking/${card.id}">Open it in Banking</a> to enter, transfer, import or reconcile.</p>`;
         }
+        // one card: its register, as Banking draws it — every charge,
+        // refund and payment on the card with the running amount owed
+        if (card) return html + await registerHtml(card);
         if (shown.length === 0) {
             html += `<div class="empty-state"><p>No charges on ${card ? escapeHtml(card.name) : 'any card'} yet</p></div>`;
             return html;
@@ -69,6 +72,48 @@
         }
         html += '</tbody></table></div>';
         return html;
+    };
+
+    // From a year back unless another date is chosen; the balance brought
+    // forward opens the list, oldest first, as the bank register reads.
+    CCChargesPage._from = null;
+    async function registerHtml(card) {
+        const from = CCChargesPage._from != null ? CCChargesPage._from
+            : new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
+        const reg = await API.get(`/banking/check-register?account_id=${card.id}${from ? `&start_date=${from}` : ''}`);
+        const [outLabel, inLabel] = BankingPage._cols('credit_card');
+        const rows = (reg.entries || []).map(e => `
+            <tr data-txn="${e.transaction_id}" style="${e.voided ? 'color:var(--gray-400); text-decoration:line-through;' : ''}">
+                <td>${formatDate(e.date)}</td>
+                <td>${escapeHtml(e.payee || '')}</td>
+                <td>${BankingPage._memoCell(e)}</td>
+                <td>${escapeHtml(e.reference || '')}</td>
+                <td style="font-size:10px; color:var(--gray-500);">${escapeHtml(sourceWord(e.source_type, e.source_kind))}</td>
+                <td class="amount">${e.payment > 0 ? formatCurrency(e.payment) : ''}</td>
+                <td class="amount">${e.deposit > 0 ? formatCurrency(e.deposit) : ''}</td>
+                <td class="amount" style="font-weight:700;">${formatCurrency(e.balance)}</td>
+                <td style="text-align:center;">${BankingPage._clearedCell(e, card.id)}</td>
+                <td style="white-space:nowrap;">${BankingPage._editButton(e, card.id)}${e.voidable ? `<button data-destructive class="btn btn-sm btn-secondary" onclick="BankingPage.voidEntry('${e.source_type}', ${e.transaction_id}, ${card.id})">Void</button>` : ''}</td>
+            </tr>`).join('');
+        const opening = from ? `<tr style="color:var(--gray-500);"><td>${formatDate(from)}</td><td colspan="6">Balance brought forward</td><td class="amount">${formatCurrency(reg.opening_balance)}</td><td></td><td></td></tr>` : '';
+        return `<div class="cc-reg-bar">
+                <label for="cc-reg-from">From</label>
+                <input type="date" id="cc-reg-from" value="${escapeHtml(from)}" onchange="CCChargesPage.setFrom(this.value)">
+                <button type="button" class="btn btn-sm btn-secondary" onclick="CCChargesPage.setFrom('')">All dates</button>
+            </div>
+            <div class="table-container cc-reg"><table>
+                <thead><tr>
+                    <th scope="col">Date</th><th scope="col">Payee</th><th scope="col">Memo</th><th scope="col">Ref #</th><th scope="col">Type</th>
+                    <th scope="col" class="amount">${outLabel}</th><th scope="col" class="amount">${inLabel}</th><th scope="col" class="amount">Balance</th>
+                    <th scope="col" title="✓ cleared · R reconciled">✓</th><th scope="col"></th>
+                </tr></thead>
+                <tbody>${opening}${rows || `<tr><td colspan="10" class="qbr-muted">Nothing on this card${from ? ' since ' + formatDate(from) : ''}</td></tr>`}</tbody>
+            </table></div>`;
+    }
+
+    CCChargesPage.setFrom = function (value) {
+        CCChargesPage._from = value || '';
+        App.refresh();
     };
 
     CCChargesPage.pickCard = function (id) {

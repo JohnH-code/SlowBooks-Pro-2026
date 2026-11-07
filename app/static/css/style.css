@@ -4114,3 +4114,5 @@ tbody tr.row--dim > td.amount { color: var(--text-muted); }
 .cc-card-tabs .qb-tab--on { opacity: 1; font-weight: 600; background: var(--cheque-card-bg); }
 .cc-card-tabs .cc-owed { margin-left: 8px; font-weight: 400; color: var(--text-muted); }
 .cc-card-note { font-size: 13px; color: var(--text-muted); margin: 0 0 8px; }
+.cc-reg-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 13px; }
+.cc-reg-bar label { font-size: 11px; text-transform: uppercase; color: var(--text-muted); }
