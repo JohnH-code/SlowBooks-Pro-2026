@@ -3248,3 +3248,62 @@ tbody tr.row--dim > td.amount { color: var(--text-muted); }
     .bill-with-summary { flex-direction: column; align-items: stretch; }
     .bill-vendor-summary { flex-basis: auto; width: 100%; border-left: 0; border-top: 1px solid var(--border, #ccc); padding: 8px 0 0; }
 }
+
+/* ── Write Cheques (John's build, write_cheques.js) ─────────────────────
+   The Enter Expense form as QuickBooks Desktop 2020 lays it out: the bank
+   account and its balance on top, the cheque itself on a pale green face,
+   the Expenses grid below with its total on a tab. */
+:root { --cheque-bg: #eef7e8; --cheque-border: #9cc48a; --cheque-card-bg: #f3f1fa; --cheque-card-border: #b2a8d6; }
+.qb-write-cheques .qb-toolbar {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 6px 8px; margin-bottom: 8px;
+    background: var(--toolbar-bg); border: 1px solid var(--toolbar-border); border-radius: 4px;
+}
+.qb-write-cheques .qb-print-later { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.qb-write-cheques .qb-account-row {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;
+}
+.qb-write-cheques .qb-account-row label,
+.qb-write-cheques .qb-cheque label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted, #555);
+}
+.qb-write-cheques .qb-account-row select { min-width: 220px; max-width: 320px; }
+.qb-write-cheques .qb-balance { margin-left: auto; font-size: 12px; }
+.qb-write-cheques .qb-balance strong { font-size: 16px; margin-left: 8px; }
+.qb-write-cheques .qb-cheque {
+    max-width: 760px; padding: 12px 16px 10px; margin-bottom: 6px;
+    background: var(--cheque-bg); border: 1px solid var(--cheque-border); border-radius: 4px;
+    display: grid; grid-template-columns: 1fr; gap: 8px;
+}
+.qb-write-cheques .qb-cheque.qb-cheque--card { background: var(--cheque-card-bg); border-color: var(--cheque-card-border); }
+.qb-write-cheques .qb-cheque-top { display: flex; justify-content: flex-end; gap: 14px; }
+.qb-write-cheques .qb-field { display: flex; align-items: center; gap: 6px; }
+.qb-write-cheques .qb-field input { width: 150px; }
+.qb-write-cheques .qb-cheque-payee { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.qb-write-cheques .qb-payee-select { flex: 1 1 280px; min-width: 220px; }
+.qb-write-cheques .qb-payee-select select, .qb-write-cheques .qb-payee-select input { width: 100%; }
+.qb-write-cheques .qb-dollar { font-weight: bold; }
+.qb-write-cheques .qb-amount { width: 150px; text-align: right; }
+.qb-write-cheques .qb-cheque-words {
+    display: flex; justify-content: space-between; gap: 8px;
+    border-bottom: 1px solid var(--cheque-border); min-height: 20px; padding-bottom: 2px; font-size: 13px;
+}
+.qb-write-cheques .qb-dollars-word { font-size: 11px; color: var(--text-muted, #555); }
+.qb-write-cheques .qb-cheque-address { display: flex; flex-direction: column; gap: 2px; max-width: 260px; }
+.qb-write-cheques .qb-cheque-address textarea { resize: none; font-size: 12px; background: var(--panel-bg); }
+.qb-write-cheques .qb-cheque-memo { display: flex; align-items: center; gap: 8px; }
+.qb-write-cheques .qb-cheque-memo input { flex: 1; }
+.qb-write-cheques .qb-cheque--card .qb-cheque-words,
+.qb-write-cheques .qb-cheque--card .qb-cheque-address { display: none; }
+.qb-write-cheques .qb-note { font-size: 11px; color: var(--text-muted, #555); min-height: 14px; }
+.qb-write-cheques .qb-tabs { margin-top: 6px; border-bottom: 1px solid var(--panel-border); }
+.qb-write-cheques .qb-tab {
+    display: inline-block; padding: 4px 14px; font-size: 13px;
+    border: 1px solid var(--panel-border); border-bottom: none; border-radius: 4px 4px 0 0; background: var(--panel-bg);
+}
+.qb-write-cheques .qb-tab strong { margin-left: 18px; }
+.qb-write-cheques .qb-lines thead th { font-size: 11px; text-transform: uppercase; }
+.qb-write-cheques .qb-totals { display: flex; justify-content: flex-end; gap: 18px; font-size: 12px; margin-top: 6px; }
+.qb-write-cheques .qb-actions { justify-content: flex-end; }
+.qb-write-cheques .qb-extra { max-width: 760px; margin-bottom: 4px; }
+.qb-write-cheques #scan-row { margin-bottom: 8px !important; padding: 6px 10px !important; }

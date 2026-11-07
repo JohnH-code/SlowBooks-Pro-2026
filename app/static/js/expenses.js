@@ -203,8 +203,12 @@ const ExpensesPage = {
         if (!form) return;
         const ref = form.reference;
         if (ref.value && ref.dataset.auto !== '1') return;
+        const account = form.paid_from_account_id.value;
         let next = null;
-        try { next = (await API.get(`/expenses/next-number?account_id=${form.paid_from_account_id.value}`)).number; } catch (e) { /* none */ }
+        try { next = (await API.get(`/expenses/next-number?account_id=${account}`)).number; } catch (e) { /* none */ }
+        // the account changed while this one was asked: its answer is stale
+        if (form.paid_from_account_id.value !== account) return;
+        if (ref.value && ref.dataset.auto !== '1') return;
         ref.value = next || '';
         ref.dataset.auto = next ? '1' : '';
     },
@@ -415,6 +419,7 @@ const ExpensesPage = {
             const result = await CheckNumberWarn.send(
                 q => API.post('/expenses', body, q ? { query: q } : undefined), form.reference);
             if (!result) return;
+            ExpensesPage._qbSaved = result;  // write_cheques.js: print when saved
             await ScanHelper.attachAfterSave('expense', result.id);
             toastPosted('Expense recorded');
             closeModal();
