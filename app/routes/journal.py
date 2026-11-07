@@ -3,8 +3,9 @@
 # Feature: Allow users to create/view/void manual journal entries
 # ============================================================================
 
+from datetime import date as date_type
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import or_
@@ -285,10 +286,25 @@ def list_journal_entries(
         description="true for adjusting entries only, false for the rest (#341); "
         "omit for every entry",
     ),
+    start_date: Optional[date_type] = Query(
+        default=None, description="entries dated on or after this day (#687)"
+    ),
+    end_date: Optional[date_type] = Query(
+        default=None, description="entries dated on or before this day (#687)"
+    ),
+    sort: Literal["date", "entered"] = Query(
+        default="date",
+        description="date: by entry date, newest first; entered: by the "
+        "time the entry was entered, newest first (#687)",
+    ),
     db: Session = Depends(get_db),
     request: Request = None,
 ):
     q = db.query(Transaction)
+    if start_date is not None:
+        q = q.filter(Transaction.date >= start_date)
+    if end_date is not None:
+        q = q.filter(Transaction.date <= end_date)
     if adjusting is not None:
         q = q.filter(Transaction.is_adjusting == adjusting)
     if source_type:
@@ -316,7 +332,12 @@ def list_journal_entries(
                 & Transaction.id.in_(report_journals),
             )
         )
-    entries = q.order_by(Transaction.date.desc()).all()
+    if sort == "entered":
+        # newest entered first; the id breaks a tie inside one second
+        q = q.order_by(Transaction.created_at.desc(), Transaction.id.desc())
+    else:
+        q = q.order_by(Transaction.date.desc())
+    entries = q.all()
     accounts = {a.id: a for a in db.query(Account).all()}
     from app.services.qbo_documents import REVERSALS
 
@@ -373,7 +394,11 @@ def get_journal_entry(
     lines_data = []
     for line in txn_lines:
         lines_data.append(_line_dict(line, accounts.get(line.account_id), jobs))
-    voided = reversed_already(db, txn)
+    # a card charge's or a transfer's own void (#689: the one a replace
+    # leaves) as well as a journal's
+    from app.services.bank_register import voided_transaction_ids
+
+    voided = reversed_already(db, txn) or txn.id in voided_transaction_ids(db, [txn.id])
     recon = reconciled_on(db, txn)
     # A bank entry is edited in its register, not here: the page says so
     # and links back to the bank or card account it was posted from (the
@@ -411,6 +436,8 @@ def get_journal_entry(
         reconciled_note=_reconciled_sentence(recon) if recon else None,
         register_account_id=register.id if register is not None else None,
         register_account_name=register.name if register is not None else "",
+        replaces_id=txn.replaces_id,
+        replaced_by_id=txn.replaced_by_id,
     )
 
 

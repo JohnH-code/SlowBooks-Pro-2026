@@ -1227,7 +1227,7 @@ def test_migration_upgrades_and_downgrades(tmp_path):
 
     assert run("upgrade", "head").returncode == 0
     assert run(
-        "downgrade", "95209e8d293c-1"
+        "downgrade", "d7f3a9c1b5e2-1"
     )  # John's build: below its merge head.returncode == 0
     assert run("upgrade", "head").returncode == 0
 

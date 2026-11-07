@@ -96,21 +96,16 @@ const BankingPage = {
                     <button class="btn btn-primary" type="submit">Connect Mercury</button>
                 </form>`;
         } else {
-            const banks = rows.filter(a => a.bank_kind === 'bank');
             const tableRows = feed.accounts.map(a => `<tr data-mercury-account="${escapeHtml(a.id)}">
                 <td>${escapeHtml(a.name)} ${a.last_four ? '••••' + escapeHtml(a.last_four) : ''}</td>
                 <td class="amount mercury-current">${escapeHtml(a.balance)} USD</td>
                 <td class="amount mercury-available">${escapeHtml(a.available_balance)} USD</td>
                 <td class="amount mercury-inflight">${a.in_flight_balance === undefined ? '—' : escapeHtml(a.in_flight_balance) + ' USD'}</td>
-                <td><select class="mercury-map" data-mercury-id="${escapeHtml(a.id)}" data-admin
-                    aria-label="Import ${escapeHtml(a.name)} into">
-                    ${BankingPage._importOptions(rows, feeds, feed.account_map[a.id], ['bank'])}
-                </select></td></tr>`).join('');
+                <td>${BankingPage._importCell('mercury', a.id, a.name, rows, feeds, feed.account_map[a.id], ['bank'])}</td></tr>`).join('');
             body = `<p>Sync posted deposits and withdrawals into <em>To review</em>.
                 Match them to payments already recorded, or review and add them to your books.
                 Syncing does not mark invoices paid.</p>
-                ${!banks.length ? BankingPage._noBankAccountHint('bank account') : ''}
-                <p class="form-hint hidden" data-admin-note>An administrator chooses which bank account each Mercury account imports into${Object.keys(feed.account_map || {}).length ? '.' : '; until one does, Sync has nothing to import.'}</p>
+                <p class="form-hint hidden" data-admin-note>${BankingPage._onlyAdminMaps(feed.account_map)}</p>
                 <p>${feed.last_sync ? 'Last successful sync: ' + escapeHtml(feed.last_sync.replace('T', ' ')) : 'Not synced yet.'}</p>
                 <div class="table-container"><table id="mercury-balances">
                     <thead><tr><th scope="col">Mercury account</th><th scope="col" class="amount">Current balance</th><th scope="col" class="amount">Available</th><th scope="col" class="amount">Incoming transfers</th><th scope="col">Imports into</th></tr></thead>
@@ -235,12 +230,7 @@ const BankingPage = {
         e.preventDefault();
         const button = e.target.querySelector('button[type=submit]');
         const since = $('#mercury-since').value;
-        const mapping = {}, ledger_mapping = {};
-        document.querySelectorAll('.mercury-map').forEach(sel => {
-            const [kind, id] = BankingPage._importChoice(sel.value);
-            if (kind === 'acct') ledger_mapping[sel.dataset.mercuryId] = id;
-            else if (kind === 'feed') mapping[sel.dataset.mercuryId] = id;
-        });
+        const { mapping, ledger_mapping } = BankingPage._feedMapping('mercury');
         button.disabled = true;
         button.textContent = 'Syncing…';
         try {
@@ -344,8 +334,154 @@ const BankingPage = {
         return m ? [m[1], parseInt(m[2], 10)] : ['none', 0];
     },
 
-    _noBankAccountHint(what) {
-        return `<p>The chart has no ${what} yet. Add one with <strong>+ New Bank Account</strong> above, or mark an account in the Chart of Accounts as a bank account, then choose it here.</p>`;
+    // Whether this sign-in may change where a feed imports (#384's rule:
+    // the map routes are an administrator's). The sections are also drawn
+    // in a test probe that loads this file without app.js.
+    _mayMap() { return typeof App === 'undefined' || App.isAdmin(); },
+
+    // The sentence a sign-in that may not change the mapping reads above the
+    // table (#718), shown by App.adminPass.
+    _onlyAdminMaps(accountMap) {
+        return 'Only an administrator can change where a feed imports.' +
+            (Object.keys(accountMap || {}).length ? '' : ' Until one chooses an account, Sync has nothing to import.');
+    },
+
+    // A feed row's "Imports into" cell (#718). A dropdown with nothing in it
+    // but "— not imported —" looked broken: an administrator spent a week
+    // unable to map a connected feed whose checking account sat in the chart
+    // as a plain asset. With nothing to offer, the row says why and offers
+    // both ways out (+ New bank account, or making an account already in the
+    // chart a bank account); with a list, the second sits under it for an
+    // account that is not in it. A sign-in that may not change the mapping
+    // reads it as text, never a greyed dropdown.
+    _importCell(source, rowId, rowName, rows, feeds, mapped, kinds) {
+        if (!BankingPage._mayMap()) {
+            const acct = mapped && rows.find(r => r.feed && r.feed.bank_account_id === mapped);
+            const rec = !acct && mapped && feeds.find(b => b.id === mapped);
+            const shown = acct ? accountLabel(acct) : rec ? escapeHtml(rec.account_name || rec.name) : 'Not imported';
+            return `<span class="feed-imports-into">${shown}</span>`;
+        }
+        const opts = BankingPage._importOptions(rows, feeds, mapped, kinds);
+        const data = `data-source="${source}" data-row="${escapeHtml(rowId)}" data-row-name="${escapeHtml(rowName)}"`;
+        const useOwn = `<button type="button" class="btn btn-secondary btn-sm" data-admin ${data}
+            onclick="BankingPage.showUseOwnAccount(this)">Use an account I already have…</button>`;
+        const attrs = source === 'mercury'
+            ? `class="mercury-map" data-mercury-id="${escapeHtml(rowId)}"`
+            : `class="simplefin-map" data-sfid="${escapeHtml(rowId)}"`;
+        if (!/<option value="(acct|feed):/.test(opts)) {
+            const what = kinds.includes('credit_card') ? 'a bank or credit-card account' : 'a bank account';
+            return `<p class="feed-no-bank" style="margin:0 0 6px;">No account in your chart is marked as ${what} yet.</p>
+                <div class="btn-group">
+                    <button type="button" class="btn btn-primary btn-sm" data-admin ${data}
+                        onclick="BankingPage.newAccountForFeed(this)">+ New bank account</button>
+                    ${useOwn}
+                </div>`;
+        }
+        return `<select ${attrs} data-admin aria-label="Import ${escapeHtml(rowName)} into">${opts}</select>
+            <div style="margin-top:4px;">${useOwn}</div>`;
+    },
+
+    // The mapping the page's dropdowns hold, as the map routes take it: a
+    // chart account under ledger_mapping, a feed record under mapping, a
+    // row "— not imported —" (or with no dropdown) left out, which unmaps it.
+    _feedMapping(source) {
+        const key = source === 'mercury' ? 'mercuryId' : 'sfid';
+        const mapping = {}, ledger_mapping = {};
+        document.querySelectorAll(source === 'mercury' ? '.mercury-map' : '.simplefin-map').forEach(sel => {
+            const [kind, id] = BankingPage._importChoice(sel.value);
+            if (kind === 'acct') ledger_mapping[sel.dataset[key]] = id;
+            else if (kind === 'feed') mapping[sel.dataset[key]] = id;
+        });
+        return { mapping, ledger_mapping };
+    },
+
+    // Save the mapping with one row pointed at a chart account: the map
+    // routes replace the whole map, so the other rows go as the page has them.
+    async _mapFeedRow(source, rowId, accountId) {
+        const { mapping, ledger_mapping } = BankingPage._feedMapping(source);
+        delete mapping[rowId];
+        ledger_mapping[rowId] = accountId;
+        if (source === 'mercury') {
+            await API.post('/mercury/map', { mapping, ledger_mapping });
+            return;
+        }
+        const reversed = [...document.querySelectorAll('.simplefin-reverse')]
+            .filter(box => box.checked).map(box => box.dataset.sfid);
+        await API.post('/simplefin/map', { mapping, ledger_mapping, reversed });
+    },
+
+    // + New bank account from a feed row: the usual dialog, and the account
+    // it makes is where that row imports when the dialog is done.
+    newAccountForFeed(btn) {
+        const { source, row, rowName } = btn.dataset;
+        BankingPage.showAccountForm(null, { source, row, rowName });
+    },
+
+    // "Use an account I already have…" (#718): the chart's asset accounts
+    // (and its liability accounts, for a feed that takes credit cards) that
+    // are not bank or card accounts yet. The pick becomes a Bank (or Credit
+    // card) account through the chart's own route, PUT /accounts/:id, and
+    // the row is mapped to it through the feed's map route.
+    async showUseOwnAccount(btn) {
+        const { source, row, rowName } = btn.dataset;
+        const cards = source !== 'mercury';
+        let accounts;
+        try { accounts = await API.get('/accounts?active_only=true'); }
+        catch (err) { toast(err.message, 'error'); return; }
+        const fits = (a) => !a.bank_kind && !a.is_control && a.is_active !== false && (
+            (a.account_type === 'asset' && a.detail_type !== 'accounts_receivable') ||
+            (cards && a.account_type === 'liability' && a.detail_type !== 'accounts_payable'));
+        const choices = accounts.filter(fits);
+        BankingPage._ownChoices = choices;
+        if (!choices.length) {
+            openModal('Use an account I already have', `
+                <p>Your chart has no ${cards ? 'asset or liability' : 'asset'} account that could become ${cards ? 'a bank or credit-card' : 'a bank'} account.
+                    Use <strong>+ New bank account</strong> instead.</p>
+                <div class="form-actions"><button type="button" class="btn btn-secondary" onclick="closeModal()">Close</button></div>`);
+            return;
+        }
+        const group = (label, type) => {
+            const list = choices.filter(a => a.account_type === type);
+            return list.length ? `<optgroup label="${label}">${list.map(a =>
+                `<option value="${a.id}">${accountLabel(a)}</option>`).join('')}</optgroup>` : '';
+        };
+        openModal('Use an account I already have', `
+            <form onsubmit="BankingPage.useOwnAccount(event)" data-source="${escapeHtml(source)}" data-row="${escapeHtml(row)}" data-row-name="${escapeHtml(rowName)}">
+                <p>Choose the account in your chart that ${escapeHtml(rowName)} is. It becomes ${cards ? 'a bank account (or a credit-card account, for a liability)' : 'a bank account'}
+                    with a register, and this feed imports into it.</p>
+                <div class="form-group"><label for="own-account">Account</label>
+                    <select id="own-account" name="account_id" required>
+                        ${group(cards ? 'Asset accounts: become bank accounts' : 'Asset accounts', 'asset')}
+                        ${cards ? group('Liability accounts: become credit-card accounts', 'liability') : ''}
+                    </select></div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Use this account</button>
+                </div>
+            </form>`);
+    },
+
+    async useOwnAccount(e) {
+        e.preventDefault();
+        const form = e.target;
+        const { source, row, rowName } = form.dataset;
+        const acct = (BankingPage._ownChoices || []).find(a => a.id === Number(form.account_id.value));
+        if (!acct) return;
+        const kind = acct.account_type === 'liability' ? 'credit_card' : 'bank';
+        const what = kind === 'bank' ? 'a bank account' : 'a credit-card account';
+        if (!confirm(`${accountWords(acct)} will become ${what} and get a register. ${rowName} will import into it.`)) return;
+        const button = form.querySelector('button[type=submit]');
+        button.disabled = true;
+        try {
+            await API.put(`/accounts/${acct.id}`, { detail_type: kind, bank_kind: kind });
+            await BankingPage._mapFeedRow(source, row, acct.id);
+            closeModal();
+            toast(`${accountWords(acct)} is now ${what}. ${rowName} imports into it.`);
+            BankingPage.go('#/banking');
+        } catch (err) {
+            button.disabled = false;
+            toast(err.message, 'error');
+        }
     },
 
     _renderFeedSection(feed, feeds, rows = []) {
@@ -371,16 +507,17 @@ const BankingPage = {
                     </div>
                 </form>`;
         } else {
-            const options = (sfId) => BankingPage._importOptions(
-                rows, feeds, feed.account_map[sfId], ['bank', 'credit_card']);
             const reversed = new Set(feed.reversed || []);
+            const mayMap = BankingPage._mayMap();
+            const signs = (sfId) => mayMap
+                ? `<label style="font-size:11px; white-space:nowrap;"><input type="checkbox" data-sfid="${escapeHtml(sfId)}" class="simplefin-reverse" data-admin
+                        ${reversed.has(sfId) ? 'checked' : ''}> Reverse signs</label>`
+                : `<span style="font-size:11px;">${reversed.has(sfId) ? 'Signs reversed' : 'As the bank sends them'}</span>`;
             const tableRows = feed.accounts.map(a => `<tr>
                     <td>${escapeHtml(a.name)}<div style="font-size:10px; color:var(--gray-400);">${escapeHtml(a.org || '')}</div></td>
                     <td class="amount">${escapeHtml(a.balance)} ${escapeHtml(a.currency)}</td>
-                    <td><select data-sfid="${escapeHtml(a.id)}" class="simplefin-map" data-admin
-                        aria-label="Import ${escapeHtml(a.name)} into">${options(a.id)}</select></td>
-                    <td><label style="font-size:11px; white-space:nowrap;"><input type="checkbox" data-sfid="${escapeHtml(a.id)}" class="simplefin-reverse" data-admin
-                        ${reversed.has(a.id) ? 'checked' : ''}> Reverse signs</label></td>
+                    <td>${BankingPage._importCell('simplefin', a.id, a.name, rows, feeds, feed.account_map[a.id], ['bank', 'credit_card'])}</td>
+                    <td>${signs(a.id)}</td>
                 </tr>`).join('');
             body = `
                 <p style="font-size:12px; margin-bottom:8px;">
@@ -393,8 +530,7 @@ const BankingPage = {
                     If a feed shows a bank account's balance as negative and its deposits as withdrawals,
                     tick <em>Reverse signs</em> for it before syncing.
                 </p>
-                ${!rows.some(a => a.bank_kind === 'bank' || a.bank_kind === 'credit_card') ? BankingPage._noBankAccountHint('bank or credit-card account') : ''}
-                <p class="form-hint hidden" data-admin-note>An administrator chooses which bank account each feed imports into and whether its signs are reversed${Object.keys(feed.account_map || {}).length ? '.' : '; until one does, Sync has nothing to import.'}</p>
+                <p class="form-hint hidden" data-admin-note>${BankingPage._onlyAdminMaps(feed.account_map)} The administrator also sets whether a feed's signs are reversed.</p>
                 <div class="table-container"><table>
                     <thead><tr><th scope="col">Bank feed</th><th scope="col" class="amount">Balance</th><th scope="col">Imports into</th><th scope="col">Amounts</th></tr></thead>
                     <tbody>${tableRows}</tbody>
@@ -421,12 +557,7 @@ const BankingPage = {
     },
 
     async saveSimpleFINMap() {
-        const mapping = {}, ledger_mapping = {};
-        document.querySelectorAll('.simplefin-map').forEach(sel => {
-            const [kind, id] = BankingPage._importChoice(sel.value);
-            if (kind === 'acct') ledger_mapping[sel.dataset.sfid] = id;
-            else mapping[sel.dataset.sfid] = kind === 'feed' ? id : 0;
-        });
+        const { mapping, ledger_mapping } = BankingPage._feedMapping('simplefin');
         const reversed = [...document.querySelectorAll('.simplefin-reverse')]
             .filter(box => box.checked).map(box => box.dataset.sfid);
         await API.post('/simplefin/map', { mapping, ledger_mapping, reversed });
@@ -505,13 +636,18 @@ const BankingPage = {
     // `accountId`: the account a register's Import file asked for, chosen in
     // the list when it has no feed yet (2.31.2 gate, NEW-189: it opened on
     // 1000 Checking, the list's first, for every imported account).
-    async showAccountForm(accountId = null) {
+    // `feedRow` ({source, row, rowName}): a bank feed row's + New bank
+    // account (#718); the account the dialog makes is where it imports.
+    async showAccountForm(accountId = null, feedRow = null) {
+        BankingPage._accountFormFeedRow = feedRow;
         const [bankAccts, feeds] = await Promise.all([
             API.get('/accounts?bank=1&active_only=true'),
             API.get('/banking/accounts'),
         ]);
         const taken = new Set(feeds.map(f => f.account_id));
-        const free = bankAccts.filter(a => !taken.has(a.id));
+        // Mercury feeds bank accounts only
+        const bankOnly = !!feedRow && feedRow.source === 'mercury';
+        const free = bankAccts.filter(a => !taken.has(a.id) && (!bankOnly || a.bank_kind === 'bank'));
         const opts = free.map(a => `<option value="${a.id}">${accountLabel(a)} (${BankingPage._kindLabel(a.bank_kind)})</option>`).join('');
         openModal('New Bank Account', `
             <form onsubmit="BankingPage.saveAccount(event)">
@@ -525,7 +661,7 @@ const BankingPage = {
                             <div class="form-group"><label>Account name</label><input name="new_name"></div>
                             <div class="form-group"><label>Account number</label><input name="new_number" placeholder="e.g. 1020"></div>
                             <div class="form-group"><label>Kind</label>
-                                <select name="new_kind"><option value="bank">Bank (asset)</option><option value="credit_card">Credit card (liability)</option></select></div>
+                                <select name="new_kind"><option value="bank">Bank (asset)</option>${bankOnly ? '' : '<option value="credit_card">Credit card (liability)</option>'}</select></div>
                         </div>
                     </div>
                     <div class="form-group"><label>Feed / statement name *</label>
@@ -618,7 +754,15 @@ const BankingPage = {
                 }
                 await API.post('/banking/accounts', { ...body, post_difference: true });
             }
-            toast('Bank account created');
+            const feedRow = BankingPage._accountFormFeedRow;
+            BankingPage._accountFormFeedRow = null;
+            if (feedRow) {
+                // the page under the dialog still holds the other rows' choices
+                await BankingPage._mapFeedRow(feedRow.source, feedRow.row, parseInt(accountId, 10));
+                toast(`Bank account created. ${feedRow.rowName} imports into it.`);
+            } else {
+                toast('Bank account created');
+            }
             closeModal();
             BankingPage.go('#/banking');
         } catch (err) { toast(err.message, 'error'); }
@@ -694,6 +838,42 @@ const BankingPage = {
         } catch (e) { /* not kept: the next visit opens on every date */ }
     },
 
+    // Hide voided (#694): the register leaves out its voided entries and
+    // the reversals that voided them (the service marks both `voided`),
+    // off unless chosen. Kept in this browser by sign-in, as the From is,
+    // for every register and company: a way of reading the register, not a
+    // filter of one account's. Store (utils.js) survives a window with no
+    // localStorage; the guard, a probe that loads this file alone.
+    _hideVoidedKey() {
+        const owner = (typeof App !== 'undefined' && App._tabsOwner) || '';
+        const bar = owner.indexOf('|');
+        return `slowbooks-register-hide-voided:${bar < 0 ? '' : owner.slice(0, bar)}`;
+    },
+    _hidingVoided() {
+        return typeof Store !== 'undefined' && Store.get(BankingPage._hideVoidedKey()) === '1';
+    },
+    _withoutVoided(entries) {
+        let off = 0;
+        const shown = [];
+        for (const e of entries) {
+            if (e.voided) { off += Number(e.amount) || 0; continue; }
+            shown.push(off ? { ...e, balance: Math.round((Number(e.balance) - off) * 100) / 100 } : e);
+        }
+        return shown;
+    },
+    // The box changed: kept, and the register drawn again on its own
+    // filter and scroll, the keyboard back on the box.
+    async regHideVoided(box, id) {
+        if (typeof Store !== 'undefined') {
+            if (box.checked) Store.set(BankingPage._hideVoidedKey(), '1');
+            else Store.remove(BankingPage._hideVoidedKey());
+        }
+        const keyboard = typeof App !== 'undefined' && typeof App.keyboardFocus === 'function' && App.keyboardFocus();
+        await BankingPage._backToRegister(id);
+        const again = document.getElementById('reg-hide-voided');
+        if (again) focusFor(again, keyboard);
+    },
+
     // A date the register takes from its boxes, its address or the From it
     // keeps (#663): a real date in a year the books can hold, 1900 to 2199
     // (the years a request may carry, app/schemas/common.py). A year typed
@@ -710,12 +890,15 @@ const BankingPage = {
     // (#663): on the From it keeps, as any link to it opens, unless that is
     // after the entry's date and would leave the entry out; then from the
     // entry's own date. With no From kept it opens on every date.
-    async hrefShowing(accountId, date) {
+    // `showVoided` (a voided entry asked for, W-113) adds show_voided=1: that
+    // load draws the voided rows though Hide voided is the choice kept.
+    async hrefShowing(accountId, date, { showVoided = false } = {}) {
         await BankingPage._openCompany();
         const id = Number(accountId);
         const from = BankingPage._lastFrom(id);
         const start = from && date && from > date ? String(date) : from;
-        return `#/banking/${id}${start ? `?start_date=${encodeURIComponent(start)}` : ''}`;
+        const q = [start ? `start_date=${encodeURIComponent(start)}` : '', showVoided ? 'show_voided=1' : ''].filter(Boolean).join('&');
+        return `#/banking/${id}${q ? `?${q}` : ''}`;
     },
 
     _regFilterFrom(query) {
@@ -1010,6 +1193,9 @@ const BankingPage = {
         let review = [];
         // the whole queue: a year fetched from a feed can be more than a page
         if (feed) review = await fetchAllPages(`/banking/transactions?bank_account_id=${feed.bank_account_id}&status=unmatched`);
+        // the lines set aside, by the user or by an import as already in
+        // the books, for Show excluded (W-116)
+        const excluded = feed ? await API.get(`/banking/accounts/${feed.bank_account_id}/feed/excluded`).catch(() => null) : null;
         // the class chosen, for + Entry to take (#663): one archived is not
         // in the form's list, so a new entry is not given it
         const chosen = f.class_id ? classes.find(c => String(c.id) === f.class_id) || null : null;
@@ -1038,9 +1224,31 @@ const BankingPage = {
             </div>`;
 
         if (review.length) html += BankingPage._reviewPanel(review, feed.bank_account_id, id, kind);
+        if (excluded && excluded.count > 0) html += BankingPage._excludedPanel(excluded, id);
 
         const classOpts = classes.map(c => `<option value="${c.id}"${String(c.id) === f.class_id ? ' selected' : ''}>${escapeHtml(c.name)}${c.is_archived ? ' (archived)' : ''}</option>`).join('');
         const filtered = !!(f.start_date || f.end_date || f.class_id);
+        // voided entries and their reversals left out of the rows drawn
+        // (#694). The running balance is the service's, from every line,
+        // less what the voided lines above a row moved it: a void and its
+        // reversal (posted on the void's date) come to nothing, so past
+        // the pair each row shown has the ledger's balance, and a row
+        // between them reads as the rows shown add up, a void as nothing.
+        // A voided entry asked for (a search's "(void)" hit, W-113) comes
+        // with show_voided=1: this load draws the voided rows and shows the
+        // box unticked, the choice kept untouched; the address drops it
+        // (_regUrl), so the next draw hides them again.
+        const askedVoided = q.show_voided === '1' && BankingPage._hidingVoided();
+        const hideVoided = !askedVoided && BankingPage._hidingVoided();
+        const shown = hideVoided ? BankingPage._withoutVoided(reg.entries) : reg.entries;
+        const hiddenCount = reg.entries.length - shown.length;
+        const voidedCount = askedVoided ? reg.entries.filter(e => e.voided).length : 0;
+        const noteStyle = 'font-size:11px; color:var(--gray-600); margin:6px 0 0;';
+        const hiddenNote = hiddenCount
+            ? `<p id="reg-voided-note" role="status" style="${noteStyle}">${hiddenCount} ${hiddenCount === 1 ? 'row' : 'rows'} hidden: voided entries and their reversals</p>`
+            : voidedCount
+                ? `<p id="reg-voided-note" role="status" style="${noteStyle}">${voidedCount} voided ${voidedCount === 1 ? 'row' : 'rows'} shown: a voided entry was asked for</p>`
+                : '';
         // From and To apply on Enter or once the bar is left, a pick from the
         // calendar at once (#663: regFiltersKey)
         const dateBox = `onpointerdown="BankingPage.regDatePointer(this)" onchange="BankingPage.regDateChanged(this, ${id})"`;
@@ -1053,6 +1261,7 @@ const BankingPage = {
                 <input type="date" id="reg-end" value="${escapeHtml(f.end_date)}" ${dateBox}>
                 <label for="reg-class" style="font-size:11px;">${T('Class')}</label>
                 <select id="reg-class" data-no-search onchange="BankingPage.regFilterChanged(${id})"><option value="">All ${T('classes').toLowerCase()}</option>${classOpts}</select>
+                <label for="reg-hide-voided" style="font-size:11px; display:inline-flex; align-items:center; gap:4px;"><input type="checkbox" id="reg-hide-voided"${hideVoided ? ' checked' : ''} onchange="BankingPage.regHideVoided(this, ${id})">Hide voided</label>
                 ${filtered ? `<button type="button" class="btn btn-sm btn-secondary" onclick="BankingPage.regClear(${id})">Clear</button>` : ''}
                 ${filtered ? `<span id="reg-filter-note" style="font-size:11px; color:var(--gray-500);">Showing ${reg.class_name ? `${T('class').toLowerCase()} <strong>${escapeHtml(reg.class_name)}</strong>` : 'every ' + T('class').toLowerCase()}${f.start_date ? ` from ${formatDate(f.start_date)}` : ''}${f.end_date ? ` to ${formatDate(f.end_date)}` : ''}: the running balance counts these lines${reg.class_name ? ` only — the account's whole balance is ${formatCurrency(reg.balance)}` : ''}.</span>` : ''}
             </div>`;
@@ -1076,7 +1285,7 @@ const BankingPage = {
                     <th scope="col" class="amount">${outLabel}</th><th scope="col" class="amount">${inLabel}</th><th scope="col" class="amount">Balance</th><th scope="col"></th><th scope="col"></th>
                 </tr></thead><tbody></tbody>${quickRow}</table></div>`;
         } else {
-            const rows = reg.entries.slice().map(e => `
+            const rows = shown.map(e => `
                 <tr data-txn="${e.transaction_id}" style="${e.voided ? 'color:var(--gray-400); text-decoration:line-through;' : ''}">
                     <td>${formatDate(e.date)}</td>
                     <td>${escapeHtml(e.payee || '')}</td>
@@ -1086,7 +1295,7 @@ const BankingPage = {
                     <td class="amount">${e.payment > 0 ? formatCurrency(e.payment) : ''}</td>
                     <td class="amount">${e.deposit > 0 ? formatCurrency(e.deposit) : ''}</td>
                     <td class="amount" style="font-weight:700;">${formatCurrency(e.balance)}</td>
-                    <td style="text-align:center;">${e.reconciliation_id ? 'R' : (e.cleared ? '✓' : '')}</td>
+                    <td style="text-align:center;">${BankingPage._clearedCell(e, id)}</td>
                     <td style="white-space:nowrap;">${BankingPage._printCheckButton(e)}${BankingPage._editButton(e, id)}${e.voidable ? `<button data-destructive class="btn btn-sm btn-secondary" onclick="BankingPage.voidEntry('${e.source_type}', ${e.transaction_id}, ${id})">Void</button>` : ''}</td>
                 </tr>`).join('');
             // oldest first, so the balance brought forward (a start date's
@@ -1099,9 +1308,60 @@ const BankingPage = {
                     <th scope="col">Date</th><th scope="col">Payee</th><th scope="col">Memo</th><th scope="col">Ref #</th><th scope="col">Type</th>
                     <th scope="col" class="amount">${outLabel}</th><th scope="col" class="amount">${inLabel}</th><th scope="col" class="amount">Balance</th>
                     <th scope="col" title="✓ cleared · R reconciled">✓</th><th scope="col"></th>
-                </tr></thead><tbody>${opening}${rows}</tbody>${quickRow}</table></div>`;
+                </tr></thead><tbody>${opening}${rows}</tbody>${quickRow}</table></div>${hiddenNote}`;
         }
         return html;
+    },
+
+    // The register's ✓ column (#715): R for a line a completed
+    // reconciliation holds, ✓ for one cleared, blank otherwise. For a sign-in
+    // that writes, the mark on a line no reconciliation holds is a button that
+    // clears it, or takes the mark off, by hand, as in QuickBooks Desktop's
+    // register: the same flag a feed match or a reconciliation tick sets. A
+    // voided entry gets no button; a read-only or accountant's sign-in sees
+    // the mark only (data-write, App.hideWriteControls, as elsewhere).
+    _clearedCell(e, accountId) {
+        if (e.reconciliation_id) {
+            return `<span title="Reconciled: a completed reconciliation holds this line's cleared mark">R</span>`;
+        }
+        const mark = e.cleared ? '✓' : '';
+        const locked = typeof App !== 'undefined' && typeof App.isLocked === 'function' && App.isLocked();
+        if (locked || e.voided || !e.line_id) {
+            return e.cleared ? `<span title="Cleared">✓</span>` : '';
+        }
+        const name = escapeHtml(BankingPage._clearedName(e));
+        return `<button type="button" class="reg-cleared" data-write data-line="${e.line_id}" data-cleared="${e.cleared ? '1' : ''}"
+            data-name="${name}" aria-label="${e.cleared ? `Mark ${name} not cleared` : `Mark ${name} cleared`}"
+            title="${e.cleared ? 'Cleared. Click to mark it not cleared' : 'Not cleared. Click to mark it cleared'}"
+            style="min-width:22px; height:20px; padding:0 4px; border:1px solid var(--gray-300); border-radius:3px; background:transparent; color:inherit; font:inherit; cursor:pointer; line-height:1;"
+            onclick="BankingPage.toggleRegCleared(this, ${Number(accountId)}, ${Number(e.line_id)})">${mark}</button>`;
+    },
+    // What the ✓ button is named for (#715): "check 1042", or the kind of
+    // entry, its date and amount where it has no number.
+    _clearedName(e) {
+        const check = e.reference && Number(e.payment) > 0 && (e.source_type === 'bank_entry' || e.source_type === 'expense');
+        const word = check ? 'check' : sourceWord(e.source_type, e.source_kind).toLowerCase();
+        if (e.reference) return `${word} ${e.reference}`;
+        const amount = Number(e.payment) > 0 ? e.payment : e.deposit;
+        return `${word} of ${formatDate(e.date)}${e.payee ? ` to ${e.payee}` : ''}, ${formatCurrency(amount)}`;
+    },
+    async toggleRegCleared(btn, accountId, lineId) {
+        const want = btn.dataset.cleared !== '1';
+        btn.disabled = true;
+        try {
+            const res = await API.post(`/banking/registers/${accountId}/lines/${lineId}/cleared`, { cleared: want });
+            const on = !!res.cleared;
+            const name = btn.dataset.name || '';
+            btn.textContent = on ? '✓' : '';
+            btn.dataset.cleared = on ? '1' : '';
+            btn.setAttribute('aria-label', on ? `Mark ${name} not cleared` : `Mark ${name} cleared`);
+            btn.title = on ? 'Cleared. Click to mark it not cleared' : 'Not cleared. Click to mark it cleared';
+        } catch (err) {
+            toast(err.message, 'error');
+        } finally {
+            btn.disabled = false;
+            focusFor(btn, typeof App !== 'undefined' && typeof App.keyboardFocus === 'function' && App.keyboardFocus());
+        }
     },
 
     // Where a register line opens: the document behind it, or — for a
@@ -1176,6 +1436,7 @@ const BankingPage = {
             <div class="card-header">To review — ${review.length} statement line${review.length === 1 ? '' : 's'} not in the books
                 <span style="float:right;">
                     <button class="btn btn-sm btn-secondary" onclick="BankingPage.addAll(${feedId}, ${accountId})">Add all categorised</button>
+                    <button type="button" class="btn btn-sm btn-secondary" data-write onclick="BankingPage.excludeAll(${feedId}, ${accountId})" aria-label="Exclude all shown: ${review.length} statement line${review.length === 1 ? '' : 's'}" title="Set aside every line in this list; Show excluded, under the list, has each one with Restore">Exclude all shown</button>
                 </span>
             </div>
             <div class="table-container"><table>
@@ -1187,6 +1448,47 @@ const BankingPage = {
                 A ${kind === 'credit_card' ? 'card payment' : 'transfer'} is a line whose category is another bank or card account.
             </div>
         </div>`;
+    },
+
+    // Show excluded (W-116): the feed's excluded statement lines, under the
+    // review list, each with why it is out of To review and Restore, which
+    // brings it back. A real button, aria-expanded, opens the list; shown
+    // only when there is one (N from the server). Restore is data-write: a
+    // read-only or accountant's sign-in sees the list but not the button.
+    _excludedPanel(excluded, accountId) {
+        const n = excluded.count;
+        const why = (l) => l.reason === 'in_books'
+            ? 'Already in the books: same date and amount as a matched line'
+            : 'Excluded by you';
+        const rows = (excluded.lines || []).map(l => `
+            <tr data-excluded="${l.id}">
+                <td>${formatDate(l.date)}</td>
+                <td>${escapeHtml(l.payee || '')}<div style="font-size:10px; color:var(--gray-400);">${escapeHtml(l.description || '')}</div></td>
+                <td class="amount">${formatCurrency(l.amount)}</td>
+                <td>${escapeHtml(why(l))}</td>
+                <td><button type="button" class="btn btn-sm btn-secondary" data-write onclick="BankingPage.restoreLine(${l.id}, ${accountId})" aria-label="Restore ${escapeHtml(l.payee || 'the line')}, ${formatDate(l.date)}, ${formatCurrency(l.amount)}, to To review">Restore</button></td>
+            </tr>`).join('');
+        return `<div class="excluded-lines" style="margin-bottom:16px;">
+            <button type="button" class="btn btn-sm btn-secondary" id="excluded-toggle" data-readonly-ok aria-expanded="false" aria-controls="excluded-list" onclick="BankingPage.toggleExcluded(this)">Show excluded (${n})</button>
+            <div id="excluded-list" class="card" hidden style="margin-top:6px;">
+                <div class="card-header">Excluded — ${n} statement line${n === 1 ? '' : 's'} set aside, not in To review</div>
+                <div class="table-container"><table>
+                    <thead><tr><th scope="col">Date</th><th scope="col">Bank says</th><th scope="col" class="amount">Amount</th><th scope="col">Why</th><th scope="col"></th></tr></thead>
+                    <tbody>${rows}</tbody></table></div>
+                <div style="font-size:10px; color:var(--gray-500); margin-top:6px;">
+                    <strong>Restore</strong> returns a line to To review, where it can be added or matched. Nothing here is posted.
+                </div>
+            </div>
+        </div>`;
+    },
+
+    toggleExcluded(btn) {
+        const list = document.getElementById('excluded-list');
+        if (!list) return;
+        const open = btn.getAttribute('aria-expanded') !== 'true';
+        btn.setAttribute('aria-expanded', String(open));
+        list.hidden = !open;
+        btn.textContent = btn.textContent.replace(/^(Show|Hide)/, open ? 'Hide' : 'Show');
     },
 
     async _fillCategorySelects(kind) {
@@ -1384,9 +1686,25 @@ const BankingPage = {
         } catch (err) { toast(err.message, 'error'); }
     },
 
+    // Exclude all shown (#705): every line the review list shows, after
+    // a confirm that says how many. A month imported twice, or a year of
+    // lines from before the books began, was one Exclude per line.
+    async excludeAll(feedId, accountId) {
+        const ids = Object.keys(BankingPage._reviewLines || {}).map(Number).filter(Number.isFinite);
+        if (!ids.length) return;
+        const n = ids.length;
+        if (!confirm(`Exclude all ${n} statement line${n === 1 ? '' : 's'} shown? They leave To review and nothing is posted; Show excluded brings any back.`)) return;
+        try {
+            const r = await API.post(`/banking/accounts/${feedId}/feed/exclude-all`, { line_ids: ids });
+            toast(`Excluded ${r.excluded} statement line${r.excluded === 1 ? '' : 's'}`);
+            BankingPage._backToRegister(accountId);
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
     async restoreLine(lineId, accountId) {
         try {
             await API.post(`/banking/transactions/${lineId}/restore`);
+            toast('Restored to To review');
             BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
@@ -1467,7 +1785,8 @@ const BankingPage = {
     async findMatches(feedId, accountId) {
         try {
             const r = await API.post(`/banking/accounts/${feedId}/feed/auto-match`);
-            toast(`Matched ${r.matched} statement line${r.matched === 1 ? '' : 's'}`);
+            const inBooks = r.already_in_books ? `; ${r.already_in_books} already in the books through an earlier statement line` : '';
+            toast(`Matched ${r.matched} statement line${r.matched === 1 ? '' : 's'}${inBooks}`);
             BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
@@ -1726,7 +2045,7 @@ const BankingPage = {
                         ${BankingPage._vendorDatalist('entry-payee-vendors')}</div>
                     <div class="form-group"><label>Check / ref #</label>
                         <input name="check_number"></div>
-                    <div class="form-group full-width"><label>Category * <span style="font-weight:normal; color:var(--gray-500);">(the other side of the entry; a bank or card account makes it a transfer)</span></label>
+                    <div class="form-group full-width" id="entry-category-group"><label>Category * <span style="font-weight:normal; color:var(--gray-500);">(the other side of the entry; a bank or card account makes it a transfer)</span></label>
                         ${AccountQuickAdd.picker(`<select name="category_account_id" id="entry-category"><option value="">Select…</option>${catOpts}</select>`, 'register', { ctx: accountId, id: 'entry-category-add', label: 'Add a new account…' })}</div>
                     <div class="form-group full-width"><label>Memo</label>
                         <input name="description"></div>
@@ -1933,10 +2252,28 @@ const BankingPage = {
         box.style.display = open ? '' : 'none';
         const toggle = document.getElementById('entry-split-toggle');
         if (toggle) toggle.textContent = open ? 'Not a split' : 'Split this entry…';
+        // six columns of lines are wider than the 700px dialog: the dialog
+        // takes the line-item tables' width while the split shows, so no
+        // sideways scroll (NEW-204, the owner's, 2.31.6 gate)
+        const modal = document.getElementById('modal');
+        if (modal && modal.contains(box)) modal.classList.toggle('modal--wide', open);
         // each line names its own; the entry's single name is for a plain entry
         const nameGroup = document.getElementById('entry-name-group');
         if (nameGroup) nameGroup.style.display = open ? 'none' : '';
+        // the single Category box is for a plain entry too: a split's first
+        // line is the category the entry posts under, so the box goes away
+        // while the lines show, its pick carried to the first line, and comes
+        // back with the first line's account when the split is undone. The
+        // box's pick wins over whatever the first line held from an earlier
+        // split: split, undo, pick another category, split again, and the
+        // first line is the new pick (2.31.6, W-110)
+        const catGroup = document.getElementById('entry-category-group');
+        const cat = document.getElementById('entry-category');
+        if (catGroup) catGroup.style.display = open ? 'none' : '';
         if (open && !document.querySelectorAll('#entry-split-rows tr').length) { BankingPage.addSplitRow(); BankingPage.addSplitRow(); }
+        const first = document.querySelector('#entry-split-rows tr .split-cat');
+        if (open && cat && first && cat.value) first.value = cat.value;
+        if (!open && cat && first && first.value) cat.value = first.value;
         BankingPage.splitNote();
     },
     // The Name (customer, a donor in a nonprofit) on a deposit line (#606):
@@ -2041,8 +2378,8 @@ const BankingPage = {
         const n = body.querySelectorAll('tr').length + 1;
         body.insertAdjacentHTML('beforeend', `<tr>
             <td><select class="split-cat" aria-label="Split line ${n} account" data-no-search><option value="">Select…</option>${BankingPage._splitCats || ''}</select></td>
-            <td class="amount"><input class="split-amt money" type="number" step="0.01" aria-label="Split line ${n} amount" oninput="BankingPage.splitNote()" style="width:100px; text-align:right;"></td>
-            <td style="text-align:center;"><input class="split-fee" type="checkbox" aria-label="Split line ${n} taken out" title="A fee the processor kept, or a refund netted against a check: this line goes the other way from the entry" onchange="BankingPage.splitNote()"></td>
+            <td class="amount"><input class="split-amt money" type="number" step="0.01" aria-label="Split line ${n} amount" oninput="BankingPage.splitNote()" style="text-align:right;"></td>
+            <td style="text-align:center;"><input class="split-fee" type="checkbox" style="width:auto;" aria-label="Split line ${n} taken out" title="A fee the processor kept, or a refund netted against a check: this line goes the other way from the entry" onchange="BankingPage.splitNote()"></td>
             ${BankingPage.nameCellHtml('split-name', null, `${T('Customer')}, line ${n}`)}${Nonprofit.classCellHtml('split', null)}
             <td><input class="split-memo" type="text" aria-label="Split line ${n} memo"></td>
             <td><button type="button" class="btn btn-sm btn-secondary" aria-label="Remove split line ${n}" onclick="this.closest('tr').remove(); BankingPage.splitNote();">×</button></td>
@@ -2408,13 +2745,32 @@ const BankingPage = {
             </form>`);
     },
 
+    // Edit from a report line (#689): the Transfer form filled in; Save
+    // voids the transfer and posts the new one in its place.
+    async replaceTransfer(id) {
+        const t = (await API.get('/transfers')).find(x => x.id === Number(id));
+        if (!t) { toast('Transfer not found', 'error'); return; }
+        if (t.status === 'void') { toast('This transfer is void; there is nothing to change.', 'error'); return; }
+        await BankingPage.showTransferForm(t.from_account_id);
+        const form = document.querySelector('#modal-body form');
+        if (!form) return;
+        Replace.set(form, 'date', t.date);
+        Replace.set(form, 'amount', Number(t.amount).toFixed(2));
+        Replace.set(form, 'from_account_id', t.from_account_id);
+        Replace.set(form, 'to_account_id', t.to_account_id);
+        Replace.set(form, 'reference', t.reference || '');
+        Replace.set(form, 'memo', t.memo || '');
+        Replace.set(form, 'class_id', t.class_id || '');
+        Replace.mark(form, 'transfer', id);
+    },
+
     async saveTransfer(e) {
         e.preventDefault();
         const form = e.target;
         if (!(await TxnWarn.ok(form))) return;
         if (!(await ClassWarn.ok(form))) return;
         try {
-            const t = await API.post('/transfers', {
+            const t = await API.post('/transfers' + (typeof Replace === 'undefined' ? '' : Replace.suffix(form)), {
                 date: form.date.value,
                 from_account_id: parseInt(form.from_account_id.value, 10),
                 to_account_id: parseInt(form.to_account_id.value, 10),
@@ -2425,7 +2781,8 @@ const BankingPage = {
             });
             const here = BankingPage._onRegister(t.from_account_id);
             const outside = here ? BankingPage._outsideFilter(form.date.value) : '';
-            toastPosted(outside ? `Transfer posted. ${outside}` : 'Transfer posted');
+            if ((typeof Replace !== 'undefined' && Replace.replacing(form))) toastPosted(`Transfer voided and replaced by transfer #${t.id}${outside ? `. ${outside}` : ''}`);
+            else toastPosted(outside ? `Transfer posted. ${outside}` : 'Transfer posted');
             if (here) { await BankingPage._showSaved(t.from_account_id, t.id, outside); return; }
             closeModal();
             BankingPage.go(`#/banking/${t.from_account_id}`);
@@ -2550,18 +2907,100 @@ const BankingPage = {
         const only = document.getElementById('recon-only-through');
         if (only && only.checked) BankingPage.reconShowThrough(reconId, value);
     },
+    // The order of the reconcile list (#716): any of its four columns,
+    // ascending or descending, as QuickBooks Desktop's reconcile window
+    // sorts; date order (the server's) until a heading is pressed. Kept per
+    // account in this browser, scoped as the register's From is, so a
+    // statement worked by check number opens that way next month too.
+    _RECON_SORTS: ['date', 'payee', 'ref', 'amount'],
+    _reconSortKey(accountId) {
+        const key = BankingPage._fromKey(accountId);
+        return key ? key.replace('slowbooks-register-from:', 'slowbooks-reconcile-sort:') : null;
+    },
+    _reconSortNow: {},  // this page load's choice, where none can be kept
+    _reconSortFor(accountId) {
+        const key = BankingPage._reconSortKey(accountId);
+        const now = BankingPage._reconSortNow[key || `:${accountId}`];
+        if (now) return now;
+        try {
+            const kept = key && typeof Store !== 'undefined' ? JSON.parse(Store.get(key) || 'null') : null;
+            if (kept && BankingPage._RECON_SORTS.includes(kept.column) && ['asc', 'desc'].includes(kept.direction)) return kept;
+        } catch (e) { /* not kept: date order */ }
+        return { column: 'date', direction: 'asc' };
+    },
+    // Ref # is a check number: numbers compare as numbers (998 before
+    // 1002), a number before a reference that is not one, text as text, and
+    // a line with none last whichever way the column is sorted. A tie keeps
+    // the server's order (date, then entry).
+    _reconSorted(rows, sort) {
+        const text = (t) => {
+            if (sort.column === 'payee') return String(t.payee || t.description || '').trim();
+            if (sort.column === 'ref') return String(t.check_number || '').trim();
+            return '';
+        };
+        const sign = sort.direction === 'desc' ? -1 : 1;
+        const cmp = (a, b) => {
+            if (sort.column === 'date') return a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+            if (sort.column === 'amount') return Number(a.amount) - Number(b.amount);
+            const x = text(a), y = text(b);
+            if (sort.column === 'ref') {
+                const nx = /^\d+$/.test(x), ny = /^\d+$/.test(y);
+                if (nx && ny) return Number(x) - Number(y);
+                if (nx !== ny) return nx ? -1 : 1;
+            }
+            return x.toLowerCase().localeCompare(y.toLowerCase());
+        };
+        return rows.map((t, i) => [t, i]).sort(([a, i], [b, j]) => {
+            if (sort.column === 'payee' || sort.column === 'ref') {
+                const ea = !text(a), eb = !text(b);
+                if (ea !== eb) return ea ? 1 : -1;
+            }
+            return sign * cmp(a, b) || i - j;
+        }).map(([t]) => t);
+    },
+    _reconHead(reconId, accountId, sort, column, label, cls = '') {
+        const on = sort.column === column;
+        const ariaSort = on ? (sort.direction === 'asc' ? 'ascending' : 'descending') : 'none';
+        const arrow = on ? ` <span class="sort-arrow" aria-hidden="true">${sort.direction === 'asc' ? '▲' : '▼'}</span>` : '';
+        return `<th scope="col" class="${['sortable', on ? 'sort-active' : '', cls].filter(Boolean).join(' ')}" aria-sort="${ariaSort}">`
+            + `<button type="button" class="th-sort" id="recon-sort-${column}" onclick="BankingPage.reconSortBy(${reconId}, ${Number(accountId)}, '${column}')">${label}${arrow}</button></th>`;
+    },
+    // A heading pressed: that column ascending, or the other way if it is
+    // the column already sorted on.
+    reconSortBy(reconId, accountId, column) {
+        if (!BankingPage._RECON_SORTS.includes(column)) return;
+        const now = BankingPage._reconSortFor(accountId);
+        const next = { column, direction: now.column === column && now.direction === 'asc' ? 'desc' : 'asc' };
+        const key = BankingPage._reconSortKey(accountId);
+        BankingPage._reconSortNow[key || `:${accountId}`] = next;
+        if (key && typeof Store !== 'undefined') Store.set(key, JSON.stringify(next));
+        return BankingPage.showReconcileView(reconId);
+    },
     async showReconcileView(reconId) {
-        const data = await API.get(`/banking/reconciliations/${reconId}/transactions`);
+        const [data] = await Promise.all([
+            API.get(`/banking/reconciliations/${reconId}/transactions`),
+            BankingPage._openCompany(),  // whose order is kept
+        ]);
+        // Drawn again (a tick, Mark all, the Through filter, Change…, a
+        // heading): the list keeps its order, the page its scroll, and the
+        // keyboard its place (#716).
+        const again = !!document.querySelector(`#recon-view[data-recon="${Number(reconId)}"]`);
+        const box = document.getElementById('content');
+        const top = box ? box.scrollTop : 0;
+        const focusedId = again && document.activeElement ? document.activeElement.id : '';
+        const keyboard = typeof App !== 'undefined' && typeof App.keyboardFocus === 'function' && App.keyboardFocus();
+        const sort = BankingPage._reconSortFor(data.account_id);
         const through = BankingPage._reconThrough[reconId] || '';
         const day = through || BankingPage._reconDay[reconId] || data.statement_date;
-        const shown = through ? data.transactions.filter(t => t.date <= through) : data.transactions;
+        const inReach = through ? data.transactions.filter(t => t.date <= through) : data.transactions;
+        const shown = BankingPage._reconSorted(inReach, sort);
         const hidden = data.transactions.length - shown.length;
         const rows = shown.map(t => {
             const cls = t.reconciled ? 'style="background:var(--primary-light);"' : '';
             const amtCls = t.amount >= 0 ? 'color:var(--text-success)' : 'color:var(--text-danger)';
             const said = ['Cleared', formatDate(t.date), t.payee || t.description, formatCurrency(t.amount)].filter(Boolean).join(', ');
-            return `<tr ${cls}>
-                <td><input type="checkbox" ${t.reconciled ? 'checked' : ''} aria-label="${escapeHtml(said)}"
+            return `<tr ${cls} data-line="${t.id}">
+                <td><input type="checkbox" data-write id="recon-line-${t.id}" ${t.reconciled ? 'checked' : ''} aria-label="${escapeHtml(said)}"
                     onchange="BankingPage.toggleCleared(${reconId}, ${t.id}, this)"></td>
                 <td>${formatDate(t.date)}</td>
                 <td>${escapeHtml(t.payee || t.description || '')}${t.matched ? ' <span title="matched to a statement line" style="color:var(--text-success);">●</span>' : ''}</td>
@@ -2572,6 +3011,7 @@ const BankingPage = {
         const balanced = Math.abs(data.difference) < 0.01;
         const diffColor = balanced ? 'var(--success)' : 'var(--danger)';
         $('#page-content').innerHTML = `
+            <div id="recon-view" data-recon="${Number(reconId)}">
             <div class="page-header">
                 <h2>Reconcile — statement of ${formatDate(data.statement_date)}</h2>
                 <div class="btn-group">
@@ -2607,10 +3047,16 @@ const BankingPage = {
                 <button class="btn btn-sm btn-secondary" onclick="BankingPage.markAll(${reconId}, false)">Clear all</button>
             </div>
             <div class="table-container"><table>
-                <thead><tr><th scope="col" style="width:30px;"></th><th scope="col">Date</th><th scope="col">Payee / Description</th><th scope="col">Ref #</th><th scope="col" class="amount">Amount</th></tr></thead>
+                <thead><tr><th scope="col" style="width:30px;"></th>${BankingPage._reconHead(reconId, data.account_id, sort, 'date', 'Date')}${BankingPage._reconHead(reconId, data.account_id, sort, 'payee', 'Payee / Description')}${BankingPage._reconHead(reconId, data.account_id, sort, 'ref', 'Ref #')}${BankingPage._reconHead(reconId, data.account_id, sort, 'amount', 'Amount', 'amount')}</tr></thead>
                 <tbody>${rows || '<tr><td colspan="5" style="text-align:center;">No ledger lines up to this date</td></tr>'}</tbody>
             </table></div>
-            <div id="recon-through-note" role="status" style="font-size:11px; color:var(--gray-500); margin-top:6px;">${hidden ? `${hidden} later line${hidden === 1 ? '' : 's'} hidden (dated after ${formatDate(through)}); the figures above count the whole session` : ''}</div>`;
+            <div id="recon-through-note" role="status" style="font-size:11px; color:var(--gray-500); margin-top:6px;">${hidden ? `${hidden} later line${hidden === 1 ? '' : 's'} hidden (dated after ${formatDate(through)}); the figures above count the whole session` : ''}</div>
+            </div>`;
+        if (again && box) box.scrollTop = top;
+        const back = focusedId ? document.getElementById(focusedId) : null;
+        if (back) {
+            try { back.focus({ preventScroll: true, ...(keyboard ? { focusVisible: true } : {}) }); } catch (e) { /* stays where it is */ }
+        }
     },
 
     // The statement's ending balance and date can be corrected while the
@@ -2715,6 +3161,7 @@ const BankingPage = {
                     <td>${r.status === 'completed' ? `Completed ${r.completed_at ? formatDate(r.completed_at) : ''}` : 'In progress'}</td>
                     <td style="white-space:nowrap;">${r.status === 'completed'
                         ? `<button class="btn btn-sm btn-secondary" onclick="BankingPage.showReconReport(${r.id})">Report</button>
+                           <button class="btn btn-sm btn-secondary" onclick="window.open('/api/banking/reconciliations/${r.id}/print', '_blank')">Print</button>
                            <button class="btn btn-sm btn-secondary" onclick="window.open('/api/banking/reconciliations/${r.id}/pdf', '_blank')">Save PDF</button>`
                         : `<button class="btn btn-sm btn-primary" onclick="closeModal(); BankingPage.showReconcileView(${r.id})">Continue</button>`}</td>
                 </tr>`).join('')}</tbody></table></div>` : '<p>No reconciliations for this account yet.</p>';
@@ -2757,6 +3204,7 @@ const BankingPage = {
                 ${summary}${detail}
                 <div class="form-actions">
                     <button class="btn btn-secondary" onclick="BankingPage._closeReconReport()">Close</button>
+                    <button class="btn btn-secondary" onclick="window.open('/api/banking/reconciliations/${reconId}/print', '_blank')">Print</button>
                     <button class="btn btn-primary" onclick="window.open('/api/banking/reconciliations/${reconId}/pdf', '_blank')">Save PDF</button>
                 </div>`);
         } catch (err) { toast(err.message, 'error'); }
@@ -2956,7 +3404,8 @@ const BankingPage = {
             const resp = await fetch(endpoint, { method: 'POST', body: formData });
             if (!resp.ok) throw new Error(await API.responseError(resp, 'Import failed'));
             const data = await resp.json();
-            toast(`Imported ${data.imported} (${data.skipped} duplicates skipped, ${data.matched || 0} matched to the books)`);
+            const inBooks = data.already_in_books ? `, ${data.already_in_books} already in the books` : '';
+            toast(`Imported ${data.imported} (${data.skipped} duplicates skipped, ${data.matched || 0} matched to the books${inBooks})`);
             closeModal();
             BankingPage._backToRegister(accountId);
         } catch (err) {

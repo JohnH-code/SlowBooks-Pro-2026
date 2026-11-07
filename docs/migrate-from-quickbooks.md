@@ -187,7 +187,7 @@ for you to tick the ones to accept and leave the rest:
 - **Transactions in a closed period**: a notice, with nothing to tick, of
   how many are dated on or before the closing date and which dates. They
   are left out and the rest imports; to bring them in, move the closing
-  date (Settings > Closing Date) and import the file again.
+  date (Settings > Company > Closing Date) and import the file again.
 
 Each list has Select all and Select none, and is one stop for Tab however
 long: the arrow keys move from row to row (in the accounts, Tab goes on to
@@ -575,14 +575,43 @@ tax codes (the HST amounts are on their own lines and accounts).
 ## Classes: entities kept apart in one file
 
 If your QuickBooks file keeps several entities apart by class (a nonprofit
-and two LLCs in one file, say), the class travels with every posting on
-both paths (v2.23.1): the IIF import takes the TRNS row's class as the
-document's and each split row's as its line's, and the report CSV import
-reads the Class column on every report it takes, header and lines. A class
-the file names that your books do not have is created on first sight, and
-the import's result says so. Check P&L by Class afterwards: every column
-should tie to the entity's own Profit & Loss in QuickBooks, and anything
-under Uncategorized is a posting QuickBooks had no class on either.
+and two LLCs in one file, say), each import carries the class this way:
+
+- **IIF files** (since 2.23.1): the TRNS row's class is the document's, and
+  each split row's is its line's.
+- **Sales Receipt, Invoice, Deposit Detail and Check Detail reports**
+  (since 2.23.1): the Class column on the header row is the document's, and
+  each line's own Class cell is that line's.
+- **Transaction Detail by Account** (since 2.31.8; before that this report's
+  Class column was not read, and every line came in without a class): each
+  row's Class cell is the class of the line it posts. Add Class to the
+  report's columns in QuickBooks (Customize Report → Display) before you
+  export. A row whose Class cell is empty posts with no class, and a report
+  without the Class column imports as it always did. When the file has
+  problems to decide on, the list shown before anything is imported says
+  how many lines carry a class and which classes it would create.
+- **Time by Name by Job detail** and the **categorized bank sheet** carry no
+  class: a time entry has none here, and the sheet has no Class column.
+
+On every report a class is matched to yours by its exact name, then the same
+name in other capitals. QuickBooks' subclass path (`Parent:Child`) is kept
+whole as the class's name, as the IIF class list keeps it. A class the file
+names that your books do not have is created on first sight, and the
+import's result says so. A name longer than 100 characters cannot be a
+class here: Transaction Detail by Account then imports nothing, and the
+other reports leave out the document that names it, each saying which
+name. Shorten it in QuickBooks, export the report again and import that.
+
+A transaction already in the books is skipped as a duplicate when the same
+file comes again, and keeps what it was imported with: importing a report
+again with its Class column does not add the class to entries that came in
+without one. To bring the classes in for books imported without them,
+import into a fresh company, or restore the backup taken before the
+import and import the files again.
+
+Check P&L by Class afterwards: every column should tie to the entity's own
+Profit & Loss in QuickBooks, and anything under Uncategorized is a posting
+QuickBooks had no class on either.
 
 ## After the import
 
@@ -607,7 +636,7 @@ under Uncategorized is a posting QuickBooks had no class on either.
   not name that has never been posted to. Either way, an account with
   history is kept: delete nothing by hand that a transaction still uses.
   If your business does not number its accounts, untick **Settings →
-  Company Information → Use account numbers** after the import: the
+  Company → Company Information → Use account numbers** after the import: the
   starter accounts keep their numbers, but nothing prints them.
 - Spot-check **Reports → Trial Balance** against the same report in
   QuickBooks as of your cutover date (mind the date range — set it to
@@ -631,7 +660,7 @@ under Uncategorized is a posting QuickBooks had no class on either.
 ## Leaving QuickBooks Contractor Edition
 
 If your file is a QuickBooks Desktop **Contractor Edition** company, set
-SlowBooks to the matching mode after you import: **Settings → Company
+SlowBooks to the matching mode after you import: **Settings → Company → Company
 Information → Company Type → Construction**. It changes no data and can be switched back at any time. What
 it does:
 

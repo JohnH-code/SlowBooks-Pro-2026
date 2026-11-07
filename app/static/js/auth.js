@@ -329,6 +329,7 @@
                     ? "Enter the password for " + escapeText(name) + " to continue."
                     : "Enter your password to continue.") +
             "</p>" +
+            recoveryNoticeHTML() +
             companySelectHTML() +
             (multiUser ? userSelectHTML() + '<div style="height:10px"></div>' : "") +
             field("auth-password", "Password", {
@@ -343,11 +344,280 @@
             '<div id="auth-error" style="' +
             errorBoxStyle() +
             '"></div>' +
+            '<div style="margin-top:12px;text-align:center;">' +
+            '<button type="button" id="auth-forgot" aria-expanded="false" aria-controls="auth-forgot-panel" style="' +
+            linkButtonStyle() + '">Forgot your password?</button></div>' +
+            '<div id="auth-forgot-panel" hidden style="' + noticeStyle() + 'margin-top:10px;"></div>' +
             '<div id="auth-link-row" style="margin-top:16px;text-align:center;">' +
             (offersPicker() ? switchCompanyHTML() : "") +
             "</div>" +
             "</form>"
         );
+    }
+
+    // ----- forgot your password? (#719) -----------------------------------
+
+    // From /api/auth/status: {kind, message, elsewhere?}. kind is "ask_admin"
+    // (Server Edition, another administrator), "recovery" (an encrypted
+    // desktop file: open it with its recovery key), "reset_here" (a desktop
+    // file that is not encrypted) or "recovery_reset" (opened with its
+    // recovery key just now). The last two are what the app's own window can
+    // do: the status cannot tell that window from a browser at its address
+    // (W-125), so the reset is offered only where the launcher's bridge is,
+    // and a page without it says `elsewhere` instead. The administrators'
+    // names come through the bridge too, never in the status.
+    let forgot = null;
+    let windowBridge = null;   // a promise of the bridge's api, or of null
+    let bridgeWaited = false;  // the one wait for a late bridge is over
+
+    // The launcher's api when this page is the app's own window, else null.
+    // The first call waits for a bridge that arrives after the page (macOS);
+    // later calls answer at once, and still find one that came later yet.
+    function windowCanReset() {
+        if (bridgeWaited) return Promise.resolve(bridgeNow("reset_admin_password"));
+        if (!windowBridge) {
+            windowBridge = bridgeFor("reset_admin_password").then(function (api) {
+                bridgeWaited = true;
+                return api;
+            });
+        }
+        return windowBridge;
+    }
+
+    function noticeStyle() {
+        return (
+            "padding:10px 12px;background:#eef4ff;border:1px solid #b9cdf2;border-radius:6px;" +
+            "color:#1a2b3c;font-size:13px;line-height:1.5;"
+        );
+    }
+
+    function forgotOffersReset() {
+        return !!forgot && (forgot.kind === "reset_here" || forgot.kind === "recovery_reset");
+    }
+
+    function resetButtonHTML(id) {
+        return (
+            '<button type="button" id="' + id + '" style="' + linkButtonStyle() +
+            'margin-top:6px;">Set a new administrator password</button>'
+        );
+    }
+
+    // The notice a company opened with its recovery key shows at once: an
+    // empty place in the page, filled when the window's bridge has answered
+    // (a browser never sees it).
+    function recoveryNoticeHTML() {
+        if (!forgot || forgot.kind !== "recovery_reset") return "";
+        return '<div id="auth-recovery-notice" hidden style="' + noticeStyle() + 'margin:0 0 14px;"></div>';
+    }
+
+    function wireForgot(overlay, onSuccess) {
+        const link = overlay.querySelector("#auth-forgot");
+        const panel = overlay.querySelector("#auth-forgot-panel");
+        const notice = overlay.querySelector("#auth-recovery-notice");
+        if (notice && forgot && forgot.kind === "recovery_reset") {
+            windowCanReset().then(function (api) {
+                if (!api || !notice.isConnected) return;
+                notice.innerHTML = escapeText(forgot.message) + "<br>" + resetButtonHTML("auth-reset-open");
+                notice.hidden = false;
+                notice.querySelector("#auth-reset-open").addEventListener("click", function () {
+                    renderReset(onSuccess);
+                });
+            });
+        }
+        if (!link || !panel) return;
+        const ask = "Ask an administrator to reset it under Settings, Users.";
+        link.addEventListener("click", async function () {
+            const showing = panel.hidden;
+            panel.hidden = !showing;
+            link.setAttribute("aria-expanded", showing ? "true" : "false");
+            if (!showing) return;
+            let message = (forgot && forgot.message) || ask;
+            let offer = false;
+            if (forgotOffersReset()) {
+                // only the app's own window has the bridge; a browser at
+                // the same address is told where to go instead
+                panel.innerHTML = "";
+                offer = !!(await windowCanReset());
+                if (panel.hidden) return;
+                if (!offer) message = forgot.elsewhere || ask;
+            }
+            panel.innerHTML = '<span id="auth-forgot-text">' + escapeText(message) + "</span>" +
+                (offer ? "<br>" + resetButtonHTML("auth-reset-here") : "");
+            const here = panel.querySelector("#auth-reset-here");
+            if (here) {
+                here.addEventListener("click", function () { renderReset(onSuccess); });
+                here.focus();
+            }
+        });
+    }
+
+    // The launcher's bridge, waited for: on macOS it arrives after the page
+    // has loaded. Resolves to the api, or null when there is none (a
+    // browser, which can never set a password this way).
+    function bridgeNow(method) {
+        const there = typeof window.pywebview !== "undefined" && window.pywebview.api &&
+            typeof window.pywebview.api[method] === "function";
+        return there ? window.pywebview.api : null;
+    }
+
+    function bridgeFor(method) {
+        if (bridgeNow(method)) return Promise.resolve(window.pywebview.api);
+        return new Promise(function (resolve) {
+            const timer = setTimeout(function () { resolve(null); }, 5000);
+            window.addEventListener("pywebviewready", function () {
+                clearTimeout(timer);
+                resolve(bridgeNow(method));
+            }, { once: true });
+        });
+    }
+
+    function resetViewHTML(admins) {
+        const name = existingCompany.name;
+        let who = "";
+        if (admins.length > 1) {
+            who =
+                '<label for="auth-reset-user" style="' + labelStyle() + '">Administrator</label>' +
+                '<select id="auth-reset-user" required style="' + inputStyle() + '">' +
+                admins.map(function (a) {
+                    const e = document.createElement("option");
+                    e.value = a; e.textContent = a;
+                    return e.outerHTML;
+                }).join("") + "</select>";
+        } else if (admins.length === 1 && multiUser) {
+            who = '<p style="margin:0 0 4px;color:#333;font-size:13px;">Administrator: <strong>' +
+                escapeText(admins[0]) + "</strong></p>";
+        }
+        return (
+            '<form id="auth-form" ' +
+            'style="background:#fff;color:#111;padding:32px 28px;border-radius:8px;' +
+            'min-width:340px;max-width:400px;width:100%;' +
+            'box-shadow:0 20px 60px rgba(0,0,0,0.4);">' +
+            '<h2 id="auth-title" style="margin:0 0 6px;font-size:20px;">Set a new administrator password</h2>' +
+            '<p style="margin:0 0 14px;color:#555;font-size:13px;line-height:1.5;">' +
+            (name ? "For " + escapeText(name) + ". " : "") +
+            "The administrator signs in with this password from now on, and is signed out everywhere else." +
+            "</p>" +
+            who +
+            field("auth-reset-password", "New password", {
+                type: "password",
+                required: true,
+                minlength: MIN_PASSWORD_LEN,
+                autocomplete: "new-password",
+                placeholder: MIN_PASSWORD_LEN + "+ characters",
+            }) +
+            field("auth-reset-confirm", "Confirm the new password", {
+                type: "password",
+                required: true,
+                minlength: MIN_PASSWORD_LEN,
+                autocomplete: "new-password",
+            }) +
+            '<div style="height:14px"></div>' +
+            '<button type="submit" id="auth-submit" style="' + primaryButtonStyle() +
+            '">Set the password and sign in</button>' +
+            '<div id="auth-error" role="alert" style="' + errorBoxStyle() + '"></div>' +
+            '<div style="margin-top:12px;text-align:center;">' +
+            '<button type="button" id="auth-reset-cancel" style="' + linkButtonStyle() +
+            '">Back to sign in</button></div>' +
+            "</form>"
+        );
+    }
+
+    async function renderReset(onSuccess) {
+        // whose password: the names come from the launcher, which asks the
+        // server with the window's secret (the status names nobody, W-125)
+        let admins = [];
+        const bridge = await windowCanReset();
+        if (bridge && typeof bridge.reset_admins === "function") {
+            try {
+                const out = await bridge.reset_admins();
+                if (out && out.success && Array.isArray(out.admins)) admins = out.admins;
+            } catch (err) { /* the form still works for a lone administrator */ }
+        }
+        removeOverlay();
+        const overlay = buildShell(resetViewHTML(admins));
+        document.body.appendChild(overlay);
+        const form = overlay.querySelector("#auth-form");
+        const pw = overlay.querySelector("#auth-reset-password");
+        const pw2 = overlay.querySelector("#auth-reset-confirm");
+        const who = overlay.querySelector("#auth-reset-user");
+        const errBox = overlay.querySelector("#auth-error");
+        const btn = overlay.querySelector("#auth-submit");
+        overlay.querySelector("#auth-reset-cancel").addEventListener("click", function () {
+            renderView("login", onSuccess);
+        });
+        (who || pw).focus();
+        form.addEventListener("submit", async function (e) {
+            e.preventDefault();
+            errBox.textContent = "";
+            if (pw.value.length < MIN_PASSWORD_LEN) {
+                errBox.textContent = "Password must be at least " + MIN_PASSWORD_LEN + " characters.";
+                return;
+            }
+            if (pw.value !== pw2.value) {
+                errBox.textContent = "Passwords do not match.";
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = "...";
+            const done = function (message) {
+                errBox.textContent = message;
+                btn.disabled = false;
+                btn.textContent = "Set the password and sign in";
+            };
+            const api = await windowCanReset();
+            if (!api) {
+                done("A new administrator password can be set only in the SlowBooks Pro window, on the computer that holds the company file.");
+                return;
+            }
+            let result;
+            try {
+                result = await api.reset_admin_password(who ? who.value : "", pw.value);
+            } catch (err) {
+                result = null;
+            }
+            if (!result || !result.success) {
+                done((result && result.error) || "The new password could not be set.");
+                return;
+            }
+            try {
+                const body = { password: pw.value };
+                if (result.username) body.username = result.username;
+                await postJSON(AUTH_LOGIN_URL, body);
+            } catch (err) {
+                // set, but the sign-in did not go through: sign in by hand
+                renderView("login", onSuccess);
+                const box = document.querySelector("#" + OVERLAY_ID + " #auth-error");
+                if (box) box.textContent = "The new password is set. Sign in with it.";
+                return;
+            }
+            if (forgot && forgot.kind === "recovery_reset") {
+                showRecoveryStillWorks(overlay, onSuccess);
+                return;
+            }
+            removeOverlay();
+            if (onSuccess) onSuccess();
+            else window.location.reload();
+        });
+    }
+
+    // After a reset by the recovery key: the key is not used up. It still
+    // opens the file; anyone else who may have seen it can too.
+    function showRecoveryStillWorks(overlay, onSuccess) {
+        const form = overlay.querySelector("#auth-form");
+        form.innerHTML =
+            '<h2 style="margin:0 0 6px;font-size:20px;">The new password is set</h2>' +
+            '<p id="auth-recovery-still" style="margin:0 0 14px;color:#333;font-size:13px;line-height:1.5;">' +
+            "Your recovery key still opens this company file, and still lets you set a new administrator password. " +
+            "If anyone else may have seen it, make a new one under Settings, Company File Encryption, New recovery key. " +
+            "The new key is shown once; keep it where the backups are not.</p>" +
+            '<button type="button" id="auth-reset-continue" style="' + primaryButtonStyle() + '">Open the books</button>';
+        const go = form.querySelector("#auth-reset-continue");
+        go.addEventListener("click", function () {
+            removeOverlay();
+            if (onSuccess) onSuccess();
+            else window.location.reload();
+        });
+        go.focus();
     }
 
     // The Company select on a served host's screens (#358): another
@@ -394,6 +664,7 @@
         const errBox = overlay.querySelector("#auth-error");
         const btn = overlay.querySelector("#auth-submit");
         wireCompanySelect(overlay, onSuccess);
+        wireForgot(overlay, onSuccess);
         (rememberedUsername() && userInput ? input : (userInput || input)).focus();
 
         form.addEventListener("submit", async function (e) {
@@ -656,7 +927,8 @@
             '<h2 style="margin:0 0 6px;font-size:22px;">Your recovery key</h2>' +
             '<p style="margin:0 0 10px;color:#333;font-size:13px;line-height:1.5;">The company file is encrypted. ' +
             "<strong>This recovery key is shown once.</strong> It opens the file, and every backup of it, if every " +
-            "administrator's password is lost. Anyone holding it can read the books, so keep it where the backups are not: " +
+            "administrator's password is lost, and then lets you set a new administrator password. " +
+            "Anyone holding it can read the books, so keep it where the backups are not: " +
             "a safe, a password manager, a sealed envelope.</p>" +
             '<p id="auth-recovery-key" style="margin:0 0 12px;font-family:monospace;font-size:16px;letter-spacing:0.04em;' +
             'text-align:center;padding:10px;border:1px solid #c6ccd4;border-radius:6px;user-select:all;">' +
@@ -761,6 +1033,10 @@
                 desktopWindow = status.desktop === true;
                 usernames = Array.isArray(status.usernames) ? status.usernames : [];
                 companies = Array.isArray(status.companies) ? status.companies : [];
+                forgot = status.forgot && typeof status.forgot === "object" ? status.forgot : null;
+                // start looking for the window's bridge now, so "Forgot your
+                // password?" has its answer by the time it is pressed
+                if (forgotOffersReset()) windowCanReset();
                 existingCompany = {
                     name: status.company_name || "",
                     hasData: status.has_data === true,

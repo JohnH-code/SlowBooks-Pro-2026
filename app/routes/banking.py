@@ -10,6 +10,7 @@ from typing import Optional
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -40,6 +41,7 @@ from app.schemas.banking import (
     ReconciliationUpdate,
     StatementAdd,
     FeedAddAll,
+    FeedExcludeAll,
     StatementPayout,
     StatementVendors,
     StatementCategory,
@@ -357,12 +359,18 @@ def list_bank_transactions(
     db: Session = Depends(get_db),
 ):
     """Statement lines (feeds and imports) — the review queue. `status`
-    filters on match_status: unmatched | auto | manual | added | excluded."""
+    filters on match_status: unmatched | auto | manual | added | excluded
+    (excluded takes in the lines an import set aside as in the books too;
+    in_books asks for those alone)."""
+    from app.services.bank_dedupe import EXCLUDED
+
     skip, limit = clamp_pagination(skip, limit)
     q = db.query(BankTransaction)
     if bank_account_id:
         q = q.filter(BankTransaction.bank_account_id == bank_account_id)
-    if status:
+    if status == "excluded":
+        q = q.filter(BankTransaction.match_status.in_(EXCLUDED))
+    elif status:
         q = q.filter(BankTransaction.match_status == status)
     rows = (
         q.order_by(BankTransaction.date.desc(), BankTransaction.id.desc())
@@ -634,8 +642,81 @@ def feed_auto_match(account_id: int, db: Session = Depends(get_db)):
         .all()
     )
     n = m.auto_match(db, ba, rows)
+    # a line whose posting another statement line already holds (the same
+    # month imported again in another format) is in the books (#705)
+    from app.services.bank_dedupe import set_aside_already_in_books
+
+    in_books = set_aside_already_in_books(db, ba, rows)
     db.commit()
-    return {"matched": n}
+    return {"matched": n, "already_in_books": in_books}
+
+
+@router.post("/accounts/{account_id}/feed/exclude-all")
+def feed_exclude_all(
+    account_id: int, data: FeedExcludeAll, db: Session = Depends(get_db)
+):
+    """Exclude every statement line the review list shows (#705): the ids
+    it sends, each one this feed's and still waiting for review. A line
+    matched or added meanwhile is left alone. Returns how many."""
+    ba = db.query(BankAccount).filter(BankAccount.id == account_id).first()
+    if not ba:
+        raise HTTPException(status_code=404, detail="Bank account not found")
+    rows = (
+        db.query(BankTransaction)
+        .filter(
+            BankTransaction.bank_account_id == ba.id,
+            BankTransaction.id.in_(data.line_ids or [-1]),
+            BankTransaction.match_status == "unmatched",
+            BankTransaction.transaction_line_id.is_(None),
+        )
+        .all()
+    )
+    for bt in rows:
+        bt.match_status = "excluded"
+    db.commit()
+    return {"excluded": len(rows)}
+
+
+EXCLUDED_WHY = {
+    "excluded": "excluded by you",
+    "in_books": "already in the books: same date and amount as a matched line",
+}
+
+
+@router.get("/accounts/{account_id}/feed/excluded")
+def feed_excluded(account_id: int, db: Session = Depends(get_db)):
+    """The feed's excluded statement lines, for the review list's Show
+    excluded (W-116): each with why it is out of To review, the user's
+    Exclude (one, or Exclude all shown) or an import's "already in the
+    books". Restore (POST /transactions/{id}/restore) brings one back.
+    Newest first; `count` is how many."""
+    from app.services.bank_dedupe import EXCLUDED
+
+    ba = db.query(BankAccount).filter(BankAccount.id == account_id).first()
+    if not ba:
+        raise HTTPException(status_code=404, detail="Bank account not found")
+    rows = (
+        db.query(BankTransaction)
+        .filter(
+            BankTransaction.bank_account_id == ba.id,
+            BankTransaction.match_status.in_(EXCLUDED),
+        )
+        .order_by(BankTransaction.date.desc(), BankTransaction.id.desc())
+        .all()
+    )
+    lines = [
+        {
+            "id": r.id,
+            "date": r.date.isoformat(),
+            "payee": r.payee,
+            "description": r.description,
+            "amount": str(r.amount),
+            "reason": r.match_status,
+            "reason_text": EXCLUDED_WHY[r.match_status],
+        }
+        for r in rows
+    ]
+    return {"count": len(lines), "lines": lines}
 
 
 def _entry_vendor(db: Session, vendor_id, payee):
@@ -1356,6 +1437,15 @@ def reconciliation_report_pdf(recon_id: int, db: Session = Depends(get_db)):
     )
 
 
+# The reconciliation report as a page that opens the print dialog (#683):
+# the PDF route above, answering the HTML its PDF is rendered from.
+@router.get("/reconciliations/{recon_id}/print", response_class=HTMLResponse)
+def reconciliation_report_print(recon_id: int, db: Session = Depends(get_db)):
+    from app.routes._print import print_page
+
+    return print_page(reconciliation_report_pdf)(recon_id=recon_id, db=db)
+
+
 @router.delete("/reconciliations/{recon_id}")
 def abandon_reconciliation(recon_id: int, db: Session = Depends(get_db)):
     from app.services import reconciliation as rc
@@ -1363,6 +1453,29 @@ def abandon_reconciliation(recon_id: int, db: Session = Depends(get_db)):
     rc.abandon(db, _recon(db, recon_id))
     db.commit()
     return {"status": "abandoned", "reconciliation_id": recon_id}
+
+
+class RegisterCleared(StrictModel):
+    cleared: bool
+
+
+@router.post("/registers/{account_id}/lines/{line_id}/cleared")
+def set_register_cleared(
+    account_id: int, line_id: int, data: RegisterCleared, db: Session = Depends(get_db)
+):
+    """The register's ✓ set by hand (#715): the line's cleared flag, the one
+    a feed match or a reconciliation tick sets. Refused for a line in a
+    completed reconciliation and for marking a voided entry; the read-only
+    and accountant's sign-ins are refused by the role gate (app.main)."""
+    from app.services import reconciliation as rc
+
+    line = rc.set_register_cleared(db, account_id, line_id, data.cleared)
+    db.commit()
+    return {
+        "line_id": line.id,
+        "cleared": bool(line.cleared),
+        "reconciliation_id": line.reconciliation_id,
+    }
 
 
 @router.get("/check-register")

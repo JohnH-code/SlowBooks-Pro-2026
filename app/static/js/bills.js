@@ -76,6 +76,7 @@ const BillsPage = {
                 <strong>Date:</strong> ${formatDate(bill.date)}<br>
                 <strong>Terms:</strong> ${escapeHtml(bill.terms || '')}<br>
                 <strong>Due:</strong> ${formatDate(bill.due_date)}<br>
+                ${PaymentTerms.viewHtml(bill)}
                 <strong>Status:</strong> ${statusBadge(bill.status)}
             </div>
             <div class="table-container"><table>
@@ -149,7 +150,7 @@ const BillsPage = {
                 <td>${escapeHtml(b.bill_number || '')}</td>
                 <td>${formatDate(b.date)}</td>
                 <td class="amount">${formatCurrency(a.amount)}</td>
-                <td class="actions"><button class="btn btn-sm btn-secondary" onclick="BillsPage.view(${a.bill_id})">View Bill</button></td>
+                <td class="actions"><button class="btn btn-sm btn-secondary" onclick="BillsPage.view(${a.bill_id})">View Bill</button>${!p.is_voided && !(p.discounts || []).some(d => d.bill_id === a.bill_id) && a.can_take_discount !== false ? ` <button type="button" class="btn btn-sm btn-secondary" data-write onclick="BillsPage.showTakeDiscount(${p.id}, ${a.bill_id})">Take discount</button>` : ''}</td>
             </tr>`;
         }).join('');
         const applied = allocations.reduce((sum, a) => sum + Number(a.amount), 0);
@@ -162,12 +163,17 @@ const BillsPage = {
                 <strong>Date:</strong> ${formatDate(p.date)}<br>
                 <strong>Paid by:</strong> ${escapeHtml(how)}<br>
                 <strong>Amount:</strong> ${formatCurrency(p.amount)}<br>
+                ${p.class_name ? `<strong>${T('Class')}:</strong> ${escapeHtml(p.class_name)}<br>` : ''}
                 <strong>Status:</strong> ${p.is_voided ? statusBadge('void') : 'Paid'}
                 ${p.coi_override ? `<br><strong>COI override:</strong> ${escapeHtml(p.coi_override_note || 'Paid with an expired certificate of insurance')}` : ''}
+                ${typeof Replace === 'undefined' ? '' : Replace.links(p, 'bill_payment', n => `#/bill-payments/${n}`)}
             </div>
             ${rows ? `<div class="table-container"><table>
                 <thead><tr><th scope="col">Bill #</th><th scope="col">Date</th><th scope="col" class="amount">Applied</th><th scope="col"></th></tr></thead>
                 <tbody>${rows}</tbody></table></div>` : ''}
+            ${(p.discounts || []).length ? `<p style="font-size:12px; margin:8px 0;"><strong>Discounts taken:</strong> ${p.discounts.map(d =>
+                `${formatCurrency(d.amount)} on bill ${escapeHtml(d.bill_number || String(d.bill_id))} (vendor credit ${escapeHtml(d.credit_number)}${d.override ? ', against the terms' : ''})`).join('; ')}</p>` : ''}
+            ${p.discount_override_note ? `<div class="terms-note" style="margin:8px 0; padding:6px 10px; border-radius:4px; background:#fff4d6; color:#7a5500;">${escapeHtml(p.discount_override_note)}</div>` : ''}
             ${BillsPage._checkMemoHtml(p)}
             ${!p.is_voided && ahead > 0 ? `<p style="font-size:11px; color:var(--text-muted);">${formatCurrency(ahead)} paid ahead, not applied to a bill.</p>` : ''}
             <div class="form-actions">
@@ -356,6 +362,19 @@ const BillsPage = {
     _defaultExpenseAccountId: null,
     lineCount: 0,
 
+    // Under Terms: the due date the terms give the bill, the discount they
+    // offer, or the sentence saying they aren't understood (#664), from the
+    // server's one parser.
+    async termsHint() {
+        const form = $('#bill-form');
+        const hint = $('#bill-terms-hint');
+        if (!form || !hint) return;
+        const d = await PaymentTerms.dates(form.date.value, form.terms.value, 'bill', BillsPage._formBillId);
+        if (!d) { hint.innerHTML = ''; return; }
+        const extra = PaymentTerms.hintHtml(d);
+        hint.innerHTML = `Due ${escapeHtml(formatDate(d.due_date))}${extra ? ` &middot; ${extra}` : ''}`;
+    },
+
     // A vendor brings its terms (Enter Bill always said Net 30, so a Net 15
     // supplier's bill fell due two weeks late — F11) and its default
     // expense account, which fills every line not already pointed somewhere.
@@ -367,10 +386,8 @@ const BillsPage = {
         // the open form's Terms box: Enter Bill's, or a memorized bill's (#605)
         const terms = document.querySelector('#modal-body form [name="terms"]');
         if (vendor && vendor.terms && terms) {
-            if (![...terms.options].some(o => o.value === vendor.terms)) {
-                terms.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(vendor.terms)}">${escapeHtml(vendor.terms)}</option>`);
-            }
-            terms.value = vendor.terms;
+            PaymentTerms.choose(terms, vendor.terms);
+            BillsPage.termsHint();
         }
         if (BillsPage._defaultExpenseAccountId) {
             $$('#bill-lines .line-account').forEach(sel => {
@@ -445,9 +462,10 @@ const BillsPage = {
         await Nonprofit.loadFunds();
 
         BillsPage._vendors = vendors;
+        // the bill being edited, whose own terms answer by its own rule
+        BillsPage._formBillId = bill ? bill.id : null;
         const terms = bill && bill.terms ? bill.terms : 'Net 30';
-        const termChoices = ['Net 15','Net 30','Net 45','Net 60','Due on Receipt'];
-        if (!termChoices.includes(terms)) termChoices.push(terms);
+        await PaymentTerms.load();
 
         openModal(bill ? `Edit Bill ${bill.bill_number}` : 'Enter Bill', `
             <div class="bill-with-summary"><div class="bill-with-summary__form">
@@ -459,12 +477,12 @@ const BillsPage = {
                     <div class="form-group"><label>Bill Number</label>
                         <input name="bill_number" placeholder="from the receipt, or left blank" value="${bill ? escapeHtml(bill.bill_number || '') : ''}"></div>
                     <div class="form-group"><label>Date *</label>
-                        <input name="date" type="date" required value="${bill ? bill.date : todayISO()}"></div>
+                        <input name="date" type="date" required value="${bill ? bill.date : todayISO()}" onchange="BillsPage.termsHint()"></div>
                     <div class="form-group"><label>Terms</label>
-                        <select name="terms" title="The vendor's terms; the due date follows from them">
-                            ${termChoices.map(t =>
-                                `<option ${t===terms?'selected':''}>${escapeHtml(t)}</option>`).join('')}
-                        </select></div>
+                        <select name="terms" title="The vendor's terms; the due date follows from them" onchange="BillsPage.termsHint()">
+                            ${PaymentTerms.optionsHtml(terms, null, !bill || bill.payment_term_id != null)}
+                        </select>
+                        <div class="hint" id="bill-terms-hint"></div></div>
                     ${classGroup}${jobGroup}
                     ${currencyFormGroupsHtml(bill ? bill.currency : undefined, bill ? bill.exchange_rate : undefined)}
                 </div>
@@ -489,6 +507,7 @@ const BillsPage = {
             <aside id="bill-vendor-summary" class="bill-vendor-summary" aria-label="Vendor summary" aria-live="polite" hidden></aside></div>`, { wide: true });
         BillsPage._summaryFor = null;
         typeof LineOrder !== 'undefined' && LineOrder.attach('#bill-lines', { add: () => BillsPage.addLine(), changed: () => BillsPage.recalc() });
+        BillsPage.termsHint();
         if (bill) {
             const vendorSel = document.getElementById('bill-vendor');
             if (vendorSel) vendorSel.value = bill.vendor_id;
@@ -844,11 +863,15 @@ const BillsPage = {
         if (!(await ClassWarn.ok(form, { rows: '#bill-lines tr', cls: 'line-function' }))) return;
         try {
             const vendorId = await VendorQuickAdd.ensure('bill-vendor');
+            // the terms text, and the id of the list entry when one is picked,
+            // so a list pick whose name matches legacy text ties the bill (#665)
+            const termSel = PaymentTerms.selection(form.terms);
             const body = {
                 vendor_id: vendorId,
                 bill_number: form.bill_number.value.trim() || null,
                 date: form.date.value,
-                terms: form.terms.value,
+                terms: termSel.terms,
+                payment_term_id: termSel.payment_term_id,
                 notes: form.notes.value || null,
                 class_id: classIdFromForm(form),
                 job_id: jobIdFromForm(form),
@@ -912,13 +935,61 @@ const BillsPage = {
 
     // `vendorId`: only that vendor's open bills, from the vendor's own page
     // (#223, NEW-21); the list says so and offers every vendor's.
+    // Edit from a report line (#689): Pay Bills for the payment's vendor,
+    // filled in; the bills it paid are offered at the balance its void gives
+    // back, with the amounts and discounts it took. Save voids it and posts
+    // the new one in its place.
+    async replacePayment(id) {
+        const p = await API.get(`/bill-payments/${id}`);
+        if (p.is_voided) { toast('This bill payment is void; there is nothing to change.', 'error'); return; }
+        const back = {};
+        for (const a of p.allocations || []) back[a.bill_id] = (back[a.bill_id] || 0) + (parseFloat(a.amount) || 0);
+        for (const d of p.discounts || []) back[d.bill_id] = (back[d.bill_id] || 0) + (parseFloat(d.amount) || 0);
+        BillsPage._giveBack = back;
+        try { await BillsPage.showPayForm(p.vendor_id); } finally { BillsPage._giveBack = null; }
+        const form = document.querySelector('#modal-body form');
+        if (!form) return;
+        Replace.set(form, 'pay_from_account_id', p.pay_from_account_id || '');
+        Replace.set(form, 'date', p.date);
+        Replace.set(form, 'method', p.method || 'check');
+        Replace.set(form, 'check_number', p.check_number || '');
+        for (const a of p.allocations || []) {
+            const cb = document.querySelector(`.pay-check[data-bill="${Number(a.bill_id)}"]`);
+            if (cb) cb.checked = true;
+            const amt = document.querySelector(`.pay-amount[data-bill="${Number(a.bill_id)}"]`);
+            if (amt) amt.value = Number(a.amount).toFixed(2);
+        }
+        for (const d of p.discounts || []) {
+            const disc = document.querySelector(`.pay-discount[data-bill="${Number(d.bill_id)}"]`);
+            if (disc) disc.value = Number(d.amount).toFixed(2);
+        }
+        BillsPage.payDiscountChanged();
+        Replace.mark(form, 'bill_payment', id);
+    },
+    _giveBack: null,
+
     async showPayForm(vendorId = null) {
         BillsPage._payKey = null; // a new form, a new key (#292)
-        const [vendors, bills, accounts] = await Promise.all([
+        const [vendors, bills, accounts, allAccounts] = await Promise.all([
             API.get('/vendors?active_only=true'),
             fetchAllPages('/bills?open_only=true'),
             API.get('/accounts?bank=1&active_only=true'),
+            // where an early-payment discount we take posts (#664)
+            API.get('/accounts?active_only=true'),
+            // the payment's class (#686)
+            PaymentClass.load(),
         ]);
+        // replacing a bill payment (#689): the bills it paid, at the balance
+        // its void gives back
+        for (const [billId, amt] of Object.entries(BillsPage._giveBack || {})) {
+            let bill = bills.find(b => String(b.id) === String(billId));
+            if (!bill) {
+                try { bill = await API.get(`/bills/${Number(billId)}`); } catch (e) { bill = null; }
+                if (bill) bills.push(bill);
+            }
+            if (bill) bill.balance_due = Math.round(((parseFloat(bill.balance_due) || 0) + amt) * 100) / 100;
+        }
+        BillsPage._payBills = bills;
         // every unpaid or part-paid bill, not just the newest page (#191)
         const openBills = vendorId ? bills.filter(b => b.vendor_id == vendorId) : bills;
         const onlyVendor = vendorId ? (vendors.find(v => v.id == vendorId) || {}).name : null;
@@ -937,11 +1008,13 @@ const BillsPage = {
                 <td>${escapeHtml(b.vendor_name || '')}</td>
                 <td>${formatDate(b.due_date)}</td>
                 <td class="amount">${formatCurrency(b.balance_due)}</td>
+                <td>${b.discount_date ? formatDate(b.discount_date) : ''}</td>
+                <td><input type="number" step="0.01" min="0" class="pay-discount money" data-bill="${b.id}" value="" aria-label="Discount on bill ${escapeHtml(b.bill_number)}" oninput="BillsPage.payDiscountChanged()" style="width:70px;"></td>
                 <td><input type="number" step="0.01" class="pay-amount money" data-bill="${b.id}" data-vendor="${b.vendor_id}" data-vendor-name="${escapeHtml(b.vendor_name || '')}" data-coi-expires="${con && b.vendor_compliance && b.vendor_compliance.is_sub && b.vendor_compliance.coi_expires ? b.vendor_compliance.coi_expires : ''}" value="0" style="width:80px;"></td>
                 ${con ? `<td>${BillsPage.lienWaiverSelectHtml(b)}</td>` : ''}
             </tr>`).join('');
 
-        if (!billRows) billRows = `<tr><td colspan="${con ? 7 : 6}" style="color:var(--text-muted);">No open bills</td></tr>`;
+        if (!billRows) billRows = `<tr><td colspan="${con ? 9 : 8}" style="color:var(--text-muted);">No open bills</td></tr>`;
         const onlyNote = onlyVendor
             ? `<p id="pay-only-vendor" style="margin:0 0 8px; font-size:12px; color:var(--text-muted);">${escapeHtml(onlyVendor)}'s open bills. <a href="javascript:void(0)" onclick="BillsPage.showPayForm()">Show every vendor's</a></p>`
             : '';
@@ -952,7 +1025,7 @@ const BillsPage = {
                     <div class="form-group"><label>Pay From Account</label>
                         <select name="pay_from_account_id"><option value="">Select...</option>${acctOpts}</select></div>
                     <div class="form-group"><label>Date *</label>
-                        <input name="date" type="date" required value="${todayISO()}"></div>
+                        <input name="date" type="date" required value="${todayISO()}" onchange="BillsPage.suggestPayDiscounts()"></div>
                     <div class="form-group"><label>Method</label>
                         <select name="method">
                             <option value="check">Check</option><option value="ach">ACH</option>
@@ -960,27 +1033,69 @@ const BillsPage = {
                         </select></div>
                     <div class="form-group"><label>Check #</label>
                         <input name="check_number"></div>
+                    ${PaymentClass.groupHtml('pay-class')}
                 </div>
                 ${onlyNote}
                 <div class="table-container" style="margin-top:12px;"><table>
                     <thead><tr><th scope="col" style="width:30px;"></th><th scope="col">Bill #</th><th scope="col">Vendor</th><th scope="col">Due</th>
-                    <th scope="col" class="amount">Balance</th><th scope="col" class="amount">Payment</th>${con ? '<th scope="col">Lien waiver</th>' : ''}</tr></thead>
+                    <th scope="col" class="amount">Balance</th><th scope="col" title="The last day the vendor's early-payment discount can be taken">Disc. Date</th><th scope="col" class="amount">Discount</th><th scope="col" class="amount">Payment</th>${con ? '<th scope="col">Lien waiver</th>' : ''}</tr></thead>
                     <tbody>${billRows}</tbody>
                 </table></div>
+                <div class="form-group" id="pay-discount-account-row" hidden style="margin-top:8px; max-width:360px;">
+                    <label for="pay-discount-account">Discount account</label>
+                    <select id="pay-discount-account" data-no-search>${PaymentTerms.discountAccountOptions(allAccounts, 'purchases')}</select>
+                    <div class="hint">Where the discounts we take post, as a vendor credit applied to each bill.</div></div>
                 <div class="form-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                     <button type="submit" class="btn btn-primary">Pay Selected Bills</button>
                 </div>
             </form>`);
 
-        // Auto-fill payment amount on check
+        // Auto-fill payment amount on check: the balance less the
+        // discount the vendor's terms offer while its date has not passed
         $$('.pay-check').forEach(cb => {
-            cb.addEventListener('change', () => {
-                const billId = cb.dataset.bill;
-                const amtInput = $(`.pay-amount[data-bill="${billId}"]`);
-                amtInput.value = cb.checked ? cb.dataset.balance : '0';
-            });
+            cb.addEventListener('change', () => BillsPage.fillPayRow(cb));
         });
+        $$('.pay-amount').forEach(i => i.addEventListener('input', () => BillsPage.followPayClass()));
+    },
+
+    // The Class box follows the bills paid (#686): their class when every
+    // one has the same, else the default.
+    followPayClass() {
+        const select = document.getElementById('pay-class');
+        if (!select) return;
+        const paid = [...$$('.pay-amount')]
+            .filter(i => (parseFloat(i.value) || 0) > 0)
+            .map(i => (BillsPage._payBills || []).find(b => String(b.id) === i.dataset.bill))
+            .filter(Boolean);
+        PaymentClass.follow(select, paid.map(b => b.class_id));
+    },
+
+    // One ticked row: its discount suggested from the bill's terms and the
+    // payment date (#664), and the payment the balance less it.
+    fillPayRow(cb) {
+        const billId = cb.dataset.bill;
+        const amtInput = $(`.pay-amount[data-bill="${billId}"]`);
+        const discInput = $(`.pay-discount[data-bill="${billId}"]`);
+        const bill = (BillsPage._payBills || []).find(b => String(b.id) === String(billId));
+        const payDate = $('#modal-body form [name="date"]')?.value;
+        const disc = cb.checked && bill ? PaymentTerms.suggestedCents(bill, payDate) : 0;
+        if (discInput) discInput.value = disc > 0 ? (disc / 100).toFixed(2) : '';
+        const balance = Math.round((parseFloat(cb.dataset.balance) || 0) * 100);
+        amtInput.value = cb.checked ? ((balance - disc) / 100).toFixed(2) : '0';
+        BillsPage.payDiscountChanged();
+        BillsPage.followPayClass();
+    },
+
+    // A new payment date: the ticked rows' discounts are suggested again.
+    suggestPayDiscounts() {
+        $$('.pay-check').forEach(cb => { if (cb.checked) BillsPage.fillPayRow(cb); });
+    },
+
+    // The discount account shows while a discount is taken.
+    payDiscountChanged() {
+        const row = $('#pay-discount-account-row');
+        if (row) row.hidden = ![...$$('.pay-discount')].some(i => (parseFloat(i.value) || 0) > 0);
     },
 
     async savePay(e) {
@@ -991,16 +1106,34 @@ const BillsPage = {
         const byVendor = new Map();
         $$('.pay-amount').forEach(input => {
             const amt = parseFloat(input.value) || 0;
-            if (amt > 0) {
+            const discInput = $(`.pay-discount[data-bill="${input.dataset.bill}"]`);
+            const discount = Math.round((parseFloat(discInput && discInput.value) || 0) * 100) / 100;
+            if (amt > 0 || discount > 0) {
                 const vid = parseInt(input.dataset.vendor);
                 if (!byVendor.has(vid)) byVendor.set(vid, { name: input.dataset.vendorName, total: 0, allocations: [] });
                 const v = byVendor.get(vid);
                 v.coiExpires = input.dataset.coiExpires || null;
-                v.allocations.push({ bill_id: parseInt(input.dataset.bill), amount: amt });
+                const row = { bill_id: parseInt(input.dataset.bill), amount: amt };
+                if (discount > 0) { row.discount = discount; v.discounted = true; }
+                v.allocations.push(row);
                 v.total += amt;
             }
         });
         if (byVendor.size === 0) { toast('Select bills to pay', 'error'); return; }
+        // a discount comes with a payment on its bill (#664)
+        const unpaid = [...byVendor.values()].flatMap(v => v.allocations).find(a => a.discount && !(a.amount > 0));
+        if (unpaid) {
+            const bill = (BillsPage._payBills || []).find(b => b.id === unpaid.bill_id);
+            toast(`Bill ${bill ? bill.bill_number : unpaid.bill_id} has a discount but no payment. Pay some of it, or clear its discount.`, 'error');
+            return;
+        }
+        // the discounts post to the account picked under the list (#664)
+        let discountAccountId = null;
+        if ([...byVendor.values()].some(v => v.discounted)) {
+            discountAccountId = parseInt($('#pay-discount-account')?.value) || null;
+            if (!discountAccountId) { toast('Pick the account the discount posts to.', 'error'); return; }
+            PaymentTerms.rememberDiscountAccount('purchases', discountAccountId);
+        }
         const checkNumber = form.check_number.value || null;
         if (checkNumber && byVendor.size > 1) {
             toast('One check number cannot pay several vendors. Pay one vendor at a time, or leave Check # blank.', 'error');
@@ -1018,6 +1151,7 @@ const BillsPage = {
             if (!confirm(`Certificate of insurance expired: ${who}.\n\nA sub without a current certificate leaves you exposed if someone is hurt on the job. Pay anyway? The payment will be recorded as paid with an expired COI.`)) return;
         }
         if (!(await TxnWarn.ok(form))) return;
+        if (!(await ClassWarn.ok(form))) return;
 
         const paid = [];
         const written = [];  // the ids of the payments made, for Print Checks
@@ -1039,20 +1173,33 @@ const BillsPage = {
                     check_number: checkNumber,
                     pay_from_account_id: fromId,
                     allocations: v.allocations,
+                    discount_account_id: v.discounted ? discountAccountId : null,
+                    class_id: classIdFromForm(form),
                 };
                 if (v.coiExpires && v.coiExpires < form.date.value) body.coi_override = true;
                 // a check number the paying account already has (#481):
                 // keep it, or go back to the form with nothing paid
-                const done = await CheckNumberWarn.send(
-                    q => API.post('/bill-payments', body, q ? { query: q } : null,
-                        { 'Idempotency-Key': `${BillsPage._payKey}:${vendorId}` }),
-                    form.check_number);
+                // Edit from a report line (#689): one vendor, the payment replaced
+                if ((typeof Replace !== 'undefined' && Replace.replacing(form)) && byVendor.size > 1) throw new Error('A replacement pays one vendor: the vendor of the payment it replaces.');
+                const post = q => API.post('/bill-payments' + (typeof Replace === 'undefined' ? '' : Replace.suffix(form)), body, q ? { query: q } : null,
+                    { 'Idempotency-Key': `${BillsPage._payKey}:${vendorId}${body.allow_discount_override ? ':override' : ''}` });
+                // a discount the vendor's terms don't offer is the person's
+                // call: asked, and sent again with the override (#664)
+                const send = async q => {
+                    try { return await post(q); } catch (err) {
+                        if (!PaymentTerms.asksOverride(err, body)) throw err;
+                        body.allow_discount_override = true;
+                        return post(q);
+                    }
+                };
+                const done = await CheckNumberWarn.send(send, form.check_number);
                 if (!done) return;
                 paid.push(v.name);
                 written.push(done.id);
             }
             BillsPage._payKey = null;
-            toastPosted(byVendor.size > 1 ? `Bills paid: ${byVendor.size} payments, one per vendor` : 'Bills paid');
+            if ((typeof Replace !== 'undefined' && Replace.replacing(form))) toastPosted(`Bill payment voided and replaced by bill payment #${written[0]}`);
+            else toastPosted(byVendor.size > 1 ? `Bills paid: ${byVendor.size} payments, one per vendor` : 'Bills paid');
             closeModal();
             await App.navigate('#/bills');
             // checks written with no number wait to be printed together: the
@@ -1071,6 +1218,53 @@ const BillsPage = {
             BillsPage._paying = false;
             if (payButton) payButton.disabled = false;
         }
+    },
+
+    // A vendor's discount we took that wasn't recorded with the payment
+    // (#665), suggested from the bill's terms on the payment's date.
+    async showTakeDiscount(paymentId, billId) {
+        const [p, bill, accounts] = await Promise.all([
+            API.get(`/bill-payments/${paymentId}`),
+            API.get(`/bills/${billId}`),
+            API.get('/accounts'),
+        ]);
+        const cents = PaymentTerms.suggestedCents(bill, p.date);
+        openModal(`Take a discount on bill ${escapeHtml(bill.bill_number)}`, `
+            <form id="take-bill-discount-form" onsubmit="BillsPage.saveTakeDiscount(event, ${paymentId}, ${billId})">
+                <p style="font-size:13px; margin:0 0 8px;">${escapeHtml(PaymentTerms.dueSentence(bill.discount_line))}
+                    ${formatCurrency(bill.balance_due)} is still due on it; the discount is dated ${formatDate(p.date)}, as the payment is.</p>
+                <div class="form-grid">
+                    <div class="form-group"><label for="take-bill-discount-amount">Discount</label>
+                        <input id="take-bill-discount-amount" name="discount" class="money" type="number" step="0.01" min="0.01" required value="${cents > 0 ? (cents / 100).toFixed(2) : ''}"></div>
+                    <div class="form-group"><label for="take-bill-discount-account">Discount account</label>
+                        <select id="take-bill-discount-account" name="account" data-no-search required>${PaymentTerms.discountAccountOptions(accounts, 'purchases')}</select></div>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="BillsPage.viewPayment(${paymentId})">Back</button>
+                    <button type="submit" class="btn btn-primary">Take Discount</button>
+                </div>
+            </form>`);
+    },
+
+    async saveTakeDiscount(e, paymentId, billId) {
+        e.preventDefault();
+        const form = e.target;
+        const body = {
+            bill_id: billId,
+            discount: Math.round((parseFloat(form.discount.value) || 0) * 100) / 100,
+            discount_account_id: parseInt(form.account.value) || null,
+        };
+        const send = () => API.post(`/bill-payments/${paymentId}/discount`, body);
+        try {
+            try { await send(); } catch (err) {
+                if (!PaymentTerms.asksOverride(err, body)) throw err;
+                body.allow_discount_override = true;
+                await send();
+            }
+            PaymentTerms.rememberDiscountAccount('purchases', body.discount_account_id);
+            toastPosted('Discount taken');
+            BillsPage.viewPayment(paymentId);
+        } catch (err) { toast(err.message, 'error'); }
     },
 
     // From the bill's view: the payment is reversed and every bill it paid

@@ -244,6 +244,11 @@
         ExpensesPage.showForm({ paid_from_account_id: keep });
     };
 
+    // 2.31.5's Edit (#689) on a report line voids an expense and posts a
+    // new one; here it opens the cheque in Write Cheques and saves it in
+    // place instead.
+    ExpensesPage.replace = function (id) { return ExpensesPage.edit(id); };
+
     // Open a saved cheque or card charge in the form, as QuickBooks opens
     // one from the register, to change and save in place.
     ExpensesPage.edit = async function (id) {

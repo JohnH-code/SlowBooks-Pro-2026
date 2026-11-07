@@ -105,6 +105,7 @@ from app.routes import journal, deposits, cc_charges, checks, expenses, transfer
 # Phase 10: Quick Wins + Medium Effort Features
 from app.routes import bank_rules, budgets, attachments, email_templates
 from app.routes import invoice_messages as invoice_messages_routes
+from app.routes import payment_terms as payment_terms_routes
 
 # Phase 9: Analytics (real-time business intelligence)
 from app.routes import analytics
@@ -510,6 +511,19 @@ def _create_missing_tables(target=None) -> None:
     Base.metadata.create_all(bind=checked)
 
 
+def _seed_payment_terms(db) -> None:
+    """A company made through company_service gets its starting payment
+    terms there (#664), and one made before 2.31.5 gets them from the
+    migration. A database that create_all built on its own (a native
+    install started without `alembic upgrade head`) has neither, and every
+    form would offer only the terms typed so far. Seeds an empty table only;
+    a list in use is never touched. Runs at startup."""
+    from app.services.payment_terms import ensure_seeded
+
+    ensure_seeded(db)
+    db.commit()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """App lifespan. Replaces the deprecated @app.on_event("startup") hook
@@ -547,10 +561,21 @@ async def lifespan(app: FastAPI):
             )
     except Exception:
         pass  # a diagnostic, never a reason not to boot
+    # The payment terms list (#664): see _seed_payment_terms.
+    try:
+        _db = SessionLocal()
+        try:
+            _seed_payment_terms(_db)
+        finally:
+            _db.close()
+    except Exception:
+        # the forms still take typed terms; never a reason not to boot
+        logging.getLogger(__name__).warning("payment terms seed skipped", exc_info=True)
     # At-rest upgrade: encrypt any legacy plaintext credential rows (SMTP,
     # payment, SimpleFIN secrets) on first boot after upgrading, and drop
     # the rows of a retired integration's settings.
     try:
+        from app.services import startup_progress
         from app.services.settings_service import (
             remove_retired_settings,
             upgrade_plaintext_secrets,
@@ -578,6 +603,8 @@ async def lifespan(app: FastAPI):
             # from the ledger once here; books that agree have nothing to do.
             from app.services.accounting import rebuild_stored_balances
 
+            # #693: the desktop launcher waits while this note changes
+            startup_progress.report("Checking account balances against the ledger")
             fixed = rebuild_stored_balances(_db)
             if fixed:
                 print(
@@ -587,7 +614,7 @@ async def lifespan(app: FastAPI):
             # accrual tags and the cash-basis lines of its payments once.
             from app.services.cash_basis import backfill as cash_basis_backfill
 
-            done = cash_basis_backfill(_db)
+            done = cash_basis_backfill(_db, on_progress=startup_progress.report)
             if done["tagged"] or done["payments"] or done["bill_payments"]:
                 print(
                     "Cash basis: tagged %d accrual line(s), wrote cash lines for "
@@ -603,6 +630,7 @@ async def lifespan(app: FastAPI):
                 )
         finally:
             _db.close()
+            startup_progress.clear()
     except Exception:
         pass  # never block boot on the upgrader
     # #605 (2.31.1 gate W-66): enter what is due when the app opens, and
@@ -639,6 +667,13 @@ app = FastAPI(
         "- **`tax_rate` on a document is a fraction** (0.089 = 8.9%), kept "
         "to six places (0.08875 = 8.875%); `default_tax_rate` in settings is "
         'a percent string ("8.9"). Divide by 100.\n'
+        "- **`terms` names an entry on `/api/payment-terms`** (its rule gives "
+        "the due date and any early-payment discount; the document keeps the "
+        "term it was saved under); text that is neither on the list nor "
+        "`Net N` is due in 30 days and the document's `terms_note` says so. "
+        "A payment's `allocations[].discount` must be one the document's "
+        "terms offer, else an administrator sends `allow_discount_override`, "
+        "which the payment records.\n"
         "- Enumerated fields are enums in this spec; read the allowed values "
         "here rather than guessing."
     ),
@@ -1027,6 +1062,8 @@ _ADMIN_WRITE_PREFIXES = (
     # The saved invoice messages are company settings by another name
     # (#392): kept under Settings, written by an administrator.
     "/api/invoice-messages",
+    # The terms list is company setup too (#664): kept under Settings.
+    "/api/payment-terms",
 )
 # HR and payroll are admin functions, reads included: pay stubs, W-2s and
 # 941s, NACHA files, benefit elections, garnishments and onboarding
@@ -1578,6 +1615,7 @@ app.include_router(attachments.router)
 app.include_router(email_templates.router)
 # the saved invoice messages, chosen on the invoice form (#392)
 app.include_router(invoice_messages_routes.router)
+app.include_router(payment_terms_routes.router)
 # Phase 11: Saved Reports (inventory endpoints live on the items router)
 app.include_router(saved_reports.router)
 

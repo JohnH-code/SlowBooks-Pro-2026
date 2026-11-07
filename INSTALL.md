@@ -16,9 +16,11 @@ publisher instead of a SmartScreen warning.
 1. Download **`SlowBooksPro-Setup-x64.exe`** from the
    [latest release](https://github.com/VonHoltenCodes/SlowBooks-Pro-2026/releases/latest)
    (or from [slowbookspro.com](https://www.slowbookspro.com)).
-2. Double-click it and follow the wizard. Everything installs into
-   `Program Files`; a Start Menu entry (and optional Desktop shortcut) is
-   created.
+2. Double-click it and follow the wizard. The first page asks who it is
+   for: **Install for me only** (no administrator needed) or **Install for
+   all users** (asks for an administrator's password, installs into
+   `Program Files`). A Start Menu entry (and optional Desktop shortcut) is
+   created either way.
 3. Launch **SlowBooks Pro 2026** — you'll be asked to create your first
    company, and the app opens in its own window.
 
@@ -30,6 +32,44 @@ uninstalls leave untouched.
 When a new version is released, the top of the sidebar shows an
 **Update available** notice — download the new installer and run it over
 the old install; your companies and settings are kept.
+
+### Installing without administrator rights
+
+On a work or managed PC where you are a standard user, run the installer as
+yourself and choose **Install for me only** (the choice already picked). SlowBooks installs into
+`%LOCALAPPDATA%\Programs\SlowBooks Pro 2026`, with its Start Menu entry and
+its uninstaller (Settings → Apps) in your own account; no administrator
+password is asked for. You do not need to run it "as administrator" or from
+another account, and the installer can stay in your Downloads folder.
+
+- **The first page always offers "Install for me only" first**, also when
+  the installer was started with *Run as administrator*. An administrator
+  who wants the Program Files install chooses **Install for all users** on
+  that page (or runs the installer with `/ALLUSERS`).
+- **Answering No at the administrator prompt closes the installer** without
+  installing anything and without a message: that is Windows declining the
+  elevation, not an error. Run the installer again and choose **Install for
+  me only**, which needs no administrator.
+- **Your books are in the same place either way**:
+  `%LOCALAPPDATA%\SlowBooksPro`. Switching between a per-user and an
+  all-users install keeps them.
+- **Updates** install the way the copy already there was installed: run the
+  new installer over a per-user copy and it updates it without asking which
+  kind; over an all-users copy it asks for an administrator's password. If
+  SlowBooks is already installed for all users and nobody can give that
+  password, the installer says so and stops without changing anything: ask
+  an administrator to run it, or to uninstall the all-users copy so you can
+  install your own.
+- **From a command line**, `SlowBooksPro-Setup-x64.exe /CURRENTUSER` installs
+  for you only and `/ALLUSERS` for everyone, without the question (add
+  `/SILENT` or `/VERYSILENT` for an unattended install).
+- **The WebView2 runtime** (below): when it is missing, a per-user install
+  sets it up for your account. When this computer has one installed for
+  everyone that is too old, only an administrator can update it; the
+  installer says so when it finishes, and SlowBooks offers your web browser
+  until it is updated.
+- **Server Edition** (a host other computers connect to) needs the
+  all-users install: its startup task is an administrator's.
 
 ### Working with multiple companies
 
@@ -91,7 +131,8 @@ To let SlowBooks use your Documents and Downloads folders directly:
 **Windows Security → Virus & threat protection → Ransomware protection →
 Manage Controlled folder access → Allow an app through Controlled folder
 access → Add an allowed app → Recently blocked apps**, and pick
-`SlowBooksPro.exe` (or browse to `C:\Program Files\SlowBooks Pro 2026\`).
+`SlowBooksPro.exe` (or browse to `C:\Program Files\SlowBooks Pro 2026\`, or to
+`%LOCALAPPDATA%\Programs\SlowBooks Pro 2026\` for an install for you only).
 
 ### Backups
 
@@ -330,6 +371,8 @@ Open **http://localhost:3001**.
 > `.venv/bin/python`.
 
 ### Optional: Load demo data
+
+In the app, **Try a sample company** on the Companies page builds Henry Brown's Auto Body Shop (the IRS Publication 583 example) as its own company file. From a checkout, the same data can be seeded into the current database:
 
 ```bash
 python scripts/seed_irs_mock_data.py

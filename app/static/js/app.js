@@ -270,6 +270,19 @@ const App = {
         if (typeof n === 'number' && n < App._nShown) history.forward(); else history.back();
     },
     isMac() { return typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform || ''); },
+    // The desktop window (desktop_shim.js), where Ctrl+F (⌘F) is the app's
+    // search; in a browser it stays the browser's find in page (#695).
+    inDesktopShell() { return !!(window.SlowbooksDesktop && window.SlowbooksDesktop.inShell && window.SlowbooksDesktop.inShell()); },
+    // The search box names its keys to a screen reader: Ctrl+K (⌘K) and /,
+    // and Ctrl+F (⌘F) in the desktop window. Again once pywebview is ready,
+    // which on a Mac is after the page has drawn.
+    labelSearchKeys() {
+        const search = $('#global-search');
+        if (!search) return;
+        const mod = App.isMac() ? 'Meta' : 'Control';
+        const keys = [`${mod}+K`, ...(App.inDesktopShell() ? [`${mod}+F`] : []), '/'];
+        search.setAttribute('aria-keyshortcuts', keys.join(' '));
+    },
     // What a toolbar button says about its shortcut: the hover reads
     // "Enter Bill (Alt+B)" — "(⌥B)" on a Mac, where Alt is Option — and a
     // screen reader hears the ARIA token, which stays Alt+B everywhere
@@ -294,10 +307,33 @@ const App = {
     // keyboard's stop is brought in whole, its ring and halo with it (its
     // scroll-margin); a pointer's focus stays where the pointer put it.
     // The P&L grid has its own (ReportsPage._gridReveal).
+    // Printing a month grid (Budgets, Budget vs Actual: W-115): the print
+    // rules in style.css need to know a frozen grid is on the page, and
+    // whether it is in the open dialog. <body> carries that as classes for
+    // as long as the page is being printed.
+    printClasses(printing) {
+        if (typeof document === 'undefined' || !document.body) return;
+        const grid = printing && document.querySelector('.table-container--frozen');
+        const inDialog = printing && document.querySelector('#modal-overlay:not(.hidden) .table-container--frozen');
+        document.body.classList.toggle('prints-month-grid', !!grid);
+        document.body.classList.toggle('prints-month-grid-dialog', !!inDialog);
+    },
     revealInTable(e) {
         const a = e.target, c = a && a.closest && a.closest('.table-container');
         if (!c || a === c || c.id === 'grid-scroll' || !App.keyboardFocus()) return;
+        // a months grid with a frozen first column and header row (Budgets,
+        // #702) scrolls the stop out from under them: its scroll padding
+        // (style.css .table-container--frozen) is their width and height
+        const frozen = c.classList.contains('table-container--frozen');
+        if (frozen) {
+            const t = a.closest('table'), corner = t && t.querySelector('thead th:first-child');
+            if (corner) {
+                c.style.setProperty('--frozen-col', `${corner.offsetWidth}px`);
+                c.style.setProperty('--frozen-head', `${t.tHead.offsetHeight}px`);
+            }
+        }
         if (c.scrollWidth > c.clientWidth) a.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        else if (frozen && c.scrollHeight > c.clientHeight) a.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     },
 
     // A table wider than its container with no control in it (Benefits'
@@ -469,7 +505,7 @@ const App = {
     // the dates of a custom range, or an as-of date.
     _periodWords(query) {
         const names = {
-            this_month: 'this month', this_quarter: 'this quarter', this_year: 'this year',
+            all_dates: 'all dates', this_month: 'this month', this_quarter: 'this quarter', this_year: 'this year',
             this_year_to_date: 'this year to date', last_month: 'last month',
             last_quarter: 'last quarter', last_year: 'last year', last_year_to_date: 'last year to date',
         };
@@ -760,6 +796,8 @@ const App = {
         $$('.nav-link').forEach(link => {
             link.classList.toggle('active', link.dataset.page === route.page);
         });
+        // its sidebar section open, when the page changed (#688)
+        App.openSectionOf(route.page);
 
         // Status bar
         App.setStatus(`Loading ${route.label}...`);
@@ -1090,7 +1128,7 @@ const App = {
         'BenefitsPage.createRemittanceBill', 'BenefitsPage.deleteRate', 'BenefitsPage.deleteGroup',
         'OnboardingPage.completeTask', 'FixedAssetsPage.showPostPurchaseForm', 'FixedAssetsPage.showDisposeForm',
         'FixedAssetsPage.showDepreciationForm', 'FixedAssetsPage.showImportForm', 'ItemsPage.showAdjust',
-        'BankingPage.voidEntry', 'BankingPage.editEntry', 'BankingPage.uploadAttachment', 'BankingPage.deleteAttachment', 'BankingPage.saveEntryAnyway', 'BankingPage.voidTransfer', 'BankingPage.showEntryForm', 'BankingPage.showTransferForm',
+        'BankingPage.voidEntry', 'BankingPage.toggleRegCleared', 'BankingPage.editEntry', 'BankingPage.uploadAttachment', 'BankingPage.deleteAttachment', 'BankingPage.saveEntryAnyway', 'BankingPage.voidTransfer', 'BankingPage.showEntryForm', 'BankingPage.showTransferForm',
         'BankingPage.showAccountForm', 'BankingPage.showOFXImport', 'BankingPage.confirmOFXImport', 'BankingPage.startReconcile',
         'BankingPage.finishReconcile', 'BankingPage.abandonReconcile', 'BankingPage.matchLine', 'BankingPage.showMatch',
         'BankingPage.excludeLine', 'BankingPage.findMatches', 'BankingPage.addAll', 'BankingPage.postLegacy',
@@ -1262,7 +1300,7 @@ const App = {
         const current = document.documentElement.getAttribute('data-theme');
         const next = current === 'dark' ? 'light' : 'dark';
         document.documentElement.setAttribute('data-theme', next);
-        localStorage.setItem('slowbooks-theme', next);
+        App._pref('slowbooks-theme', next);
         const btn = $('#theme-toggle');
         if (btn) btn.innerHTML = next === 'dark' ? '&#9788;' : '&#9790;';
         // Canvas ink is painted, not styled: a chart on screen keeps the old
@@ -1272,8 +1310,23 @@ const App = {
         document.dispatchEvent(new CustomEvent('slowbooks:themechange', { detail: { theme: next } }));
     },
 
+    // A per-computer preference, through utils.js's null-safe Store when
+    // it is loaded (the page) and a null-safe read or write of its own when
+    // it is not (the node probes load this file alone): `value` undefined
+    // reads, null removes, anything else writes.
+    _pref(key, value) {
+        const store = typeof Store !== 'undefined' ? Store : {
+            get: k => { try { return window.localStorage ? window.localStorage.getItem(k) : null; } catch (e) { return null; } },
+            set: (k, v) => { try { if (window.localStorage) window.localStorage.setItem(k, v); } catch (e) { /* this load only */ } },
+            remove: k => { try { if (window.localStorage) window.localStorage.removeItem(k); } catch (e) { /* nothing kept */ } },
+        };
+        if (value === undefined) return store.get(key);
+        if (value === null) store.remove(key); else store.set(key, value);
+        return value;
+    },
+
     loadTheme() {
-        const saved = localStorage.getItem('slowbooks-theme');
+        const saved = App._pref('slowbooks-theme');
         if (saved === 'dark') {
             document.documentElement.setAttribute('data-theme', 'dark');
             const btn = $('#theme-toggle');
@@ -2022,6 +2075,27 @@ const App = {
         else if (e.key === 'ArrowUp') { e.preventDefault(); focusFor(i > 0 ? items[i - 1] : $('#global-search'), true); }
         else if (e.key === 'Escape') { e.preventDefault(); closeSearchDropdown(); $('#global-search')?.focus(); }
     },
+    // A Transactions hit (#695): "Check #1042 · 09/02/2026 · City Water ·
+    // August water · $125.00", and "(void)" on one that was voided.
+    _searchTransactions: [],
+    searchTransactionText(t) {
+        const word = sourceWord(t.source_type, t.source_kind) + (t.reference ? ` #${t.reference}` : '');
+        const memo = t.memo || t.description;
+        const said = [word, formatDate(t.date), t.payee, memo !== t.payee ? memo : '', formatCurrency(t.total)]
+            .filter(Boolean).join(' · ');
+        return t.voided ? `${said} (void)` : said;
+    },
+    async openSearchTransaction(id) {
+        const t = (App._searchTransactions || []).find(x => x.id === id);
+        if (!t) return;
+        if (t.source_type === 'bank_entry' && t.register_account_id && typeof BankingPage !== 'undefined') {
+            // a "(void)" hit opens with its voided rows drawn though Hide
+            // voided is ticked (W-113), for that visit only
+            App.navigate(await BankingPage.hrefShowing(t.register_account_id, t.date, { showVoided: !!t.voided }));
+            return;
+        }
+        App.navigate(String(t.link || `#/journal/${t.id}`).replace(/^\//, ''));
+    },
     async globalSearch(query) {
         const dropdown = $('#search-results');
         if (!dropdown) return;
@@ -2057,7 +2131,14 @@ const App = {
                       text: (i) => doc(i.bill_number, i.vendor_name, i.total) },
                     { key: 'payments', label: 'Payments', onClick: (item) => `PaymentsPage.view(${item.id});closeSearchDropdown();`,
                       text: (i) => doc(formatDate(i.date), i.customer_name, i.amount) },
+                    // any posting by its memo, reference, check number or
+                    // amount (#695): it opens as a drill-down's line does,
+                    // a bank entry on its register; only the id crosses
+                    // into the attribute
+                    { key: 'transactions', label: 'Transactions', onClick: (item) => `App.openSearchTransaction(${Number(item.id)});closeSearchDropdown();`,
+                      text: (t) => App.searchTransactionText(t) },
                 ];
+                App._searchTransactions = results.transactions || [];
                 for (const sec of sections) {
                     const items = results[sec.key];
                     if (items && items.length > 0) {
@@ -2106,12 +2187,13 @@ const App = {
                     <p style="font-size:11px; color:var(--text-muted); margin-bottom:12px;">Upload CSV files to import data.</p>
                     <form id="csv-import-form" onsubmit="App.importCSV(event)">
                         <div class="form-group"><label>Entity Type</label>
-                            <select name="entity_type" id="csv-entity">
+                            <select name="entity_type" id="csv-entity" onchange="App.csvImportHelp(this.value)">
                                 <option value="customers">${T('Customers')}</option>
                                 <option value="vendors">Vendors</option>
                                 <option value="items">Items</option>
                                 <option value="accounts">Chart of Accounts</option>
                             </select></div>
+                        <p class="hint" id="csv-import-help" aria-live="polite" style="font-size:11px; margin-bottom:10px;">${App._csvImportHelpHtml('customers')}</p>
                         <div class="form-group"><label>CSV File</label>
                             <input type="file" name="file" accept=".csv" required></div>
                         <button type="submit" class="btn btn-primary">Import</button>
@@ -2119,6 +2201,47 @@ const App = {
                     <div id="csv-import-results" style="margin-top:12px;"></div>
                 </div>
             </div>`;
+    },
+
+    // The columns each list import reads, as the server matches them
+    // (app/services/csv_import.py: case, spaces and underscores aside, with
+    // the aliases in brackets), and the template to start from (#710). The
+    // headings are a file's, not the screen's words: a nonprofit's donor
+    // list may say Donor (the importer reads it), and Income Account stays.
+    _CSV_IMPORT_COLUMNS: {
+        customers: {
+            template: 'customers-template.csv',
+            columns: () => `Name (or ${T('Customer')}, ${T('Customer')} Name), Company, Email, Phone, Address (or Street), City, State, ZIP, Terms`,
+        },
+        vendors: {
+            template: 'vendors-template.csv',
+            columns: 'Name (or Vendor, Vendor Name, Payee), Company, Email, Phone, Address (or Street), City, State, ZIP, Terms',
+        },
+        items: {
+            template: 'items-template.csv',
+            columns: 'Name (or Item, Item Name), Code, Type (service, product, material or labor), Description, '
+                + 'Rate (or Price, Sales Price), Cost (or Unit Cost), Income Account (number or name; blank is 4000), ' // literal face: the file's column heading
+                + 'Negative Price (yes for a discount item)',
+        },
+        accounts: {
+            template: 'chart-of-accounts-template.csv',
+            // a Name written Parent:Child with Parent blank is a sub-account (W-119)
+            columns: 'Number, Name (a sub-account may be written Parent:Child, its type left blank to take the parent\'s), Type, Parent, Description, Active',
+        },
+    },
+
+    _csvImportHelpHtml(entity) {
+        const spec = App._CSV_IMPORT_COLUMNS[entity];
+        if (!spec) return '';
+        const required = entity === 'accounts' ? '' : ' Only Name is required; headings match in any case, and other columns are ignored.';
+        const columns = typeof spec.columns === 'function' ? spec.columns() : spec.columns;
+        return `Columns read: ${escapeHtml(columns)}.${required} `
+            + `<a href="/static/downloads/${spec.template}" download>Download a template</a>.`;
+    },
+
+    csvImportHelp(entity) {
+        const help = $('#csv-import-help');
+        if (help) help.innerHTML = App._csvImportHelpHtml(entity);
     },
 
     async importCSV(e) {
@@ -2149,6 +2272,7 @@ const App = {
         const [customers, items] = await Promise.all([
             API.get('/customers?active_only=true&tree=1'),
             API.get('/items?active_only=true'),
+            PaymentTerms.load(),
         ]);
         App._qeCustomers = customers;
         App._qeItems = items;
@@ -2187,8 +2311,7 @@ const App = {
                         <input name="date" id="qe-date" type="date" required value="${todayISO()}"></div>
                     <div class="form-group"><label>Terms</label>
                         <select name="terms" id="qe-terms">
-                            ${['Net 15','Net 30','Net 45','Net 60','Due on Receipt'].map(t =>
-                                `<option ${t==='Net 30'?'selected':''}>${t}</option>`).join('')}
+                            ${PaymentTerms.optionsHtml('Net 30')}
                         </select></div>
                     <div class="form-group"><label>PO #</label>
                         <input name="po_number" id="qe-po"></div>
@@ -2523,7 +2646,11 @@ const App = {
 
     applyTerminology() {
         for (const r of Object.values(App.routes)) r.label = T(r.label);
-        $$('#sidebar .nav-section').forEach(el => { el.textContent = T(el.textContent.trim()); });
+        // a heading that folds (#688) keeps its button: the words are its
+        $$('#sidebar .nav-section').forEach(el => {
+            const target = el.querySelector('.nav-section__toggle') || el;
+            target.textContent = T(target.textContent.trim());
+        });
         $$('#sidebar .nav-link').forEach(a => {
             const t = [...a.childNodes].find(n => n.nodeType === 3 && n.textContent.trim());
             if (t) t.textContent = ' ' + T(t.textContent.trim());
@@ -2545,6 +2672,7 @@ const App = {
         }
         const search = $('#global-search');
         if (search) search.placeholder = Terms.text(search.placeholder);
+        App.labelSearchKeys();
         const np = Terms.isNonprofit();
         const con = Terms.isConstruction();
         // a sidebar item keeps its own mark for this (see syncSidebarHidden)
@@ -2560,7 +2688,127 @@ const App = {
         App.syncSidebarHidden();
     },
 
+    // ---- Sidebar sections that fold, and Hide sidebar (#688) --------------
+    // Each section heading is a button that folds or opens the items under
+    // it; the folded ones are kept per computer, by the heading's words as
+    // index.html has them (before the company's vocabulary renames them).
+    // The section holding the page shown is open whenever the page changes,
+    // the first page included; that opens it for the moment and keeps the
+    // stored choice. Hide sidebar, in the top bar and on `[`, puts the
+    // whole menu away and the page takes the width; kept per computer. On
+    // a phone-width window (700px and under) the sidebar is as it was:
+    // the control is not shown there and the stored choice does not apply.
+    SECTIONS_KEY: 'slowbooks-sidebar-folded',
+    SIDEBAR_HIDDEN_KEY: 'slowbooks-sidebar-hidden',
+    _sectionPage: null,
+
+    _sectionHeads() { return [...$$('#sidebar .nav-links > li.nav-section')]; },
+
+    // the items under a heading, to the next heading
+    _sectionItems(head) {
+        const items = [];
+        let li = head.nextElementSibling;
+        while (li && !li.classList.contains('nav-section')) { items.push(li); li = li.nextElementSibling; }
+        return items;
+    },
+
+    _foldedSections() {
+        let v = [];
+        try { v = JSON.parse(localStorage.getItem(App.SECTIONS_KEY) || '[]'); } catch (e) { v = []; }
+        return new Set(Array.isArray(v) ? v.map(String) : []);
+    },
+
+    setupSidebarSections() {
+        const folded = App._foldedSections();
+        App._sectionHeads().forEach(head => {
+            if (head.querySelector('.nav-section__toggle')) return;
+            const name = head.textContent.trim();
+            head.dataset.section = name;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'nav-section__toggle';
+            btn.textContent = name;
+            btn.addEventListener('click', () => App.toggleSection(head));
+            head.textContent = '';
+            head.appendChild(btn);
+            head.classList.add('nav-section--folds');
+            App._foldSection(head, folded.has(name));
+        });
+    },
+
+    _foldSection(head, fold) {
+        const btn = head.querySelector('.nav-section__toggle');
+        if (btn) btn.setAttribute('aria-expanded', fold ? 'false' : 'true');
+        head.classList.toggle('nav-section--folded', fold);
+        const items = App._sectionItems(head);
+        // the keyboard is never left inside a folded section
+        const active = document.activeElement;
+        if (fold && active && items.some(li => li.contains(active)) && btn) btn.focus();
+        items.forEach(li => li.classList.toggle('nav-folded', fold));
+    },
+
+    toggleSection(head) {
+        const fold = !head.classList.contains('nav-section--folded');
+        App._foldSection(head, fold);
+        const folded = App._foldedSections();
+        if (fold) folded.add(head.dataset.section); else folded.delete(head.dataset.section);
+        try { localStorage.setItem(App.SECTIONS_KEY, JSON.stringify([...folded])); } catch (e) { /* this page load only */ }
+    },
+
+    // the section holding a page, opened (not stored)
+    openSectionOf(page) {
+        if (page === App._sectionPage) return;
+        App._sectionPage = page;
+        const link = page && [...$$('#sidebar .nav-link')].find(a => a.dataset && a.dataset.page === page);
+        const li = link && link.parentElement;
+        if (!li || !li.classList || !li.classList.contains('nav-folded')) return;
+        let head = li.previousElementSibling;
+        while (head && !head.classList.contains('nav-section')) head = head.previousElementSibling;
+        if (head) App._foldSection(head, false);
+    },
+
+    _phoneWidth() {
+        return typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 700px)').matches;
+    },
+
+    sidebarHidden() { return !!document.body && document.body.classList.contains('sidebar-hidden'); },
+
+    setSidebarHidden(hide, keep = true) {
+        const sidebar = $('#sidebar');
+        const btn = $('#sidebar-toggle');
+        // the keyboard is not left in a menu that went away
+        if (hide && sidebar && sidebar.contains(document.activeElement) && btn) btn.focus();
+        if (document.body) document.body.classList.toggle('sidebar-hidden', !!hide);
+        if (btn) {
+            btn.setAttribute('aria-pressed', hide ? 'true' : 'false');
+            btn.title = `${hide ? 'Show the sidebar' : 'Hide the sidebar'} ([)`;
+        }
+        if (keep) {
+            try {
+                App._pref(App.SIDEBAR_HIDDEN_KEY, hide ? '1' : null);
+            } catch (e) { /* this page load only */ }
+        }
+    },
+
+    toggleSidebar() {
+        if (App._phoneWidth()) return;
+        App.setSidebarHidden(!App.sidebarHidden());
+    },
+
+    setupSidebarToggle() {
+        const btn = $('#sidebar-toggle');
+        if (btn && !btn.dataset.wired) {
+            btn.dataset.wired = '1';
+            btn.addEventListener('click', () => App.toggleSidebar());
+        }
+        let hidden = false;
+        try { hidden = localStorage.getItem(App.SIDEBAR_HIDDEN_KEY) === '1'; } catch (e) { /* shown */ }
+        App.setSidebarHidden(hidden, false);
+    },
+
     init() {
+        App.setupSidebarSections();
+        App.setupSidebarToggle();
         window.addEventListener('hashchange', () => App.navigate(location.hash));
         // Back or Forward: the dialog over the page left closes as the
         // history moves, before the page gone to renders (App.navigate
@@ -2700,6 +2948,12 @@ const App = {
             if (leaves('KeyH')) { App.navigate('#/'); e.preventDefault(); }
             // Alt+D: toggle dark mode (Feature 12)
             if (letter('KeyD')) { App.toggleTheme(); e.preventDefault(); }
+            // [: hide or show the sidebar (#688), outside a field and not
+            // over a form being filled in; ⌘[ is the Mac's Back, so only
+            // the bare key
+            if (e.key === '[' && !e.altKey && !e.ctrlKey && !e.metaKey && !editing && !App.editingDialog()) {
+                if (!App._phoneWidth()) { App.toggleSidebar(); e.preventDefault(); }
+            }
             // Escape: close modal (not the Escape that closes a date
             // field's calendar: utils.js escapeLeavesPicker, NEW-33)
             if (e.key === 'Escape' && !escapeLeavesPicker(e)) { closeModal(); }
@@ -2708,13 +2962,19 @@ const App = {
             // is modal, the search lies under its overlay, and its hits
             // opened behind the dialog where they could be neither read nor
             // clicked (macOS gate NEW-45). Close the dialog, then search.
-            if (((e.ctrlKey || e.metaKey) && !e.altKey && e.key === 'k') || (e.key === '/' && !e.target.closest('input,textarea,select'))) {
+            // Ctrl+F (⌘F) too in the desktop window, which has no find bar
+            // for it to open (#695); in a browser it is the browser's.
+            const desktopFind = (e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'f' || e.key === 'F') && App.inDesktopShell();
+            if (((e.ctrlKey || e.metaKey) && !e.altKey && e.key === 'k') || desktopFind || (e.key === '/' && !e.target.closest('input,textarea,select'))) {
                 const overlay = $('#modal-overlay');
-                if (overlay && !overlay.classList.contains('hidden')) { if (e.key === 'k') e.preventDefault(); return; }
+                if (overlay && !overlay.classList.contains('hidden')) { if (e.key === 'k' || desktopFind) e.preventDefault(); return; }
                 const search = $('#global-search');
                 if (search) { search.focus(); e.preventDefault(); }
             }
         });
+
+        // the search box's keys, once the desktop window says it is one
+        window.addEventListener('pywebviewready', () => App.labelSearchKeys());
 
         // Close search dropdown on click outside
         document.addEventListener('click', (e) => {
@@ -2823,9 +3083,13 @@ const App = {
                     if (right && !document.getElementById('user-chip')) {
                         const chip = document.createElement('span');
                         chip.id = 'user-chip';
-                        chip.className = 'topbar-clock';
+                        // a long name ends in "…" with the whole of it as
+                        // its title, and folds into More when the bar is
+                        // short of room (topbar_fit.js, W-126)
+                        chip.className = 'topbar-clock topbar-user';
                         chip.textContent =
                             `${a.user.display_name || a.user.username} · ${a.user.role}`;
+                        chip.title = `Signed in as ${chip.textContent}`;
                         right.prepend(chip);
                     }
                 }
@@ -2866,3 +3130,16 @@ const App = {
 window.App = App;
 
 document.addEventListener('DOMContentLoaded', () => App.init());
+
+// see App.printClasses: both signals, since a print preview and a PDF
+// export do not always fire the same one
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('beforeprint', () => App.printClasses(true));
+    window.addEventListener('afterprint', () => App.printClasses(false));
+    if (typeof window.matchMedia === 'function') {
+        const printing = window.matchMedia('print');
+        if (printing && typeof printing.addEventListener === 'function') {
+            printing.addEventListener('change', (e) => App.printClasses(e.matches));
+        }
+    }
+}

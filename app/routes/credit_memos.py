@@ -3,6 +3,7 @@
 # Feature 5: DR Income, DR Sales Tax, CR AR — reverses invoice entry
 # ============================================================================
 
+from app.routes._print import print_html
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -122,9 +123,7 @@ def credit_memo_print_preview(cm_id: int, db: Session = Depends(get_db)):
 
     cm = _memo_or_404(db, cm_id)
     html_str = _render("credit_memo_pdf.html", get_settings(db), cm=cm)
-    html_str = html_str.replace(
-        "</body>", "<script>window.onload=function(){window.print();}</script></body>"
-    )
+    html_str = print_html(html_str)
     return HTMLResponse(content=html_str)
 
 
@@ -379,14 +378,35 @@ def void_credit_memo(cm_id: int, db: Session = Depends(get_db)):
     """Reverse a credit memo: put every application back on its invoice,
     post the mirror-image entry, return any inventory the memo took back,
     and mark it void. This is also how a mistaken write-off is undone."""
-    from app.services.accounting import reversing_lines
-    from app.services.inventory_hooks import reverse_return_for_credit_memo
 
     cm = db.query(CreditMemo).filter(CreditMemo.id == cm_id).with_for_update().first()
     if not cm:
         raise HTTPException(status_code=404, detail="Credit memo not found")
     if cm.status == CreditMemoStatus.VOID:
         raise HTTPException(status_code=400, detail="Credit memo is already void")
+    # A discount taken in Receive Payments goes with its payment (#664).
+    if cm.discount_payment_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Credit memo {cm.memo_number} is the early-payment discount "
+                "taken with a payment; void that payment to undo it."
+            ),
+        )
+    void_credit_memo_unchecked(db, cm)
+    db.commit()
+    db.refresh(cm)
+    resp = CreditMemoResponse.model_validate(cm)
+    resp.customer_name = cm.customer.name if cm.customer else None
+    return resp
+
+
+def void_credit_memo_unchecked(db: Session, cm: CreditMemo) -> None:
+    """The void itself, flushed and not committed; a payment voiding the
+    discount it took calls this."""
+    from app.services.accounting import all_lines, reversing_lines
+    from app.services.inventory_hooks import reverse_return_for_credit_memo
+
     check_closing_date(db, cm.date)
 
     for app_row in list(cm.applications):
@@ -413,7 +433,8 @@ def void_credit_memo(cm_id: int, db: Session = Depends(get_db)):
                 db,
                 cm.date,
                 f"VOID Credit Memo {cm.memo_number}",
-                reversing_lines(txn.lines),
+                # every line, an early-payment discount's cash ones too
+                reversing_lines(all_lines(db, txn.id)),
                 source_type="credit_memo_void",
                 source_id=cm.id,
                 class_id=cm.class_id,
@@ -427,8 +448,15 @@ def void_credit_memo(cm_id: int, db: Session = Depends(get_db)):
     cm.amount_applied = Decimal("0")
     cm.balance_remaining = Decimal("0")
     cm.status = CreditMemoStatus.VOID
-    db.commit()
-    db.refresh(cm)
-    resp = CreditMemoResponse.model_validate(cm)
-    resp.customer_name = cm.customer.name if cm.customer else None
-    return resp
+    db.flush()
+
+
+@router.post("/{cm_id}/replace", response_model=CreditMemoResponse)
+def replace_credit_memo(
+    cm_id: int, data: CreditMemoCreate, db: Session = Depends(get_db)
+):
+    """Change a credit memo (#689): void it and post `data` in its place, the
+    two linked, under the void's refusals."""
+    from app.services.replace_transaction import replace
+
+    return replace(db, "credit_memo", cm_id, data)

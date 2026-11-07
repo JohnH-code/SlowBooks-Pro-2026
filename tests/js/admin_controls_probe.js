@@ -352,6 +352,7 @@ function newWindow(role, answers = {}) {
     ctx.App.hideWriteControls(modal);
   };
   vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync('app/static/js/payment_terms.js', 'utf8') + '\nthis.PaymentTerms = PaymentTerms;', ctx);
   for (const name of PAGES) {
     const src = fs.readFileSync(`app/static/js/${name}.js`, 'utf8');
     const obj = /^const ([A-Z]\w*) = \{/m.exec(src)[1];
@@ -421,8 +422,10 @@ async function settings(role, late) {
     notes: notes(page),
     readonly_notes: page.querySelectorAll('.readonly-note').filter(visible).length,
     dirty: SettingsPage.isDirty(),
-    // a button with no type submits the form it is in: Save Settings
-    submits: form.querySelectorAll('button').filter(b => b.type === 'submit').map(label),
+    // a button with no type submits the form it is in; Save Settings sits
+    // after the form and submits it by its form attribute (NEW-210)
+    submits: page.querySelectorAll('button').filter(b => b.type === 'submit'
+      && (b.closest('#settings-form') || b.getAttribute('form') === 'settings-form')).map(label),
   };
   // leaving Settings: whether it asks about unsaved changes
   await App.navigate('#/reports');

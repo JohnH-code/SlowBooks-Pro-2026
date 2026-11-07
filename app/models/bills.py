@@ -55,6 +55,11 @@ class Bill(Base):
     date = Column(Date, nullable=False)
     due_date = Column(Date, nullable=True)
     terms = Column(String(50), default="Net 30")
+    # The list entry these terms named when the bill was saved (#664),
+    # whose rule gives its discount; NULL for text that named none then
+    # (free text, or a bill from before the list), which keeps the old
+    # reading of "Net N" and nothing more, however the list changes later.
+    payment_term_id = Column(Integer, ForeignKey("payment_terms.id"), nullable=True)
     ref_number = Column(String(100), nullable=True)
 
     subtotal = Column(Numeric(15, 2), default=0)
@@ -170,6 +175,21 @@ class BillPayment(Base):
         Boolean, nullable=False, default=False, server_default=false()
     )
     coi_override_note = Column(String(200), nullable=True)
+    # An early-payment discount taken against the terms (#664): the payment
+    # said allow_discount_override, and the note says who and on what.
+    discount_override = Column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    discount_override_note = Column(Text, nullable=True)
+    # The class the payment's own posted lines carry (#686): the bank, A/P
+    # and any early-payment discount taken with it. None posts as before.
+    class_id = Column(Integer, ForeignKey("classes.id"), nullable=True)
+    # Void-and-replace (#689): a posted bill payment with no edit of its own is
+    # changed by voiding it and posting a new one; each names the other.
+    # Plain ids, no foreign key: both rows always stay (a void keeps the
+    # original). NULL on everything else.
+    replaces_id = Column(Integer, nullable=True)
+    replaced_by_id = Column(Integer, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

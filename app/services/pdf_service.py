@@ -2,6 +2,7 @@
 # PDF generation — WeasyPrint + Jinja2 templates.
 # ============================================================================
 
+from contextvars import ContextVar
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
@@ -90,6 +91,12 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+# A report's Print page (#683) is the HTML its PDF is rendered from: the
+# print route runs the PDF route with this set, and render_pdf hands the
+# page over here instead of rendering it (app/routes/_print.py).
+_print_capture: ContextVar[list | None] = ContextVar("pdf_print_capture", default=None)
+
+
 def render_pdf(html_str: str) -> bytes:
     """Every PDF the app produces goes through here. PDF/UA-1 makes the
     output *tagged* — headings, tables and reading order are exposed to
@@ -97,6 +104,14 @@ def render_pdf(html_str: str) -> bytes:
     a W-2 or an invoice readable to a blind user. Falls back to a plain PDF
     if the installed WeasyPrint can't do the variant, so a render never
     fails on an environment quirk."""
+    capture = _print_capture.get()
+    if capture is not None:
+        capture.append(html_str)
+        return b""
+    return _write_pdf(html_str)
+
+
+def _write_pdf(html_str: str) -> bytes:
     HTML, _ = _weasyprint()
     doc = HTML(string=html_str, url_fetcher=_get_fetcher())
     try:
@@ -244,12 +259,24 @@ def _render(template_name: str, company_settings: dict, **context) -> str:
 
 def render_invoice_html(invoice, company_settings: dict) -> str:
     """Use the same invoice face and logo preference for PDF and Print."""
-    from app.services.donor_documents import invoice_pdf_context
+    from sqlalchemy.orm import object_session
 
+    from app.services.donor_documents import invoice_pdf_context
+    from app.services.payment_terms import (
+        document_discount_line,
+        document_discount_taken,
+    )
+
+    _db = object_session(invoice)
     return _render(
         "invoice_pdf.html",
         company_settings,
         inv=invoice,
+        discount_line=document_discount_line(invoice),
+        # the discount already taken, shown in place of the offer (#664)
+        discount_taken=(
+            document_discount_taken(_db, invoice) if _db is not None else None
+        ),
         company_logo_data_uri=(
             _company_logo_data_uri(company_settings)
             if company_settings.get("invoice_show_logo", "true") != "false"
@@ -318,24 +345,20 @@ def render_pay_application_html(app, pa, job, company_settings: dict) -> str:
     deposit applied, balance to finish) and the line detail (the line
     table). `pa` is the PayApplicationOut; `job` carries the owner."""
 
-    def f(v):
-        return float(v) if v is not None else 0.0
+    from sqlalchemy.orm import object_session
 
-    # Contract sums as of the application: the figures snapshotted when it was
-    # approved, so a reprint doesn't pick up change orders approved later. A
-    # draft (no snapshot yet) reads the job as it stands.
-    if app.contract_sum_to_date is not None:
-        original = f(app.contract_sum_original)
-        current = f(app.contract_sum_to_date)
-    else:
-        original = f(job.original_contract_amount if job else 0)
-        current = f(job.contract_amount if job else 0)
+    from app.services.contracts import application_contract_sums
+
+    # Contract sums as of the application (#723): the snapshot taken at
+    # approval, or the job as it stands for a draft; the net change is the
+    # approved change orders, never a difference against a missing original.
+    sums = application_contract_sums(object_session(app), app, job)
     header = {
         "owner": (job.customer.name if job and job.customer else ""),
         "job_name": (job.full_name if job else ""),
-        "net_change": current - original,
-        "contract_sum_original": original,
-        "contract_sum_to_date": current,
+        "net_change": float(sums["net_change"]),
+        "contract_sum_original": float(sums["original"]),
+        "contract_sum_to_date": float(sums["to_date"]),
     }
     return _render(
         "pay_application_pdf.html",
@@ -607,9 +630,18 @@ def generate_report_pdf(
     and international installs both print natively; `landscape` turns the
     page on its side for a grid with a column per class or job (#232).
     """
+    return render_pdf(render_report_html(sections, company_settings, landscape))
+
+
+def render_report_html(
+    sections: list, company_settings: dict, landscape: bool = False
+) -> str:
+    """The page a report PDF is rendered from (report_pdf.html), for a
+    print page that has no PDF route of its own to run (the Budgets sheet
+    and Budget vs Actual, NEW-208)."""
     from datetime import date
 
-    html_str = _render(
+    return _render(
         "report_pdf.html",
         company_settings,
         sections=sections,
@@ -617,4 +649,3 @@ def generate_report_pdf(
         landscape=landscape,
         generated_on=date.today().isoformat(),
     )
-    return render_pdf(html_str)

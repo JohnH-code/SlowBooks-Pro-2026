@@ -20,6 +20,8 @@ bakery's books of tests/test_theme_contrast.py (2.22.0 gate, round 2):
   fires, on any platform (W-6), and over a form being filled in Alt+N, P,
   Q and H do nothing from any of its controls, as Back does; ⌘K finds
   like Ctrl+K; Ctrl+Alt (AltGr) is left alone.
+- #695: Ctrl+F (⌘F) finds in the desktop window and is the browser's own
+  find in a browser; the search box names its keys (aria-keyshortcuts).
 - NEW-30: the toolbar's Back, enabled only while an app page is behind,
   with Alt+← (⌘[ on a Mac); a reload keeps it.
 - NEW-32: no dialog opens with focus on Void or Delete; a dialog whose
@@ -426,6 +428,59 @@ def test_the_alt_shortcuts_go_by_the_keys_position_and_cmd_k_finds(
         page.evaluate("() => document.body.focus()")
         page.keyboard.press("Control+KeyK")
         assert page.evaluate("() => document.activeElement.id") == "global-search"
+    finally:
+        page.close()
+
+
+# ── #695: Ctrl+F finds in the desktop app, not in a browser ──────────────
+
+PRESS = """([key, code, mods]) => { const e = new KeyboardEvent('keydown',
+    { key, code, bubbles: true, cancelable: true, ...mods });
+    document.body.dispatchEvent(e); return e.defaultPrevented; }"""
+BLUR = "() => document.activeElement && document.activeElement.blur()"
+SEARCH_KEYS = (
+    "() => document.getElementById('global-search').getAttribute('aria-keyshortcuts')"
+)
+
+
+def test_ctrl_f_finds_in_the_desktop_app_and_is_the_browsers_in_a_browser(
+    browser, company, books
+):
+    page, handled = _open(browser, company)
+    try:
+        _visit(page, handled, "#/customers")
+        mod = "Meta" if page.evaluate("() => App.isMac()") else "Control"
+        # a browser: Ctrl+F (⌘F) is its own find in page, left alone
+        assert page.evaluate("() => App.inDesktopShell()") is False
+        assert page.evaluate(SEARCH_KEYS) == f"{mod}+K /"
+        page.evaluate(BLUR)
+        for mods in ({"ctrlKey": True}, {"metaKey": True}):
+            assert page.evaluate(PRESS, ["f", "KeyF", mods]) is False
+            assert page.evaluate("() => document.activeElement.id") != "global-search"
+        # the desktop window (pywebview): Ctrl+F and ⌘F find, as Ctrl+K does
+        page.evaluate(
+            "() => { window.pywebview = { api: {} };"
+            " window.dispatchEvent(new Event('pywebviewready')); }"
+        )
+        assert page.evaluate("() => App.inDesktopShell()") is True
+        assert page.evaluate(SEARCH_KEYS) == f"{mod}+K {mod}+F /"
+        for mods in ({"ctrlKey": True}, {"metaKey": True}):
+            page.evaluate(BLUR)
+            assert page.evaluate(PRESS, ["f", "KeyF", mods]) is True
+            assert page.evaluate("() => document.activeElement.id") == "global-search"
+        # Ctrl+Alt+F (AltGr) types a character and is left alone
+        page.evaluate(BLUR)
+        assert (
+            page.evaluate(PRESS, ["f", "KeyF", {"ctrlKey": True, "altKey": True}])
+            is False
+        )
+        assert page.evaluate("() => document.activeElement.id") != "global-search"
+        # over an open dialog it does nothing but keep the window's own
+        page.evaluate("() => openModal('A dialog', '<p>Hello</p>')")
+        page.wait_for_function(MODAL_SHOWN)
+        assert page.evaluate(PRESS, ["f", "KeyF", {"ctrlKey": True}]) is True
+        assert page.evaluate("() => document.activeElement.id") != "global-search"
+        page.evaluate("() => closeModal()")
     finally:
         page.close()
 
@@ -2071,11 +2126,14 @@ def test_the_ring_clears_3_to_1_on_every_ground_it_meets_as_painted(
                 page.evaluate(SETTLED)
                 buttons.append(page.evaluate(RING)["at"])
                 _both_themes(page, ("toolbar", buttons[-1]), TOOLBAR_GOLD, bar=True)
-        # every button on the bar, the lit Back first among them
+        # every button on the bar: Hide sidebar first (2.31.5, #688), then
+        # the lit Back
         on_bar = page.evaluate(
             "() => [...document.querySelectorAll('#topbar button.tb-btn')].filter(b => !b.disabled && b.offsetParent).length"
         )
-        assert buttons[0] == "back-btn" and len(buttons) == on_bar, buttons
+        assert (
+            buttons[:2] == ["sidebar-toggle", "back-btn"] and len(buttons) == on_bar
+        ), buttons
         # A/R Aging: a customer's row link, a button, the dialog's ×
         _visit(page, handled, "#/reports/ar-aging?as_of_date=2026-09-30")
         page.wait_for_function(MODAL_SHOWN)
@@ -2139,7 +2197,7 @@ def test_a_sidebar_link_draws_the_ring_on_all_four_sides_as_painted(
         _sidebar(page, handled, "#/customers")
         # the menu's own Customers link, not the Open group's (#336) above it
         page.focus('#sidebar .nav-link[data-page="customers"]')
-        page.keyboard.press("Shift+Tab")
+        _tab_to_link(page, "Shift+Tab")
         for href in ("#/", "#/customers", "#/jobs"):
             at = page.evaluate("() => document.activeElement.getAttribute('href')")
             assert at == href, (at, href)
@@ -2147,9 +2205,19 @@ def test_a_sidebar_link_draws_the_ring_on_all_four_sides_as_painted(
                 "() => document.activeElement.closest('#sidebar') !== null"
             )
             _both_themes(page, ("sidebar", href), GOLD, NAV_HALO)
-            page.keyboard.press("Tab")
+            _tab_to_link(page, "Tab")
     finally:
         page.close()
+
+
+def _tab_to_link(page, key):
+    """Tab (or Shift+Tab) to the next sidebar link, past a section heading:
+    the headings are buttons since 2.31.5 (#688), one tab stop each."""
+    for _ in range(4):
+        page.keyboard.press(key)
+        if page.evaluate("() => document.activeElement.hasAttribute('href')"):
+            return
+    raise AssertionError("no sidebar link within four tab stops")
 
 
 # The controls' own rings: a search result's blue, inside its edge; the
@@ -2331,6 +2399,12 @@ def test_focus_in_a_wide_table_spills_nothing(browser, company, books):
             page.set_viewport_size({"width": width, "height": 800})
             for route in ("#/jobs", "#/settings", "#/fixed-assets"):
                 _visit(page, handled, route)
+                if route == "#/settings":  # the first table's group, shown (#720)
+                    page.evaluate(
+                        """() => SettingsPage.showSetting([...document.querySelectorAll(
+                            '#page-content .table-container')].find(c =>
+                            c.querySelector('tbody button, tbody a[href]')), { focus: false })"""
+                    )
                 rest = page.evaluate(SPILL)
                 assert rest["overflow"] == "auto hidden", (width, route, rest)
                 # a mouse's focus: the button pressed, not released
@@ -2684,7 +2758,7 @@ def test_tab_through_settings_never_lands_under_its_save_bar(browser, company, b
     notes box too, which the browser brings only its caret line into view
     for) and every stop is what the browser finds at its middle; Tab still
     reaches the bar's Save; and a mouse's press on a control the bar half
-    covers scrolls nothing — a button, and at 1440 x 900 a click into the
+    covers scrolls nothing — a button, and at 1440 x 480 a click into the
     invoice notes box (a text box takes :focus-visible on a click too, and
     the page moved under the click: final review), which Tab then still
     brings clear."""
@@ -2696,25 +2770,33 @@ def test_tab_through_settings_never_lands_under_its_save_bar(browser, company, b
             _visit(page, handled, "#/settings")
             page.wait_for_selector("#settings-savebar")
             settle(page, handled)
-            page.evaluate(
-                "() => _tabStops(document.getElementById('page-content'), null)[0].focus()"
-            )
             stops, bad, saved = 0, [], False
-            for _ in range(400):
-                page.keyboard.press("Tab")
-                at = page.evaluate(SAVEBAR_STOP)
-                if at is None:
-                    break
-                stops += 1
-                if at["own"]:
-                    saved = saved or at["at"] == "settings-save-btn"
-                    continue
-                if at["size"] and (at["over"] > 0.5 or not at["found"]):
-                    bad.append((at["at"], round(at["over"], 1), at["found"]))
+            # Settings shows one group at a time (#720): walked group by group
+            groups = page.evaluate(
+                "() => [...document.querySelectorAll('#settings-groups [role=\"tab\"]')]"
+                ".filter(t => !t.hidden).map(t => t.dataset.groupTab)"
+            )
+            for group in groups:
+                page.evaluate("(g) => SettingsPage.openGroup(g)", group)
+                page.evaluate(
+                    "() => _tabStops(document.getElementById('page-content'), null)[0].focus()"
+                )
+                for _ in range(400):
+                    page.keyboard.press("Tab")
+                    at = page.evaluate(SAVEBAR_STOP)
+                    if at is None:
+                        break
+                    stops += 1
+                    if at["own"]:
+                        saved = saved or at["at"] == "settings-save-btn"
+                        continue
+                    if at["size"] and (at["over"] > 0.5 or not at["found"]):
+                        bad.append((group, at["at"], round(at["over"], 1), at["found"]))
             assert stops > 100 and saved, (width, stops, saved)
             assert not bad, (width, len(bad), bad)
         # a mouse's press on a button the bar half covers: no scroll, so
         # the release lands on the button pressed
+        page.evaluate("() => SettingsPage.openGroup('sales')")  # a long group
         half = page.evaluate(
             """() => { const bar = document.getElementById('settings-savebar'),
                     content = document.getElementById('content');
@@ -2738,10 +2820,16 @@ def test_tab_through_settings_never_lands_under_its_save_bar(browser, company, b
         # a click into a text box the bar half covers: a text box takes
         # :focus-visible on a click too, and the page moved under it
         # (review); now nothing moves, and Tab to it still brings it clear
-        page.set_viewport_size({"width": 1440, "height": 900})
+        # (in its group, Sales documents, the notes box is the group's
+        # first section's, high on the page: a short window puts it where
+        # the bar half covers it, as the long page did at 1440 x 900)
+        page.set_viewport_size({"width": 1440, "height": 480})
         _visit(page, handled, "#/settings")
         page.wait_for_selector("#settings-savebar")
         settle(page, handled)
+        page.evaluate(
+            "() => SettingsPage.openGroup('sales')"
+        )  # the notes' group (#720)
         box = page.evaluate(
             """() => { const bar = document.getElementById('settings-savebar'),
                     content = document.getElementById('content'),
@@ -3685,6 +3773,11 @@ def test_every_field_keeps_a_fields_focus_style_on_every_page_and_dialog(
         assert wrong == [], (len(wrong), wrong)
         for route, sel in FIELD_KINDS:
             _visit(page, handled, route)
+            if route == "#/settings":  # the field's group, shown (#720)
+                page.evaluate(
+                    "(s) => SettingsPage.showSetting(document.querySelector(s), { focus: false })",
+                    sel,
+                )
             page.wait_for_selector(sel)
             settle(page, handled)
             _keyed(page, f"document.querySelector({sel!r})")

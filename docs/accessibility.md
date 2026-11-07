@@ -77,7 +77,10 @@ or Alt+D.*
   A field keeps its own focus style (the blue border and pale ground), and
   a dialog that takes focus itself is not outlined. The skip link, Tab's
   first stop, moves focus to the page's content and leaves the page where
-  it is.
+  it is. Since v2.31.8 it is a small arrow button at the start of the top
+  bar, named "Skip to main content" with a tooltip saying so, and it draws
+  the same ring as the bar's other buttons; it no longer shows as a large
+  box over the menu button, the wordmark and Back.
 - **Back, within the app** (v2.22.0): the toolbar's bordered gold
   **← Back** button goes back through the app's history, and is lit only
   while an app page is behind (muted and borderless otherwise, so the two
@@ -92,13 +95,32 @@ or Alt+D.*
 - **Sortable lists say how they are sorted** (v2.31.1): a column heading that
   sorts a list (the Invoices list, among others) is a button, and the sort is
   announced (`aria-sort`).
-- **The window zooms** (v2.30.0): Ctrl and + or −, Ctrl+0 to reset, or Ctrl
-  and the mouse wheel (⌘ on a Mac) scale the whole desktop window, and the
-  level is kept between launches. A text-size setting that leaves the sidebar
-  alone is still to come.
+- **Text size** (v2.31.8): Settings → Preferences → My Preferences → Text size
+  makes the
+  text 100%, 115%, 125% or 150% of its usual size, in a browser and in the
+  desktop app alike. It is kept on that computer, for every company and
+  sign-in, and is there from the first moment a page shows, the sign-in
+  screen included. At every size the sidebar scrolls inside itself, the
+  bottom bar stays in the window, a dialog keeps its title and its buttons
+  in view while the form scrolls between them, and wide tables scroll
+  sideways in their own box; printing and PDFs are never enlarged. The top
+  bar fits the window at every size, down to the desktop app's smallest
+  window (900 x 600) and a 700-pixel browser window: as room runs out it
+  puts away the clock, then the quick-entry buttons, then moves the
+  signed-in name, About, Contact support, Home and Reports into a More
+  button that lists them, so Sign Out is always in view and the page never
+  scrolls sideways. A long signed-in name ends in "…", and its whole self
+  is in its tooltip. Settings puts its list of groups above the form on a
+  narrow page, measured at the text size, so the list, the fields and Save
+  Settings share the window. In the
+  desktop app Ctrl and + or −, Ctrl+0 to go back to 100%, and Ctrl and the
+  mouse wheel (⌘ on a Mac) step through the same four sizes. A window zoom
+  set in an earlier version was carried over to the nearest size, and to
+  the larger of two when it sat exactly between them, so nobody's text got
+  smaller with the update.
 - **A sound when a transaction posts**, optional and per sign-in (v2.29.1):
-  Settings → Sounds. Off by default.
-- **Enter moves between fields** on request (v2.29.1): Settings → My
+  Settings → Preferences → Sounds. Off by default.
+- **Enter moves between fields** on request (v2.29.1): Settings → Preferences → My
   Preferences, for people used to the way desktop bookkeeping software has
   always done it.
 - **The top bar names its shortcuts** (v2.31.1): Home (Alt+H) and the rest
@@ -106,6 +128,13 @@ or Alt+D.*
 - **A long problem list is one Tab stop** (v2.31.2): the QuickBooks import's
   list of problems to tick is walked with the arrow keys, and the keyboard's
   ring follows, on Windows and on a Mac.
+- **Company Settings is a list of groups** (v2.31.8): the list down the left
+  is a tab list, one Tab stop. The arrow keys move along it, Enter or Space
+  opens a group and puts the focus on its first heading, and the panel is
+  named by the group showing. A group with unsaved changes says so after its
+  name. *Find a setting*, above the list, finds a setting by its heading or
+  its field's name in every group, since one group at a time leaves the
+  browser's own Find nothing to search.
 - **Every data table declares its column headers** (`scope="col"`).
 - **Icon-only buttons** (remove a line, delete an attachment, close a dialog)
   carry accessible names.
@@ -146,7 +175,8 @@ Tab.*
 | Alt+Q | Quick Entry |
 | Alt+H | Dashboard |
 | Alt+D | Toggle dark mode |
-| Ctrl+K (⌘K on a Mac), or `/` outside a field | Search |
+| `[` outside a field | Hide or show the sidebar (v2.31.5) |
+| Ctrl+K (⌘K on a Mac), or `/` outside a field; in the desktop app Ctrl+F (⌘F) too (in a browser Ctrl+F stays the browser's find in page) | Search |
 | Ctrl+S | Save the open form |
 | Ctrl+Enter | Submit Quick Entry |
 | Escape | Close the dialog (in a date field: leave the field first) |
@@ -169,8 +199,7 @@ a screen reader hears it (v2.22.2).
 - Keyboard ordering is offered everywhere a mouse drag exists: document
   lines have **Move line up**, **Move line down** and **Insert line below**
   beside the drag handle (v2.31.0), and the dashboard's cards use arrow
-  buttons. What is still open is a text-size setting of the app's own; the
-  window zoom above is the way to larger text today.
+  buttons.
 
 ## Tell us
 

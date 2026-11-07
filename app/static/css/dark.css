@@ -102,6 +102,7 @@
 [data-theme="dark"] .topbar-brand { color: #e0e4ec; }
 [data-theme="dark"] .topbar-brand span { color: var(--qb-gold); }
 [data-theme="dark"] .tb-btn { color: var(--text-secondary); }
+[data-theme="dark"] #topbar .skip-link--bar:hover { background: rgba(255,255,255,0.08); border-color: #4a4e58; color: #e0e4ec; }
 [data-theme="dark"] .tb-btn:hover { background: rgba(255,255,255,0.08); border-color: #4a4e58; color: #e0e4ec; }
 /* Back (NEW-42): gold words on a dark gold-tinted ground (6.7:1) and a gold
    border (6.4:1 against the bar's darker stop) while there is somewhere to
@@ -332,6 +333,28 @@
 [data-theme="dark"] .settings-section h3 {
     color: #b0c4dc;
 }
+
+/* the groups' list (#720) */
+[data-theme="dark"] .settings-nav {
+    background: var(--panel-bg);
+    border-color: var(--panel-border);
+}
+
+[data-theme="dark"] .settings-tab { color: var(--text-primary); }
+
+[data-theme="dark"] .settings-tab:hover { background: #2a3040; }
+
+[data-theme="dark"] .settings-tab[aria-selected="true"] {
+    background: #2e4a6e;
+    color: #ffffff;
+}
+
+[data-theme="dark"] .settings-nav--finding .settings-tab[aria-selected="true"] {
+    background: transparent;
+    color: var(--text-primary);
+}
+
+[data-theme="dark"] .settings-tab-dot:not([hidden]) { background: #f0a050; }
 
 /* Search */
 [data-theme="dark"] .tb-search {
@@ -579,6 +602,8 @@
 }
 [data-theme="dark"] .cbx-opt[aria-selected="true"] { background: #2b4a78; color: #ffffff; }
 [data-theme="dark"] .cbx-opt[aria-selected="true"] .cbx-in { color: #c8d0dc; }
+[data-theme="dark"] .qmath { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5); }
+[data-theme="dark"] #qmath-input { background: #14161c; }
 
 /* The P&L by Class / by Job grid (R1): the frozen Account column keeps its
    own ground, as the pay-run view's does; the column gone to is a deeper
@@ -599,3 +624,9 @@
     border-left-color: #e0a840;
     color: #e8d9b0;
 }
+
+/* The frozen first column of a months grid (Budgets, #702) keeps its row's
+   own ground, as the pay-run view's does. */
+[data-theme="dark"] .table--frozen tbody tr:nth-child(even) td:first-child { background: #181a22; }
+[data-theme="dark"] .table--frozen tbody tr:hover td:first-child { background: #222838; }
+[data-theme="dark"] .budget-variance__acct { color: var(--qb-navy); }

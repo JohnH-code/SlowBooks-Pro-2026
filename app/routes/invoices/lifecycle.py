@@ -22,13 +22,13 @@ from app.services.accounting import (
 )
 from app.services.jobs_service import own_job
 from app.services.numbering import next_invoice_number
+from app.services.payment_terms import DocumentTerms, due_for
 from app.services.settings_service import get_all_settings as get_settings
 from app.services.closing_date import check_closing_date
 
 from app.routes.invoices._router import router
 from app.routes.invoices.helpers import (
     invoice_customer_name,
-    _due_date_from_terms,
     _post_invoice_journal,
     confirm_credit_limit,
     confirm_zero_total,
@@ -93,6 +93,13 @@ def void_invoice_unchecked(invoice_id: int, db: Session, commit: bool = True):
     cost_in_import = qbo_documents.void_invoice_import_posting(
         db, invoice, document_label(invoice, terms_from_db(db)).lower()
     )
+
+    # An invoice the QuickBooks Online import carried onto 1100 with no
+    # posting: its balance moves off 1100 to QuickBooks' receivable, so the
+    # aging still equals 1100 (#704)
+    from app.services.qbo_export_import import void_carried_posting
+
+    notice = void_carried_posting(db, invoice=invoice)
 
     # Create reversing journal entry if original had one
     if invoice.transaction_id:
@@ -206,8 +213,10 @@ def void_invoice_unchecked(invoice_id: int, db: Session, commit: bool = True):
         db.flush()
     db.refresh(invoice)
     resp = InvoiceResponse.model_validate(invoice)
+    DocumentTerms(db, "invoice").fill(resp, invoice)
     if invoice.customer:
         resp.customer_name = invoice_customer_name(invoice)
+    resp.notice = notice
     return resp
 
 
@@ -225,6 +234,7 @@ def mark_invoice_sent(invoice_id: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(invoice)
     resp = InvoiceResponse.model_validate(invoice)
+    DocumentTerms(db, "invoice").fill(resp, invoice)
     if invoice.customer:
         resp.customer_name = invoice_customer_name(invoice)
     return resp
@@ -354,22 +364,47 @@ def _post_write_off(db: Session, inv: Invoice, when: dt_date, amount: Decimal, m
     Bad Debt Expense / CR A/R, applied to the invoice at once, so the A/R
     subledger, the statement and the aging all agree. The caller commits,
     so a batch posts all of its memos or none. Undone by voiding the memo."""
+    from app.services.accounting import get_bad_debt_account_id
+
+    memo = (
+        memo
+        or f"Write-off: {document_label(inv, terms_from_db(db))} #{inv.invoice_number}"
+    )
+    return post_applied_credit(
+        db, inv, when, amount, memo, get_bad_debt_account_id(db), "write-off of"
+    )
+
+
+def post_applied_credit(
+    db: Session,
+    inv: Invoice,
+    when: dt_date,
+    amount: Decimal,
+    memo: str,
+    account_id: int,
+    what: str,
+    discount_payment_id: int | None = None,
+    class_id: int | None = None,
+):
+    """A credit memo for `amount` applied to `inv` at once, flushed and not
+    committed: DR `account_id` / CR A/R. A write-off (Bad Debt Expense) and
+    an early-payment discount (#664: the account the payment named, and
+    the payment it was taken with) are both this. `what` names it in the
+    entry's description ("write-off of"). `class_id`, a discount's payment's
+    class (#686), goes on the memo and its two lines in place of the
+    invoice's; the header keeps the invoice's, so the cash-basis lines read
+    the invoice's lines as they did."""
     from app.models.credit_memos import (
         CreditApplication,
         CreditMemo,
         CreditMemoLine,
         CreditMemoStatus,
     )
-    from app.services.accounting import get_bad_debt_account_id
+    from app.services import cash_basis
     from app.services.numbering import next_credit_memo_number
 
     balance = Decimal(str(inv.balance_due or 0))
     ar_id = get_ar_account_id(db)
-    bad_debt_id = get_bad_debt_account_id(db)
-    memo = (
-        memo
-        or f"Write-off: {document_label(inv, terms_from_db(db))} #{inv.invoice_number}"
-    )
     cm = None
     for _ in range(10):
         cm = CreditMemo(
@@ -384,10 +419,11 @@ def _post_write_off(db: Session, inv: Invoice, when: dt_date, amount: Decimal, m
             amount_applied=amount,
             balance_remaining=Decimal("0"),
             notes=memo,
-            class_id=inv.class_id,
+            class_id=class_id or inv.class_id,
             job_id=inv.job_id,
             status=CreditMemoStatus.APPLIED,
-            is_write_off=True,
+            is_write_off=discount_payment_id is None,
+            discount_payment_id=discount_payment_id,
         )
         try:
             # a savepoint: a taken memo number rolls back this memo only,
@@ -417,24 +453,33 @@ def _post_write_off(db: Session, inv: Invoice, when: dt_date, amount: Decimal, m
     txn = create_journal_entry(
         db,
         when,
-        f"Credit Memo {cm.memo_number} - write-off of "
+        f"Credit Memo {cm.memo_number} - {what} "
         + document_reference(
             document_label(inv, terms_from_db(db)), inv.invoice_number
         ),
         [
             {
-                "account_id": bad_debt_id,
+                "account_id": account_id,
                 "debit": amount,
                 "credit": Decimal("0"),
                 "description": memo,
+                "class_id": class_id,
             },
             {
                 "account_id": ar_id,
                 "debit": Decimal("0"),
                 "credit": amount,
                 "description": memo,
+                "class_id": class_id,
             },
-        ],
+        ]
+        # An early-payment discount reads on the cash basis too (#664):
+        # it settles that part of the invoice as a payment would.
+        + (
+            cash_basis.discount_cash_lines(db, ar_id, inv, amount, account_id, memo)
+            if discount_payment_id is not None
+            else []
+        ),
         source_type="credit_memo",
         source_id=cm.id,
         class_id=inv.class_id,
@@ -661,8 +706,11 @@ def duplicate_invoice(
         customer_id=original.customer_id,
         status=opening_status(total),
         date=today,
-        due_date=_due_date_from_terms(today, original.terms),
+        # the copy keeps the term the original was saved under (#664), or
+        # the old reading of its text when it was saved under none
+        due_date=due_for(db, today, original.payment_term_id, original.terms),
         terms=original.terms,
+        payment_term_id=original.payment_term_id,
         po_number=original.po_number,
         subtotal=subtotal,
         tax_rate=original.tax_rate,
@@ -727,6 +775,7 @@ def duplicate_invoice(
     db.commit()
     db.refresh(new_invoice)
     resp = InvoiceResponse.model_validate(new_invoice)
+    DocumentTerms(db, "invoice").fill(resp, new_invoice)
     if new_invoice.customer:
         resp.customer_name = invoice_customer_name(new_invoice)
     resp.jobs_left_off = left_off

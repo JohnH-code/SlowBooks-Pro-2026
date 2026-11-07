@@ -57,6 +57,8 @@ def list_cc_charges(db: Session = Depends(get_db)):
                 ),
                 "status": "void" if txn.id in voided else "recorded",
                 "kind": "cc_charge",
+                "replaces_id": txn.replaces_id,
+                "replaced_by_id": txn.replaced_by_id,
             }
         )
     results.extend(_card_expenses(db))
@@ -208,3 +210,14 @@ def void_cc_charge(charge_id: int, db: Session = Depends(get_db)):
         "transaction_id": txn.id,
         "void_transaction_id": reversal.id,
     }
+
+
+@router.post("/{charge_id}/replace")
+def replace_cc_charge(
+    charge_id: int, data: CCChargeCreate, db: Session = Depends(get_db)
+):
+    """Change a card charge (#689): void it and post `data` in its place,
+    the two linked, under the void's refusals."""
+    from app.services.replace_transaction import replace
+
+    return replace(db, "cc_charge", charge_id, data)

@@ -36,6 +36,7 @@ re-executed with the internal --_serve flag (no separate Python needed).
 """
 
 import argparse
+import json
 import os
 import re
 import secrets
@@ -309,6 +310,12 @@ def prepare_env() -> None:
 # ---------------------------------------------------------------------------
 
 
+# What the window's picker hands its server child (#719): this run's window
+# secret, and whether the company was opened with its recovery key. Set by
+# PickerApi alone, so a headless run (--serve-lan, --no-window) never has it.
+_WINDOW_ENV: dict = {}
+
+
 def _server_env(
     db_url: str, port: int, bind_host: str = "127.0.0.1", key: bytes | None = None
 ) -> dict:
@@ -319,6 +326,17 @@ def _server_env(
     env.pop("SLOWBOOKS_COMPANY_FILE_KEY", None)
     if key is not None:
         env["SLOWBOOKS_COMPANY_FILE_KEY"] = key.hex()
+    # The window's own secret (#719, app/services/desktop_window.py): only a
+    # loopback server the window's picker starts gets it, never Server
+    # Edition or a windowless run, and never a value from the shell.
+    from app.services import desktop_window
+
+    env.pop(desktop_window.SECRET_ENV, None)
+    env.pop(desktop_window.RECOVERY_OPENED_ENV, None)
+    if bind_host == "127.0.0.1" and _WINDOW_ENV.get("secret"):
+        env[desktop_window.SECRET_ENV] = _WINDOW_ENV["secret"]
+        if _WINDOW_ENV.get("recovery"):
+            env[desktop_window.RECOVERY_OPENED_ENV] = "1"
     env.update(
         {
             "DATABASE_URL": db_url,
@@ -413,25 +431,77 @@ def start_server(
     )
 
 
+# How long the launcher keeps waiting past its timeout after the server's
+# start-up progress note last changed (#693).
+STARTUP_STALL_SECONDS = 300
+# How often the wait reads the progress note and asks /health, and how long
+# one /health probe may take (W-109).
+HEALTH_POLL_SECONDS = 0.5
+HEALTH_PROBE_SECONDS = 0.5
+
+
+def startup_progress_path() -> Path:
+    """The note the server's one-time start-up jobs write (#693), next to
+    launcher.log in the data folder."""
+    from app.services import startup_progress
+
+    return get_data_dir() / startup_progress.FILENAME
+
+
 def wait_for_health(
     proc: subprocess.Popen,
     port: int,
     timeout: float = 120,
     host: str = "127.0.0.1",
+    progress_path: Path | None = None,
+    on_progress=None,
+    stall: float = STARTUP_STALL_SECONDS,
 ) -> bool:
+    """Wait for /health to answer 200.
+
+    Past ``timeout`` it keeps waiting as long as the server is alive and its
+    start-up progress note (``progress_path``) changed within the last
+    ``stall`` seconds (#693): a big company file catching up its cash-basis
+    lines takes longer than two minutes, and stopping the server halfway
+    meant it never opened. ``on_progress(text)`` is called with the note's
+    text each time it changes."""
+    from app.services import startup_progress
+
     url = f"http://{host}:{port}/health"
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    seen = None
+    changed_at = None
+    while True:
+        started = time.monotonic()
         if proc.poll() is not None:
             return False  # server process died
+        # The note first, every pass, and a short probe (W-109): on Windows a
+        # refused loopback connect waits out the whole timeout, so with the
+        # probe first at 2 s the note was read only every 2.5 s and a quick
+        # step never reached the picker or launcher.log.
+        if progress_path is not None:
+            state = startup_progress.read(progress_path)
+            if state is not None and state != seen:
+                seen = state
+                changed_at = started
+                text = startup_progress.describe(state)
+                print(f"Starting up: {text}")
+                if on_progress is not None and text:
+                    try:
+                        on_progress(text)
+                    except Exception:
+                        pass  # the status line is a courtesy
         try:
-            with urllib.request.urlopen(url, timeout=2) as resp:
+            with urllib.request.urlopen(url, timeout=HEALTH_PROBE_SECONDS) as resp:
                 if resp.status == 200:
                     return True
         except OSError:
             pass
-        time.sleep(0.5)
-    return False
+        now = time.monotonic()
+        if now >= deadline and (changed_at is None or now - changed_at >= stall):
+            return False
+        # about twice a second, the probe's own wait counted in
+        time.sleep(max(0.0, HEALTH_POLL_SECONDS - (now - started)))
 
 
 def stop_server(proc: subprocess.Popen | None) -> None:
@@ -467,8 +537,12 @@ def launch_company(
     bind_host: str = "127.0.0.1",
     persist: bool = True,
     key: bytes | None = None,
+    on_progress=None,
 ) -> subprocess.Popen:
     """Point the app at a company file, migrate it, and start the server.
+
+    ``on_progress(text)`` gets the server's start-up progress (#693) while
+    the launcher waits for it, for the picker's status line.
 
     ``key`` is the company file's key when the picker unlocked it (#290:
     an administrator's sign-in or the recovery key); otherwise the key is
@@ -524,14 +598,33 @@ def launch_company(
 
     migrate(db_url, output=output, key=key)
 
+    from app.services import startup_progress
+
+    progress_path = startup_progress_path()
+    startup_progress.clear(progress_path)  # a note from an earlier run
+    if on_progress is not None:
+        on_progress("")
     proc = start_server(db_url, port, output=output, bind_host=bind_host, key=key)
     # 0.0.0.0 includes loopback; a specific interface bind does not.
     health_host = "127.0.0.1" if bind_host in ("127.0.0.1", "0.0.0.0") else bind_host
-    if not wait_for_health(proc, port, host=health_host):
+    if not wait_for_health(
+        proc,
+        port,
+        host=health_host,
+        progress_path=progress_path,
+        on_progress=on_progress,
+    ):
         stop_server(proc)
+        last = startup_progress.describe(startup_progress.read(progress_path))
         raise RuntimeError(
             f"Server did not become healthy on port {port}. "
-            "The server's own message is in launcher.log in the data folder "
+            + (
+                f"Its last start-up step was: {last} "
+                f"(see {progress_path.name} in the data folder). "
+                if last
+                else ""
+            )
+            + "The server's own message is in launcher.log in the data folder "
             "(a setting in .env it refuses is named there); otherwise check for "
             "another app using the port, then try again."
         )
@@ -650,7 +743,9 @@ async function unlock() {
   var btn = document.getElementById('unlock-btn');
   btn.disabled = true;
   setStatus('Unlocking… this takes a moment.');
+  var stopWatch = watchStartup();
   var result = await window.pywebview.api.unlock_company(unlocking, user, pass, recovery);
+  stopWatch();
   if (result && result.success) {
     window.location.href = result.url;
     return;
@@ -667,6 +762,17 @@ function setStatus(msg, isError) {
   const el = document.getElementById('status');
   el.textContent = msg || '';
   el.className = isError ? 'error' : '';
+}
+// A big company file catches up once at its first start on a new version
+// (#693); say what it is doing while the open waits.
+function watchStartup() {
+  var timer = setInterval(async function () {
+    try {
+      var s = await window.pywebview.api.startup_status();
+      if (s && s.text) setStatus(s.text + '…');
+    } catch (e) {}
+  }, 1000);
+  return function () { clearInterval(timer); };
 }
 function setBusy(busy) {
   document.getElementById('createbtn').disabled = busy;
@@ -689,8 +795,9 @@ async function refresh() {
   }
   list.innerHTML = info.companies.map(function (c) {
     const last = c.file === info.last_opened ? ' <span class="open">last opened</span>' : '';
+    const sample = c.sample ? ' <span class="open">sample</span>' : '';
     return '<div class="company" data-file="' + esc(c.file) + '">' +
-      '<div><div class="name">' + esc(c.name) + last + '</div>' +
+      '<div><div class="name">' + esc(c.name) + sample + last + '</div>' +
       '<div class="file">' + esc(c.file) + '</div></div>' +
       '<div class="open">Open &rsaquo;</div></div>';
   }).join('');
@@ -710,7 +817,9 @@ async function openCompany(file, name) {
   // Name the company: the list greys out while this runs, and a greyed list
   // with a generic line read as "all companies unavailable" (2.14.0 gate).
   setStatus('Opening ' + (name || 'company') + '… first open can take a minute.');
+  const stopWatch = watchStartup();
   const result = await window.pywebview.api.open_company(file);
+  stopWatch();
   if (result && result.success) {
     // Navigate from JS, only AFTER the call above has resolved -- doing
     // this from Python instead (mid-call) would navigate the window
@@ -1215,6 +1324,20 @@ class PickerApi:
         # company — must not, or you could never leave.
         self._auto_open = True
         self._log_fh = log_fh
+        self._startup_status = ""  # the server's start-up note (#693)
+        # This run's window secret (#719): the server child has it, the
+        # page never does; reset_admin_password sends it for the page.
+        self._window_secret = secrets.token_urlsafe(32)
+        # the recovery key the open company was unlocked with, if it was
+        self._recovery_key = ""
+
+    def _prepare_server(self, recovery_key: str = "") -> None:
+        """What the next server child is told about the window (#719)."""
+        self._recovery_key = recovery_key
+        _WINDOW_ENV.clear()
+        _WINDOW_ENV.update(
+            {"secret": self._window_secret, "recovery": bool(recovery_key)}
+        )
 
     def open_document_html(self, title: str, html: str) -> dict:
         """Show already-fetched, already-authenticated HTML (an invoice/
@@ -1477,6 +1600,14 @@ class PickerApi:
             return {"success": False, "error": str(exc)}
         return {"success": True, "path": str(dest)}
 
+    def _set_startup_status(self, text: str) -> None:
+        self._startup_status = text
+
+    def startup_status(self) -> dict:
+        """What the server is doing while a company opens (#693): the
+        picker shows it under the list while open_company is waiting."""
+        return {"text": self._startup_status}
+
     def list_companies(self) -> dict:
         from app.services import company_service
 
@@ -1510,6 +1641,7 @@ class PickerApi:
 
         stop_server(self._server)
         self._server = None
+        self._recovery_key = ""
         self._auto_open = False  # the person asked for the picker; show it
         window = self._window
 
@@ -1538,8 +1670,14 @@ class PickerApi:
         background thread. Returning the url and letting the caller
         navigate AFTER the call resolves avoids the race entirely.
         """
+        self._prepare_server()
         try:
-            self._server = launch_company(filename, self._port, output=self._log_fh)
+            self._server = launch_company(
+                filename,
+                self._port,
+                output=self._log_fh,
+                on_progress=self._set_startup_status,
+            )
         except LockedCompany as exc:
             # the desktop's own key (#290): the picker asks for an
             # administrator's sign-in, or the recovery key
@@ -1581,13 +1719,96 @@ class PickerApi:
             )
         except company_keyring.Locked as exc:
             return {"success": False, "locked": True, "error": str(exc)}
+        # opened with the recovery key: the sign-in page offers a new
+        # administrator password, and the reset is proven by this key (#719)
+        self._prepare_server((recovery_key or "").strip())
         try:
             self._server = launch_company(
-                filename, self._port, output=self._log_fh, key=key
+                filename,
+                self._port,
+                output=self._log_fh,
+                key=key,
+                on_progress=self._set_startup_status,
             )
         except Exception as exc:
             return {"success": False, "error": str(exc)}
         return {"success": True, "url": f"http://127.0.0.1:{self._port}"}
+
+    def reset_admins(self) -> dict:
+        """The administrators whose password the window may set (W-125),
+        asked for here with this run's window secret: the sign-in page's own
+        address tells a browser on this computer no names. Returns
+        {"success": True, "admins": [...], "multi_user": bool} or
+        {"success": False}."""
+        from app.services import desktop_window
+
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self._port}/api/auth/reset-at-computer",
+            method="GET",
+            headers={desktop_window.SECRET_HEADER: self._window_secret},
+        )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(request, timeout=30) as resp:
+                out = json.loads(resp.read().decode("utf-8") or "{}")
+        except (OSError, ValueError):
+            return {"success": False}
+        admins = out.get("admins")
+        return {
+            "success": True,
+            "admins": [str(a) for a in admins] if isinstance(admins, list) else [],
+            "multi_user": bool(out.get("multi_user")),
+        }
+
+    def reset_admin_password(self, username: str = "", new_password: str = "") -> dict:
+        """The sign-in page's "Set a new administrator password" (#719).
+        Sent from here, not from the page, with this run's window secret,
+        and with the recovery key when the company was opened with one: a
+        browser has neither, so it cannot make the same request. Returns
+        {"success": True, "username", "multi_user"} or {"success": False,
+        "error"}; the page then signs in with the new password itself."""
+        from app.services import desktop_window
+
+        body = json.dumps(
+            {
+                "username": str(username or "") or None,
+                "new_password": str(new_password or ""),
+                "recovery_key": self._recovery_key or None,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self._port}/api/auth/reset-at-computer",
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                desktop_window.SECRET_HEADER: self._window_secret,
+            },
+        )
+        # straight to this computer's server, never through a proxy the
+        # environment names: the secret does not leave the machine
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(request, timeout=60) as resp:
+                out = json.loads(resp.read().decode("utf-8") or "{}")
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = json.loads(exc.read().decode("utf-8")).get("detail")
+            except Exception:
+                detail = None
+            if not isinstance(detail, str):
+                detail = "The new password could not be set."
+            return {"success": False, "error": detail}
+        except OSError:
+            return {
+                "success": False,
+                "error": "The company is not open. Open it from the company list, then try again.",
+            }
+        return {
+            "success": True,
+            "username": out.get("username") or "",
+            "multi_user": bool(out.get("multi_user")),
+        }
 
 
 # The lowest Microsoft Edge WebView2 runtime the app's window works on. Two
@@ -1793,7 +2014,8 @@ def _old_webview2_message(version: str) -> str:
             "\n"
             f"Update it from Microsoft: {WEBVIEW2_URL}\n"
             f"or run the SlowBooks Pro installer, {WINDOWS_INSTALLER}, again, "
-            "which updates it.\n"
+            "which updates it. (A runtime installed for everyone on this "
+            "computer can only be updated by an administrator.)\n"
         )
     return why + (
         f"Update it from Microsoft: {WEBVIEW2_URL}\n"
@@ -1981,6 +2203,356 @@ def _announce_serve_lan(port: int) -> None:
         threading.Thread(target=_popup, daemon=True).start()
 
 
+# ---------------------------------------------------------------------------
+# Window geometry (#681): the company window opens where it was closed
+# ---------------------------------------------------------------------------
+
+WINDOW_GEOMETRY_FILE = "window-geometry.json"
+DEFAULT_WINDOW_SIZE = (1280, 860)
+MIN_WINDOW_SIZE = (900, 600)
+# How much of the saved title-bar strip must land on a connected screen for the
+# saved position to count as "on screen" -- enough to grab it with the mouse.
+_GEOMETRY_GRAB_W = 100
+_GEOMETRY_GRAB_H = 40
+# Windows parks minimized windows at (-32000, -32000); never save that.
+_MINIMIZED_PARK = -30000
+# macOS (NEW-199): pywebview's "maximized" there is full screen and its
+# maximize() is a resize to the screen, so a saved maximized flag never comes
+# back as a real maximize. A resize that fills a screen -- full screen, our own
+# maximize(), a title-bar zoom -- is not a new normal size. "Fills" allows a
+# few pixels of rounding across and the menu bar (up to 38 px on a notched
+# Mac) plus those few pixels down.
+_MAC_FILL_SLACK_W = 8
+_MAC_FILL_SLACK_H = 48
+
+
+def window_geometry_path() -> Path:
+    return get_data_dir() / WINDOW_GEOMETRY_FILE
+
+
+def _geometry_int(value) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value != value or abs(value) > 1_000_000:  # NaN or absurd
+        return None
+    return int(value)
+
+
+def load_window_geometry(path: Path | None = None) -> dict | None:
+    """The saved geometry as {x, y, width, height, maximized}, or None when
+    the file is missing, unreadable or malformed. x/y may be None."""
+    path = path or window_geometry_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    width = _geometry_int(raw.get("width"))
+    height = _geometry_int(raw.get("height"))
+    if not width or not height or width < 0 or height < 0:
+        return None
+    x = _geometry_int(raw.get("x"))
+    y = _geometry_int(raw.get("y"))
+    if x is None or y is None:
+        x = y = None
+    return {
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "maximized": raw.get("maximized") is True,
+    }
+
+
+def save_window_geometry(geometry: dict, path: Path | None = None) -> bool:
+    """Write the geometry atomically. Never raises: losing the window's
+    position is not worth an error on the way out."""
+    path = path or window_geometry_path()
+    clean = {
+        "x": _geometry_int(geometry.get("x")),
+        "y": _geometry_int(geometry.get("y")),
+        "width": _geometry_int(geometry.get("width")),
+        "height": _geometry_int(geometry.get("height")),
+        "maximized": geometry.get("maximized") is True,
+    }
+    if not clean["width"] or not clean["height"]:
+        return False
+    if clean["x"] is None or clean["y"] is None:
+        clean["x"] = clean["y"] = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(clean, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        return True
+    except OSError as exc:
+        print(f"Could not save the window position: {exc}")
+        return False
+
+
+def _default_window_geometry() -> dict:
+    width, height = DEFAULT_WINDOW_SIZE
+    return {"x": None, "y": None, "width": width, "height": height, "maximized": False}
+
+
+def _split_screen(screen) -> tuple[tuple, tuple]:
+    """A screen entry is (x, y, width, height), or that followed by the work
+    area (x, y, width, height) -- the screen less the taskbar -- where the
+    platform reports one. Returns (screen, work area)."""
+    full = tuple(screen[:4])
+    work = tuple(screen[4:8]) if len(screen) >= 8 else full
+    return full, work
+
+
+def restore_window_geometry(
+    saved: dict | None, screens, platform: str | None = None
+) -> dict:
+    """Decide where the window opens. ``screens`` is a list of (x, y, width,
+    height) for every connected screen, each optionally followed by its work
+    area (see _split_screen); ``platform`` defaults to sys.platform.
+
+    - Nothing saved (missing or malformed file): today's default, 1280x860,
+      placed by the OS.
+    - Never smaller than the 900x600 minimum.
+    - Saved title-bar strip at least 100x40 px on a connected screen: restore
+      it there, clamped to that screen's work area (shrunk to fit, then
+      shifted so the whole window is on it and clear of the taskbar). When
+      several screens qualify, the one holding the window's top-left corner
+      wins; failing that, the one with the most title bar on it.
+    - Not on any connected screen (a monitor since unplugged): the default.
+    - Screen list unknown (empty): the saved size, placed by the OS.
+    - macOS: never opens maximized. pywebview's maximize there is only a
+      screen-sized resize, not full screen, so the saved normal rectangle
+      opens instead; the green button brings full screen back.
+    """
+    if not saved:
+        return _default_window_geometry()
+    platform = platform or sys.platform
+    width = max(int(saved["width"]), MIN_WINDOW_SIZE[0])
+    height = max(int(saved["height"]), MIN_WINDOW_SIZE[1])
+    maximized = bool(saved.get("maximized")) and platform != "darwin"
+    x, y = saved.get("x"), saved.get("y")
+    if not screens:
+        return {
+            "x": None,
+            "y": None,
+            "width": width,
+            "height": height,
+            "maximized": maximized,
+        }
+    screens = [_split_screen(s) for s in screens]
+    if x is None or y is None:
+        # No position saved: size only, clamped to the largest screen.
+        _full, (sx, sy, sw, sh) = max(screens, key=lambda s: s[0][2] * s[0][3])
+        return {
+            "x": None,
+            "y": None,
+            "width": max(min(width, sw), MIN_WINDOW_SIZE[0]),
+            "height": max(min(height, sh), MIN_WINDOW_SIZE[1]),
+            "maximized": maximized,
+        }
+
+    def _grab_overlap(screen) -> int:
+        sx, sy, sw, sh = screen[0]
+        ox = min(x + width, sx + sw) - max(x, sx)
+        oy = min(y + _GEOMETRY_GRAB_H, sy + sh) - max(y, sy)
+        if ox < _GEOMETRY_GRAB_W or oy < _GEOMETRY_GRAB_H:
+            return 0
+        return ox * oy
+
+    def _holds_corner(screen) -> bool:
+        sx, sy, sw, sh = screen[0]
+        return sx <= x < sx + sw and sy <= y < sy + sh
+
+    grabbable = [s for s in screens if _grab_overlap(s)]
+    if not grabbable:
+        return _default_window_geometry()
+    # An oversized window overlaps its neighbour more than its own screen.
+    holding = [s for s in grabbable if _holds_corner(s)]
+    best = holding[0] if holding else max(grabbable, key=_grab_overlap)
+    sx, sy, sw, sh = best[1]
+    # The minimum wins over a screen smaller than 900x600.
+    width = max(min(width, sw), MIN_WINDOW_SIZE[0])
+    height = max(min(height, sh), MIN_WINDOW_SIZE[1])
+    x = max(sx, min(x, sx + sw - width))
+    y = max(sy, min(y, sy + sh - height))
+    return {"x": x, "y": y, "width": width, "height": height, "maximized": maximized}
+
+
+class WindowGeometryTracker:
+    """Follows the window's move/resize/maximize events so the normal
+    (un-maximized) rectangle can be saved on close. Pure: the event handlers
+    take plain numbers, and ``clock`` is injectable for tests.
+
+    On macOS (``platform`` "darwin") a resize that fills one of ``screens``
+    counts as a maximize: the normal rectangle is kept, and moves are ignored
+    until the window is resized to something smaller again."""
+
+    # Maximizing or minimizing fires resize/move events around the state event
+    # (in any order: pywebview runs handlers on threads); those belong to the
+    # state change, not to the normal rectangle.
+    MAXIMIZE_SETTLE = 1.0
+
+    def __init__(
+        self,
+        geometry: dict,
+        clock=time.monotonic,
+        screens=(),
+        platform: str | None = None,
+    ):
+        self._clock = clock
+        self._screens = list(screens or ())
+        self._mac = (platform or sys.platform) == "darwin"
+        self._filling = False
+        self.x = geometry.get("x")
+        self.y = geometry.get("y")
+        self.width = geometry["width"]
+        self.height = geometry["height"]
+        self.maximized = bool(geometry.get("maximized"))
+        self.minimized = False
+        self._history: list[tuple[float, tuple]] = []
+
+    def _rect(self) -> tuple:
+        return (self.x, self.y, self.width, self.height)
+
+    def _remember(self) -> None:
+        now = self._clock()
+        self._history.append((now, self._rect()))
+        self._history = [h for h in self._history if now - h[0] <= 5.0][-20:]
+
+    def _fills_a_screen(self, width, height) -> bool:
+        return any(
+            abs(width - sw) <= _MAC_FILL_SLACK_W
+            and abs(height - sh) <= _MAC_FILL_SLACK_H
+            for _sx, _sy, sw, sh in self._screens
+        )
+
+    def on_moved(self, x, y) -> None:
+        if self.maximized or self.minimized or self._filling:
+            return
+        if x is None or y is None or x <= _MINIMIZED_PARK or y <= _MINIMIZED_PARK:
+            return
+        self._remember()
+        self.x, self.y = int(x), int(y)
+
+    def on_resized(self, width, height) -> None:
+        if self.maximized or self.minimized or not width or not height:
+            return
+        if self._mac:
+            if self._fills_a_screen(width, height):
+                # A zoom to the screen: drop the moves it fired just before.
+                self._roll_back_settle()
+                self._filling = True
+                return
+            self._filling = False
+        self._remember()
+        self.width, self.height = int(width), int(height)
+
+    def _roll_back_settle(self) -> None:
+        now = self._clock()
+        recent = [h for h in self._history if now - h[0] <= self.MAXIMIZE_SETTLE]
+        if recent:
+            self.x, self.y, self.width, self.height = recent[0][1]
+        self._history = []
+
+    def on_maximized(self) -> None:
+        self._roll_back_settle()
+        self.maximized = True
+        self.minimized = False
+
+    def on_minimized(self) -> None:
+        self._roll_back_settle()
+        self.minimized = True
+
+    def on_restored(self) -> None:
+        # Restored from minimized keeps the maximized flag; restored from
+        # maximized clears it (the move/resize events that follow refill the
+        # normal rectangle).
+        if self.minimized:
+            self.minimized = False
+        else:
+            self.maximized = False
+
+    def geometry(self) -> dict:
+        return {
+            "x": self.x,
+            "y": self.y,
+            "width": self.width,
+            "height": self.height,
+            "maximized": self.maximized,
+        }
+
+
+def _connected_screens(webview) -> list[tuple[int, int, int, int]]:
+    try:
+        return [(s.x, s.y, s.width, s.height) for s in webview.screens]
+    except Exception as exc:  # backend without screen support
+        print(f"Could not list screens: {exc}")
+        return []
+
+
+def _windows_work_areas(screens) -> list[tuple]:
+    """Each (x, y, width, height) screen followed by its work area -- the
+    monitor less the taskbar -- from MonitorFromPoint/GetMonitorInfoW. A
+    screen whose work area cannot be read, or does not sit inside it, keeps
+    the whole screen. Windows only; never raises."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _MonitorInfo(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("rcMonitor", wintypes.RECT),
+                ("rcWork", wintypes.RECT),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        user32 = ctypes.windll.user32
+        user32.MonitorFromPoint.restype = wintypes.HMONITOR
+        user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+        user32.GetMonitorInfoW.restype = wintypes.BOOL
+        user32.GetMonitorInfoW.argtypes = [
+            wintypes.HMONITOR,
+            ctypes.POINTER(_MonitorInfo),
+        ]
+    except Exception as exc:
+        print(f"Could not read the screen work areas: {exc}")
+        return list(screens)
+    monitor_defaulttonull = 0
+    result = []
+    for sx, sy, sw, sh in screens:
+        work = (sx, sy, sw, sh)
+        try:
+            centre = wintypes.POINT(int(sx + sw // 2), int(sy + sh // 2))
+            monitor = user32.MonitorFromPoint(centre, monitor_defaulttonull)
+            info = _MonitorInfo()
+            info.cbSize = ctypes.sizeof(_MonitorInfo)
+            if monitor and user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                r = info.rcWork
+                wx, wy, ww, wh = r.left, r.top, r.right - r.left, r.bottom - r.top
+                inside = (
+                    sx <= wx and sy <= wy and wx + ww <= sx + sw and wy + wh <= sy + sh
+                )
+                if ww > 0 and wh > 0 and inside:
+                    work = (wx, wy, ww, wh)
+        except Exception as exc:
+            print(f"Could not read a screen's work area: {exc}")
+        result.append((sx, sy, sw, sh) + work)
+    return result
+
+
+def _track_window_geometry(window, tracker: WindowGeometryTracker, path: Path):
+    events = window.events
+    events.moved += lambda x, y: tracker.on_moved(x, y)
+    events.resized += lambda width, height: tracker.on_resized(width, height)
+    events.maximized += lambda: tracker.on_maximized()
+    events.minimized += lambda: tracker.on_minimized()
+    events.restored += lambda: tracker.on_restored()
+    events.closing += lambda: (save_window_geometry(tracker.geometry(), path), None)[1]
+
+
 def run_window(port: int, log_fh=None) -> int:
     try:
         import webview
@@ -2021,16 +2593,30 @@ def run_window(port: int, log_fh=None) -> int:
 
     _purge_stale_webview_cache(storage_dir, app_version)
 
+    # Open where it was closed last time (#681), clamped to today's screens.
+    geometry_path = window_geometry_path()
+    screens = _connected_screens(webview)
+    # Clamp to the work area, clear of the taskbar, where Windows reports one.
+    placement = _windows_work_areas(screens) if sys.platform == "win32" else screens
+    geometry = restore_window_geometry(load_window_geometry(geometry_path), placement)
     api = PickerApi(port, log_fh)
     api._window = webview.create_window(
         "SlowBooks Pro 2026",
         html=PICKER_HTML,
         js_api=api,
-        width=1280,
-        height=860,
-        min_size=(900, 600),
+        width=geometry["width"],
+        height=geometry["height"],
+        x=geometry["x"],
+        y=geometry["y"],
+        maximized=geometry["maximized"],
+        min_size=MIN_WINDOW_SIZE,
         zoomable=True,
     )
+    geometry_tracker = WindowGeometryTracker(geometry, screens=screens)
+    try:
+        _track_window_geometry(api._window, geometry_tracker, geometry_path)
+    except Exception as exc:  # an older pywebview without these events
+        print(f"Window position will not be remembered: {exc}")
     try:
         # Require the WebView2 (Chromium) renderer on Windows. Without this,
         # pywebview silently falls back to the legacy IE/MSHTML control on
@@ -2041,7 +2627,10 @@ def run_window(port: int, log_fh=None) -> int:
         gui = "edgechromium" if sys.platform == "win32" else None
         # Blocks until the window is closed. private_mode/storage_path:
         # see the comment above where storage_dir is created.
+        install_mac_print_panel()
         webview.start(gui=gui, private_mode=False, storage_path=str(storage_dir))
+        # Clean exit: save again in case the closing event never fired.
+        save_window_geometry(geometry_tracker.geometry(), geometry_path)
     except Exception as exc:
         if sys.platform == "win32":
             guidance = (
@@ -2570,6 +3159,88 @@ def _repair_schema(argv) -> int:
         print(f"dropped (empty) : {', '.join(result.dropped)}")
     print(f"result          : {'OK' if result.ok else 'FAILED'} - {result.message}")
     return 0 if result.ok else 1
+
+
+def install_mac_print_panel() -> bool:
+    """On a Mac, give a document window's print panel an orientation, a paper
+    size and a scale, and start it landscape when the sheet asks (NEW-209).
+
+    pywebview's ``BrowserView.print_webview`` prints a copy of the shared
+    print info (portrait, fit to width) with the panel's default options,
+    which offer no orientation; WebKit also ignores a sheet's
+    ``@page { size: landscape }``. So the Budgets sheets, twelve months
+    wide, printed portrait with no way to turn them. This replaces that one
+    function with the same steps plus two: the page says how it wants to be
+    printed with ``<html data-print-orientation="landscape">`` (read through
+    the web view before the panel opens), and the panel shows Orientation,
+    Paper Size and Scale for the person to change. Anything unexpected
+    falls back to pywebview's own. Returns whether it was installed."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        import AppKit
+        import Foundation
+        from webview.platforms.cocoa import BrowserView
+    except Exception:
+        return False
+    if getattr(BrowserView.print_webview, "_slowbooks", False):
+        return True
+    original = BrowserView.print_webview
+
+    def run(webview, landscape: bool) -> None:
+        info = AppKit.NSPrintInfo.sharedPrintInfo().copy()
+        if landscape:
+            info.setOrientation_(AppKit.NSPaperOrientationLandscape)
+        # the settings pywebview takes from Safari
+        info.setHorizontalPagination_(AppKit.NSFitPagination)
+        info.setHorizontallyCentered_(Foundation.NO)
+        info.setVerticallyCentered_(Foundation.NO)
+        bounds = info.imageablePageBounds()
+        paper = info.paperSize()
+        if Foundation.NSWidth(bounds) > paper.width:
+            bounds.origin.x = 0
+            bounds.size.width = paper.width
+        if Foundation.NSHeight(bounds) > paper.height:
+            bounds.origin.y = 0
+            bounds.size.height = paper.height
+        info.setBottomMargin_(Foundation.NSMinY(bounds))
+        info.setTopMargin_(
+            paper.height - Foundation.NSMinY(bounds) - Foundation.NSHeight(bounds)
+        )
+        info.setLeftMargin_(Foundation.NSMinX(bounds))
+        info.setRightMargin_(
+            paper.width - Foundation.NSMinX(bounds) - Foundation.NSWidth(bounds)
+        )
+        operation = webview._printOperationWithPrintInfo_(info)
+        panel = operation.printPanel()
+        panel.setOptions_(
+            panel.options()
+            | AppKit.NSPrintPanelShowsOrientation
+            | AppKit.NSPrintPanelShowsPaperSize
+            | AppKit.NSPrintPanelShowsScaling
+        )
+        operation.runOperationModalForWindow_delegate_didRunSelector_contextInfo_(
+            webview.window(), None, None, None
+        )
+
+    def print_webview(webview):
+        def asked(result, error):
+            try:
+                run(webview, str(result or "").strip().lower() == "landscape")
+            except Exception:
+                original(webview)
+
+        try:
+            webview.evaluateJavaScript_completionHandler_(
+                "document.documentElement.getAttribute('data-print-orientation')||''",
+                asked,
+            )
+        except Exception:
+            original(webview)
+
+    print_webview._slowbooks = True
+    BrowserView.print_webview = staticmethod(print_webview)
+    return True
 
 
 def main() -> int:

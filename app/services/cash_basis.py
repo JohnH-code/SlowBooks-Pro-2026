@@ -419,6 +419,69 @@ def retainage_release_cash_lines(
     return _balanced_on(lines, ensure_construction_accounts(db)["2050"].id, memo)
 
 
+def discount_cash_lines(
+    db: Session,
+    control_id: int,
+    document,
+    amount_home,
+    discount_account_id: int,
+    memo: str,
+    invoice: bool = True,
+) -> list[dict]:
+    """The cash lines of an early-payment discount's entry (#664). The
+    discount settles part of the document with no cash, so on the cash basis
+    it recognizes that part as a payment would (an invoice's income and tax
+    lines prorated, a bill's expense lines) against the discount account.
+    A settled document then reads the same on both bases: its income less
+    the discount, and all of its tax. An invoice the QuickBooks ledger import
+    posted already counts its income on cash, so only the discount moves."""
+    amount_home = _q(amount_home)
+    if amount_home == 0:
+        return []
+    if invoice and _ledger_posted(db, document):
+        return [
+            _cash_line(
+                {"account_id": discount_account_id, "amount": -amount_home}, memo
+            ),
+            {
+                "account_id": control_id,
+                "debit": Decimal("0"),
+                "credit": amount_home,
+                "description": memo,
+                "basis": BASIS_CASH,
+            },
+        ]
+    if invoice:
+        lines = _recognition(
+            db,
+            INVOICE_SOURCE_TYPES,
+            document.id,
+            control_id,
+            amount_home,
+            memo,
+            unapplied_income_id,
+            INVOICE_LINK,
+        )
+    else:
+        lines = _recognition(
+            db,
+            BILL_SOURCE_TYPES,
+            document.id,
+            control_id,
+            -amount_home,
+            memo,
+            unapplied_expense_id,
+            BILL_LINK,
+            _retainage_ids(db),
+        )
+    net = sum((ln["credit"] - ln["debit"] for ln in lines), Decimal("0"))
+    if net == 0:
+        return lines
+    return lines + [
+        _cash_line({"account_id": discount_account_id, "amount": -net}, memo)
+    ]
+
+
 def _balanced_on(lines: list[dict], control_id: int, memo: str) -> list[dict]:
     """Add the control-account cash line that balances the recognition
     lines: Dr A/R when they are net credits (income), Cr A/P when net
@@ -654,7 +717,7 @@ def recompute_invoice_cash_lines(
         )
         return n == 1 and Decimal(str(payment.amount)) == Decimal(str(alloc.amount))
 
-    return _recompute(
+    rewritten = _recompute(
         db,
         invoice,
         link_key=INVOICE_LINK,
@@ -665,6 +728,7 @@ def recompute_invoice_cash_lines(
         fully_applied=fully_applied,
         adopted=adopted,
     )
+    return rewritten + recompute_discount_cash_lines(db, invoice, invoice=True)
 
 
 def recompute_bill_cash_lines(db: Session, bill: Bill) -> int:
@@ -682,7 +746,7 @@ def recompute_bill_cash_lines(db: Session, bill: Bill) -> int:
         )
         return n == 1 and Decimal(str(payment.amount)) == Decimal(str(alloc.amount))
 
-    return _recompute(
+    rewritten = _recompute(
         db,
         bill,
         link_key=BILL_LINK,
@@ -693,6 +757,94 @@ def recompute_bill_cash_lines(db: Session, bill: Bill) -> int:
         fully_applied=fully_applied,
         adopted=False,
     )
+    return rewritten + recompute_discount_cash_lines(db, bill, invoice=False)
+
+
+def recompute_discount_cash_lines(db: Session, document, invoice: bool = True) -> int:
+    """After an invoice's or bill's journal is reposted (#665): rewrite the
+    cash lines of each early-payment discount standing on it from its lines
+    as they now stand, as its payments' are, so the cash basis and the cash
+    Sales Tax report (which prorates the discount from the document as it
+    is) agree to the cent. A discount on or before the closing date keeps
+    what it has. Returns the discounts rewritten."""
+    from app.models.credit_memos import CreditMemo, CreditMemoStatus
+    from app.models.vendor_credits import VendorCredit, VendorCreditStatus
+    from app.services.accounting import get_ap_account_id, get_ar_account_id
+    from app.services.audit import audited_bulk_delete
+    from app.services.closing_date import get_closing_date
+
+    if invoice:
+        control_id = get_ar_account_id(db)
+        standing = (
+            db.query(CreditMemo)
+            .filter(
+                CreditMemo.original_invoice_id == document.id,
+                CreditMemo.discount_payment_id.isnot(None),
+                CreditMemo.status != CreditMemoStatus.VOID,
+            )
+            .all()
+        )
+    else:
+        control_id = get_ap_account_id(db)
+        standing = (
+            db.query(VendorCredit)
+            .filter(
+                VendorCredit.original_bill_id == document.id,
+                VendorCredit.discount_bill_payment_id.isnot(None),
+                VendorCredit.status != VendorCreditStatus.VOID,
+            )
+            .all()
+        )
+    closing = get_closing_date(db)
+    rewritten = 0
+    for credit in standing:
+        txn = (
+            db.get(Transaction, credit.transaction_id)
+            if credit.transaction_id
+            else None
+        )
+        if txn is None or (closing is not None and txn.date <= closing):
+            continue
+        # the discount account: the accrual line that is not the control's
+        account_id = next(
+            (
+                ln.account_id
+                for ln in db.query(TransactionLine)
+                .filter(
+                    TransactionLine.transaction_id == txn.id,
+                    TransactionLine.basis == BASIS_ACCRUAL,
+                    TransactionLine.account_id != control_id,
+                )
+                .execution_options(**reading(READ_ALL))
+            ),
+            None,
+        )
+        if account_id is None:
+            continue
+        old = _cash_lines_of(db, txn.id)
+        if old:
+            audited_bulk_delete(
+                db,
+                db.query(TransactionLine)
+                .filter(TransactionLine.id.in_([ln.id for ln in old]))
+                .execution_options(**reading(READ_ALL)),
+            )
+        _insert_cash_lines(
+            db,
+            txn,
+            discount_cash_lines(
+                db,
+                control_id,
+                document,
+                Decimal(str(credit.total)),
+                account_id,
+                txn.description or "Early-payment discount",
+                invoice=invoice,
+            ),
+        )
+        rewritten += 1
+    db.flush()
+    return rewritten
 
 
 # ---------------------------------------------------------------------------
@@ -891,52 +1043,80 @@ class _Progress:
     """Counts the backfill's writes and commits every BACKFILL_BATCH of them
     so a big book never holds one long write transaction."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, on_progress=None):
         self.db = db
         self.pending = 0
         self.failed = 0
+        # on_progress(label, done, total) after each payment (#693): the
+        # start-up writes it where the desktop launcher reads it.
+        self.on_progress = on_progress
+
+    def note(self, text: str, done: int | None = None, total: int | None = None):
+        if self.on_progress is None:
+            return
+        try:
+            self.on_progress(text, done, total)
+        except Exception:
+            pass  # a progress note is never a reason to stop
+
+    def _report(self, label: str, done: int, total: int) -> None:
+        self.note(f"Catching up cash-basis lines ({label}s)", done, total)
 
     def run(self, payments, make_lines, label: str) -> int:
         """Write the cash lines of each payment inside its own savepoint:
         one broken payment is logged by id and skipped, the rest go on."""
         wrote = 0
-        for payment in payments:
-            payment_id = payment.id  # read before a failure expires the row
-            try:
-                with self.db.begin_nested():
-                    txn, lines = make_lines(self.db, payment)
-                    if not lines:
-                        continue
-                    append_cash_lines(self.db, txn, lines)
-            except Exception:
-                self.failed += 1
-                log.exception(
-                    "Cash-basis backfill skipped %s %s (entry %s)",
-                    label,
-                    payment_id,
-                    getattr(payment, "transaction_id", None),
-                )
-                continue
-            wrote += 1
-            self.pending += 1
-            if self.pending >= BACKFILL_BATCH:
-                self.db.commit()
-                self.pending = 0
+        payments = list(payments)
+        total = len(payments)
+        if total:
+            self._report(label, 0, total)
+        for done, payment in enumerate(payments, start=1):
+            if self._one(payment, make_lines, label):
+                wrote += 1
+            self._report(label, done, total)
         return wrote
 
+    def _one(self, payment, make_lines, label: str) -> bool:
+        payment_id = payment.id  # read before a failure expires the row
+        try:
+            with self.db.begin_nested():
+                txn, lines = make_lines(self.db, payment)
+                if not lines:
+                    return False
+                append_cash_lines(self.db, txn, lines)
+        except Exception:
+            self.failed += 1
+            log.exception(
+                "Cash-basis backfill skipped %s %s (entry %s)",
+                label,
+                payment_id,
+                getattr(payment, "transaction_id", None),
+            )
+            return False
+        self.pending += 1
+        if self.pending >= BACKFILL_BATCH:
+            self.db.commit()
+            self.pending = 0
+        return True
 
-def backfill(db: Session) -> dict:
+
+def backfill(db: Session, on_progress=None) -> dict:
     """Tag the accrual entries and write the cash lines of every payment
     that has none (#483). Idempotent: a second run finds nothing. Commits
     as it goes (every BACKFILL_BATCH payments) and a payment that fails is
     logged and skipped, not fatal. Returns counts for the start-up log:
-    tagged, payments, bill_payments and failed."""
+    tagged, payments, bill_payments and failed.
+
+    ``on_progress(label, done, total)``, when given, is called as each
+    payment is done (#693): the start-up passes the note the desktop
+    launcher reads while it waits."""
     from app.services.accounting import get_ap_account_id, get_ar_account_id
     from app.services.control_accounts import MissingControlAccount
 
+    progress = _Progress(db, on_progress)
+    progress.note("Tagging accrual lines for cash basis")
     tagged = _tag_accrual_entries(db)
     db.commit()
-    progress = _Progress(db)
     payments = bills = 0
 
     try:

@@ -2,9 +2,10 @@
  * SlowBooks Pro 2026 — UI Stylesheet
  * ============================================================================ */
 
-/* Skip-to-content link — first tab stop on every page, hidden until focused.
-   Lets keyboard / screen-reader users jump past the topbar + sidebar straight
-   into the main content area. */
+/* Skip links. The page's own, "Skip to main content", is a small icon
+   button at the start of the top bar (#topbar .skip-link--bar, below);
+   these first rules are the forms' and pages' own (.skip-link--inline),
+   which show where they sit when the keyboard reaches them. */
 .skip-link {
     position: absolute;
     top: -40px;
@@ -31,6 +32,45 @@
     outline-offset: 2px;
     box-shadow: 0 0 0 8px var(--focus-halo);
 }
+/* Skip to main content (2.31.8): the first Tab stop on every page, at the
+   start of the top bar, where it covers nothing. It showed, on focus, as a
+   large blue box at the window's corner, over the menu button, the
+   wordmark and Back. Always there and quiet, like the bar's other
+   controls: a glyph in the bar's text colour, named and titled "Skip to
+   main content". On the keyboard's focus it draws the ring the bar's
+   other controls draw, in the bar's own gold; a click moves focus on to
+   the content at once, so a mouse leaves no ring on it. */
+#topbar .skip-link--bar {
+    position: static;
+    z-index: auto;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 5px;
+    margin-right: 2px;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    font-weight: 400;
+    line-height: 1;
+    text-decoration: none;
+}
+#topbar .skip-link--bar svg { display: block; width: 14px; height: 14px; }
+#topbar .skip-link--bar:hover {
+    background: rgba(255,255,255,0.6);
+    border-color: #b0b8c8;
+}
+#topbar .skip-link--bar:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 8px var(--focus-halo);
+    position: relative;
+    top: auto;   /* not the inline links' place (.skip-link:focus, above) */
+    left: auto;
+}
+
 /* A form's or page's own skip link (#266): out of the way until the
    keyboard reaches it, then shown where it sits, above what it skips. */
 .skip-link--inline {
@@ -237,6 +277,85 @@
     --font-mono: 'Consolas', 'Courier New', monospace;
 }
 
+/* ========================================================================
+ * TEXT SIZE (#717) — Settings → My Preferences, and the desktop app's
+ * Ctrl + / Ctrl − / Ctrl 0 and Ctrl + wheel: 100, 115, 125 or 150 percent,
+ * kept per computer. text_size.js puts the size on <html> from <head>,
+ * before the first paint; the size is the page's CSS zoom, on screen only,
+ * so printing is never enlarged. --ui-scale is the same number for the
+ * frame: under zoom a viewport unit grows with everything else (100vh at
+ * 150% is one and a half windows tall), so a height taken from the window
+ * is a percentage of it, or the viewport divided by --ui-scale, and the
+ * sidebar, the bottom bar and a dialog's buttons stay in the window.
+ * ======================================================================== */
+:root { --ui-scale: 1; }
+@media screen {
+    html[data-text-size="115"] { zoom: 1.15; --ui-scale: 1.15; }
+    html[data-text-size="125"] { zoom: 1.25; --ui-scale: 1.25; }
+    html[data-text-size="150"] { zoom: 1.5; --ui-scale: 1.5; }
+}
+/* The shell is the window's height at every size (#app, below, is 100% of
+   it): the sidebar and the page scroll inside it, the bars stay put. */
+html, body { height: 100%; }
+/* A dialog keeps its title bar and its buttons in view while a tall form
+   scrolls between them (the dialog is what scrolls). The buttons take the
+   dialog's ground so the fields scroll under them, not through them; the
+   margin and the padding below them keep the keyboard's ring and halo
+   inside. A row of buttons with more of the dialog after it holds to the
+   bottom only while that row is below the fold. */
+.modal > .modal-header {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+}
+#modal-body .form-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 4;
+    background: var(--form-bg);
+    padding-bottom: 8px;
+    margin-bottom: -8px;
+}
+/* A field the keyboard moves to comes into view clear of the two */
+.modal { scroll-padding-top: 40px; scroll-padding-bottom: 56px; }
+/* A width rule (@media max-width) reads the window, not the page: at
+   150% a 1366 window is a 911px page. The 900px rules that stack the
+   dashboard's cards and a bill's vendor summary are given again here at
+   each size, at the window width where the page is that narrow. The top
+   bar is not: it is measured and folds to fit at any size (topbar_fit.js,
+   style.css "TOP BAR — folding"), and so is Settings' list of groups
+   (settings.js SettingsPage._fitNav). */
+@media screen and (max-width: 1035px) {
+    html[data-text-size="115"] .dash-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    html[data-text-size="115"] .dash-card--full { grid-column: span 2; }
+    html[data-text-size="115"] .bill-with-summary { flex-direction: column; align-items: stretch; }
+    html[data-text-size="115"] .bill-vendor-summary { flex-basis: auto; width: 100%; border-left: 0; border-top: 1px solid var(--border, #ccc); padding: 8px 0 0; }
+}
+@media screen and (max-width: 644px) {
+    html[data-text-size="115"] .dash-grid { grid-template-columns: 1fr; }
+    html[data-text-size="115"] .dash-card--full { grid-column: span 1; }
+}
+@media screen and (max-width: 1125px) {
+    html[data-text-size="125"] .dash-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    html[data-text-size="125"] .dash-card--full { grid-column: span 2; }
+    html[data-text-size="125"] .bill-with-summary { flex-direction: column; align-items: stretch; }
+    html[data-text-size="125"] .bill-vendor-summary { flex-basis: auto; width: 100%; border-left: 0; border-top: 1px solid var(--border, #ccc); padding: 8px 0 0; }
+}
+@media screen and (max-width: 700px) {
+    html[data-text-size="125"] .dash-grid { grid-template-columns: 1fr; }
+    html[data-text-size="125"] .dash-card--full { grid-column: span 1; }
+}
+@media screen and (max-width: 1350px) {
+    html[data-text-size="150"] .dash-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    html[data-text-size="150"] .dash-card--full { grid-column: span 2; }
+    html[data-text-size="150"] .bill-with-summary { flex-direction: column; align-items: stretch; }
+    html[data-text-size="150"] .bill-vendor-summary { flex-basis: auto; width: 100%; border-left: 0; border-top: 1px solid var(--border, #ccc); padding: 8px 0 0; }
+}
+@media screen and (max-width: 840px) {
+    html[data-text-size="150"] .dash-grid { grid-template-columns: 1fr; }
+    html[data-text-size="150"] .dash-card--full { grid-column: span 1; }
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
@@ -251,7 +370,9 @@ body {
 #app {
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    /* of the window, at any text size (TEXT SIZE, above): 100vh grew with
+       the zoom and put the bottom bar out of the window */
+    height: 100%;
 }
 
 /* ========================================================================
@@ -454,13 +575,97 @@ body {
 @media (max-width: 1109px) {
     #topbar .tb-btn[data-action] { display: none; }
 }
-@media (max-width: 1365px) {
+/* Below 1410 the bar tightens (2.31.5 round 2, W-105: with the Hide
+   sidebar control the bar ran 38 px past a 1366 window and 8 px past
+   Windows' 1264 default under WebView2's wider fonts; the clock and the
+   brand's year go first, then the spacing) */
+@media (max-width: 1409px) {  /* round 3, W-107: at 1400-1403 the clock and year came back 1-4 px too soon; it fits from 1404 */
     #topbar-clock { display: none; }
     .topbar-brand span { display: none; }
-    .topbar-brand { margin-right: 8px; }
-    #topbar .tb-sep { margin: 0 3px; }
-    #topbar .tb-btn { padding-left: 8px; padding-right: 8px; }
+    .topbar-brand { margin-right: 6px; }
+    #topbar .tb-sep { margin: 0 2px; }
+    #topbar .tb-btn { padding-left: 6px; padding-right: 6px; }
 }
+
+/* ========================================================================
+ * TOP BAR — folding (W-126, 2.31.8). The rules above read the window; at a
+ * larger text size the page is narrower than the window, and a long
+ * sign-in name takes room no window width knows of. topbar_fit.js measures
+ * the bar and, while it is wider than the window, adds tb-fold-1, then
+ * tb-fold-2 and so on: each step below puts something away, and More (in
+ * the bar from step 4) lists all of it. Sign Out, Back and the search box
+ * never fold, so nothing is past the window's edge and the page never
+ * scrolls sideways, at any size.
+ * ======================================================================== */
+/* The name signed in: one line, ending in "…" when it is long, its whole
+   self in its title (app.js). It wrapped to three lines and pushed Sign
+   Out out of the window. */
+#topbar .topbar-user {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 16em;
+    min-width: 0;
+}
+#topbar.tb-fold-1 #topbar-clock,
+#topbar.tb-fold-1 .topbar-brand span { display: none; }
+#topbar.tb-fold-1 .topbar-brand { margin-right: 6px; }
+#topbar.tb-fold-1 .tb-sep { margin: 0 2px; }
+#topbar.tb-fold-1 .tb-btn:not(.tb-sidebar-toggle) { padding-left: 6px; padding-right: 6px; }
+#topbar.tb-fold-1 .topbar-right { gap: 4px; }
+#topbar.tb-fold-2 .tb-btn[data-nav="#/quick-entry"],
+#topbar.tb-fold-2 .tb-btn[data-nav="#/bill-entry"] { display: none; }
+#topbar.tb-fold-3 .tb-btn[data-action] { display: none; }
+#topbar.tb-fold-4 #user-chip,
+#topbar.tb-fold-4 #about-btn,
+#topbar.tb-fold-4 #support-btn { display: none; }
+#topbar.tb-fold-5 .tb-btn[data-nav="#/"],
+#topbar.tb-fold-5 .tb-btn[data-nav="#/reports"],
+#topbar.tb-fold-5 .tb-btn[data-nav="#/bill-entry"] + .tb-sep,
+#topbar.tb-fold-5 .tb-btn[data-nav="#/reports"] + .tb-sep { display: none; }
+#topbar.tb-fold-6 .topbar-brand { display: none; }
+#topbar.tb-fold-7 #theme-toggle { display: none; }
+#topbar .tb-more[hidden],
+#topbar .tb-more-menu[hidden] { display: none; }
+/* More's list opens under it, at the bar's right edge, above the page */
+.topbar-right { position: relative; }
+.tb-more-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 250;
+    min-width: 200px;
+    max-width: calc(100vw / var(--ui-scale) - 16px);
+    display: flex;
+    flex-direction: column;
+    padding: 4px 0;
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+}
+.tb-more-who {
+    padding: 6px 12px 8px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--panel-border);
+    font-size: 11px;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+.tb-more-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 6px 12px;
+    font: inherit;
+    font-size: 12px;
+    color: var(--text-primary);
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.tb-more-item:hover { background: var(--primary-light); }
+.tb-more-item:focus-visible { outline-offset: -4px; box-shadow: none; }
 
 /* ========================================================================
  * SIDEBAR / NAVIGATOR — left-docked panel with 32x32 icons
@@ -523,6 +728,43 @@ body {
     color: var(--qb-teal);
     font-weight: 700;
 }
+
+/* A heading that folds (#688): App.setupSidebarSections puts a button in
+   it with the heading's words; the li keeps no padding of its own then. The
+   caret is drawn, not text: it is not part of the button's name. */
+.nav-section.nav-section--folds { padding: 0; }
+.nav-section__toggle {
+    display: flex; align-items: center; gap: 4px; width: 100%;
+    padding: 10px 14px 3px; background: none; border: 0;
+    color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit;
+    text-align: left; cursor: pointer;
+}
+.nav-section__toggle::after {
+    content: "\25BE";
+    content: "\25BE" / "";
+    margin-left: auto; font-size: 9px;
+}
+.nav-section__toggle[aria-expanded="false"]::after {
+    content: "\25B8";
+    content: "\25B8" / "";
+}
+.nav-section__toggle:hover { color: #ffffff; }
+#sidebar .nav-section__toggle:focus-visible { outline: 2px solid var(--qb-gold); outline-offset: -3px; }
+.nav-links > li.nav-folded { display: none; }
+
+/* Hide sidebar (#688): on a window wider than a phone's only; at 700px and
+   under the sidebar is as it was and the control is not offered. */
+@media (min-width: 701px) {
+    body.sidebar-hidden #sidebar { display: none; }
+}
+@media (max-width: 700px) {
+    #sidebar-toggle { display: none; }
+}
+/* The toggle is a glyph, not a word: it takes the bar's button height and
+   no more width than the glyph needs, so the five quick-entry buttons keep
+   fitting a 1366 window (the bar's budget above). */
+#topbar .tb-btn.tb-sidebar-toggle { padding-left: 4px; padding-right: 4px; margin: 0; font-size: 13px; line-height: 1; }
+.tb-btn.tb-sidebar-toggle[aria-pressed="true"] { background: rgba(0,0,0,0.08); border-color: var(--text-secondary); }
 
 .nav-link {
     display: flex;
@@ -1284,7 +1526,9 @@ a:hover { text-decoration: underline; }
     border-radius: 0;
     width: 90%;
     max-width: 700px;
-    max-height: calc(100vh - 80px);
+    /* the overlay's height less its 40px at the top and 40px at the
+       bottom; a percentage, so it holds at any text size (100vh did not) */
+    max-height: calc(100% - 40px);
     overflow-y: auto;
     box-shadow: 4px 4px 12px rgba(0,0,0,0.3);
 }
@@ -1298,6 +1542,16 @@ a:hover { text-decoration: underline; }
     width: calc(100% - 12px);
     max-width: 1280px;
 }
+/* The register entry's split lines (NEW-204, 2.31.6 gate): six columns
+   share the dialog's width, the controls filling their cells, so the table
+   never scrolls sideways while the dialog is wide. */
+#entry-splits table { table-layout: fixed; width: 100%; }
+#entry-splits th:first-child { width: 26%; }
+#entry-splits th.amount { width: 12%; }
+#entry-splits th:last-child { width: 34px; }
+#entry-splits td input, #entry-splits td select { width: 100%; min-width: 0; box-sizing: border-box; }
+#entry-splits td { padding-left: 3px; padding-right: 3px; overflow: hidden; }
+
 /* ...and the room inside it for the table: a narrower margin at the sides.
    A construction company's bill has eleven columns (cost code, cost type,
    class and the billable mark beside the usual seven) and still scrolled at
@@ -1361,7 +1615,7 @@ a:hover { text-decoration: underline; }
    columns need. The corner cell sits above both. */
 .grid-scroll {
     overflow: auto;
-    max-height: min(68vh, 720px);
+    max-height: min(calc(68vh / var(--ui-scale)), 720px);
     overscroll-behavior: contain;
     /* a cell Tab moves to is scrolled out from under the frozen header row
        and Account column (their height and width, ReportsPage._gridFit),
@@ -1468,10 +1722,188 @@ a:hover { text-decoration: underline; }
 /* On a phone the wide dialog is the screen's width, the grid swipes
    sideways with the Account column frozen, and Prev / Next lead. */
 @media (max-width: 700px) {
-    .modal.modal--wide { width: 96vw; }
+    .modal.modal--wide { width: calc(96vw / var(--ui-scale)); }
     .pivot-grid th:first-child, .pivot-grid td:first-child { min-width: 120px; max-width: 150px; }
     .grid-toolbar label { flex-basis: 100%; }
     .grid-toolbar select, .grid-toolbar .cbx { flex: 1 1 100%; }
+}
+
+/* A grid of months wider than its box (Budgets and its Budget vs Actual,
+   #702): the months scroll under a frozen first column, so each row still
+   says which account it is, and the month row stays at the top while the
+   rows scroll under it; the corner cell sits above both. The box scrolls
+   both ways and has a height of its own, so the header row has a scroll
+   root to hold to. Collapsed borders stay where the table put them, so the
+   frozen cells draw their edges as inset shadows (as the pay-run view's
+   Employee column does), and each has the ground of its row, striped and
+   hovered, or the scrolled figures show through it. A month Tab moves to is
+   scrolled out from under the frozen column and header row (their width and
+   height, measured by App.revealInTable) with its own 8px of room. */
+.table-container.table-container--frozen {
+    overflow: auto;
+    max-height: max(240px, calc(100vh / var(--ui-scale) - 230px));
+    overscroll-behavior: contain;
+    scroll-padding: var(--frozen-head, 28px) 0 0 var(--frozen-col, 200px);
+}
+.table--frozen {
+    width: max-content;
+    min-width: 100%;
+}
+.table--frozen thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    box-shadow: inset 0 -1px 0 var(--panel-border);
+}
+.table--frozen th:first-child,
+.table--frozen td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    white-space: nowrap;
+    box-shadow: inset -1px 0 0 var(--panel-border);
+}
+.table--frozen thead th:first-child {
+    z-index: 3;
+    box-shadow: inset -1px 0 0 var(--panel-border), inset 0 -1px 0 var(--panel-border);
+}
+.table--frozen tbody td:first-child { background: var(--panel-bg); }
+.table--frozen tbody tr:nth-child(even) td:first-child { background: #f7f9fb; }
+.table--frozen tbody tr:hover td:first-child { background: #e8f0f8; }
+.table--frozen tbody td input { scroll-margin: 8px; }
+/* the budget grid: the account's name at most 280px, all of it in its
+   tooltip; each month's box 80px */
+.budget-grid { font-size: 11px; }
+.budget-grid td.budget-acct {
+    font-weight: 600;
+    min-width: 180px;
+    max-width: 280px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.budget-grid thead th:first-child { min-width: 180px; }
+.budget-grid thead th.amount { min-width: 80px; }
+/* Budget vs Actual: one table per account in one scrolling box; the sheet
+   is as wide as the widest table, so each account's heading can hold to
+   the box's left edge as the months scroll */
+.budget-variance { max-height: min(calc(62vh / var(--ui-scale)), 640px); }
+.budget-variance__sheet { width: max-content; min-width: 100%; }
+.budget-variance__acct {
+    position: sticky;
+    left: 0;
+    width: max-content;
+    margin: 12px 0 4px;
+    padding-left: 10px;
+    font-size: 12px;
+    color: var(--qb-navy);
+}
+.budget-variance__table { font-size: 10px; margin-bottom: 12px; }
+@media print {
+    .table-container.table-container--frozen { overflow: visible; max-height: none; }
+    .table--frozen thead th,
+    .table--frozen th:first-child,
+    .table--frozen td:first-child,
+    .budget-variance__acct { position: static; }
+}
+/* Printing the Budgets grid or Budget vs Actual (W-115, #702): the app's
+   shell is a screen's height that scrolls inside #content, and printed so
+   it gave one page, January to May and the first 36 accounts. While a
+   month grid is on the page the shell lets the page flow (no fixed
+   heights, nothing clipped, no 1100px cap), the sidebar, bars and buttons
+   are not printed, the sheet is landscape, the month row repeats on each
+   page, no row splits, and the twelve months (and Budget vs Actual's
+   Total) share the page's width in a smaller type. Budget vs Actual opens
+   in a dialog: while it is open the dialog is what prints, not the page
+   behind it. Other pages print as they did: every shell rule here is under a
+   class the page puts on <body> as printing starts (App.printClasses;
+   :has() would do it in CSS but is newer than the WebView2 floor). */
+@page sb-month-grid { size: letter landscape; margin: 0.4in; }
+@media print {
+    body.prints-month-grid {
+        overflow: visible;
+        height: auto;
+        background: white;
+    }
+    body.prints-month-grid #app,
+    body.prints-month-grid #main-area,
+    body.prints-month-grid #content {
+        display: block;
+        height: auto;
+        max-height: none;
+        overflow: visible;
+        padding: 0;
+        margin: 0;
+    }
+    body.prints-month-grid #page-content { max-width: none; }
+    body.prints-month-grid #app,
+    body.prints-month-grid #modal-overlay { page: sb-month-grid; }
+    body.prints-month-grid .budget-hint { display: none; }
+    body.prints-month-grid .page-header { margin-bottom: 6px; }
+    .table-container.table-container--frozen { border: 0; }
+    .table--frozen,
+    .budget-variance__sheet {
+        width: 100%;
+        min-width: 0;
+    }
+    .table--frozen { table-layout: fixed; font-size: 9px; }
+    .table--frozen thead { display: table-header-group; }
+    .table--frozen tr { break-inside: avoid; page-break-inside: avoid; }
+    .table--frozen th,
+    .table--frozen td {
+        padding: 2px 3px;
+        min-width: 0 !important;
+        overflow-wrap: anywhere;
+    }
+    .table--frozen th:first-child,
+    .table--frozen td:first-child {
+        width: 17%;
+        white-space: normal;
+        box-shadow: none;
+    }
+    .budget-grid td.budget-acct { max-width: none; overflow: visible; }
+    /* the entry boxes print as their figures */
+    .budget-grid .budget-cell {
+        width: 100% !important;
+        padding: 0 !important;
+        font-size: 9px !important;
+        border: 0;
+        background: none;
+        box-shadow: none;
+        appearance: textfield;
+        -moz-appearance: textfield;
+    }
+    .budget-variance__acct { margin: 8px 0 2px; padding-left: 0; break-after: avoid; page-break-after: avoid; }
+    .budget-variance__table { break-inside: avoid; page-break-inside: avoid; margin-bottom: 6px; font-size: 8px; }
+    /* Budget / Actual / Variance need little room; thirteen figures need it all */
+    .budget-variance__table th:first-child,
+    .budget-variance__table td:first-child { width: 7%; }
+    /* Budget vs Actual's dialog, printed in place of the page */
+    body.prints-month-grid-dialog #app { display: none !important; }
+    body.prints-month-grid-dialog #modal-overlay {
+        display: block !important;
+        position: static;
+        padding: 0;
+        background: none;
+    }
+    body.prints-month-grid-dialog #modal {
+        width: auto;
+        max-width: none;
+        max-height: none;
+        overflow: visible;
+        border: 0;
+        box-shadow: none;
+    }
+    body.prints-month-grid-dialog .modal-header {
+        background: none;
+        color: black;
+        padding: 0 0 4px;
+    }
+    body.prints-month-grid-dialog .modal-header h2 { text-shadow: none; font-size: 14px; }
+    body.prints-month-grid-dialog .modal-close,
+    body.prints-month-grid-dialog #modal-body .report-toolbar,
+    body.prints-month-grid-dialog #modal-body .form-actions { display: none; }
+    body.prints-month-grid-dialog #modal-body { padding: 0; }
+    body.prints-month-grid-dialog .budget-variance { max-height: none; }
 }
 
 .modal-header {
@@ -2077,6 +2509,174 @@ tr.clickable { cursor: pointer; }
     padding-bottom: 6px;
     border-bottom: 1px solid var(--panel-border);
 }
+
+/* The groups (#720): the list down the left, one group of sections shown
+   at a time in the panel beside it (SettingsPage._refreshGroups). The list
+   holds to the top of the window as the panel scrolls, and scrolls inside
+   itself when it is taller than the window (a large text size), so it
+   never pushes the form, or its Save Settings bar, out of view. */
+.settings-layout {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+}
+
+.settings-nav {
+    position: sticky;
+    top: 0;
+    flex: 0 0 180px;
+    width: 180px;
+    max-height: calc(100vh / var(--ui-scale) - var(--topbar-height) - var(--statusbar-height) - 48px);
+    overflow-y: auto;
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    padding: 8px;
+}
+
+/* a column, at least the window's height (SettingsPage._fitNav), whose
+   last item is the Save Settings bar: in a short group the bar still sits
+   at the bottom of the window, not halfway up beside the list */
+.settings-panel {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.settings-panel #settings-savebar { margin-top: auto; }
+
+/* The bar is pinned to the bottom of the content area's box, and that area
+   has 16px of padding under it where the page went on showing: a strip of
+   whatever was scrolling by, under the Save button. The bar now covers its
+   own strip. */
+.settings-panel #settings-savebar::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 100%;
+    height: 16px;
+    background: var(--content-bg);
+}
+
+/* The Save Settings bar (sticky to the bottom of the window) is the panel's
+   last child, after the form, so it stays in view whatever fills the window
+   above it; the form is an ordinary box (NEW-210). */
+
+.settings-section.settings-off { display: none !important; }
+
+.settings-find-label {
+    display: block;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-secondary);
+    margin-bottom: 3px;
+}
+
+.settings-find {
+    width: 100%;
+    font-size: 11px;
+    padding: 3px 5px;
+}
+
+.settings-find-status {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin: 3px 0 0;
+}
+
+.settings-find-status:empty { display: none; }
+
+.settings-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 8px;
+}
+
+.settings-tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    font-size: 12px;
+    color: var(--text-primary);
+    background: transparent;
+    border: 1px solid transparent;
+    padding: 5px 8px;
+    cursor: pointer;
+}
+
+.settings-tab[hidden] { display: none; }
+
+.settings-tab:hover { background: var(--primary-light); }
+
+.settings-tab[aria-selected="true"] {
+    background: var(--qb-navy);
+    color: #ffffff;
+    font-weight: 700;
+}
+
+/* while Find a setting shows matches from every group, no group is "open" */
+.settings-nav--finding .settings-tab[aria-selected="true"] {
+    background: transparent;
+    color: var(--text-primary);
+    border-color: var(--panel-border);
+}
+
+.settings-tab-label { flex: 1 1 auto; }
+
+/* a change in this group that Save Settings has not sent */
+.settings-tab-dot:not([hidden]) {
+    display: inline-block;
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--qb-orange);
+    box-shadow: 0 0 0 1px var(--panel-bg);
+}
+
+.settings-dirty-groups {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-right: 8px;
+}
+
+.settings-dirty-groups:empty { display: none; }
+
+/* A narrow page: the list becomes a row of choices above the panel,
+   rather than squeezing the form beside it. "Narrow" is a page 900px wide
+   or less, measured (SettingsPage._fitNav): a width rule reads the window,
+   and at 150% a 900px window is a 600px page, where the list stayed beside
+   the form (W-126). Compact, so a group's fields and Save Settings share
+   the window with it at 900 x 600 and 150%: the search box beside its
+   label, the choices closer together, and the list scrolls away with the
+   page. */
+.settings-layout--narrow { display: block; }
+.settings-layout--narrow .settings-nav {
+    position: static;
+    width: auto;
+    max-height: none;
+    margin-bottom: 8px;
+    padding: 6px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 8px;
+}
+.settings-layout--narrow .settings-find-label { margin-bottom: 0; }
+.settings-layout--narrow .settings-find { flex: 1 1 140px; width: auto; }
+.settings-layout--narrow .settings-find-status { flex: 1 0 100%; }
+.settings-layout--narrow .settings-groups {
+    flex: 1 0 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    margin-top: 6px;
+}
+.settings-layout--narrow .settings-tab { width: auto; padding: 3px 7px; }
 
 /* ========================================================================
  * QUICK ENTRY — batch invoice entry
@@ -3200,6 +3800,63 @@ tbody tr.row--dim > td.amount { color: var(--text-muted); }
 }
 @media (forced-colors: active) {
     .cbx-opt[aria-selected="true"] { outline: 2px solid Highlight; outline-offset: -2px; }
+}
+
+/* The calculator tape under an amount box (QuickMath, #696): fixed to the
+   window, as the type-ahead's list, so no table or dialog clips it; its
+   width never wider than the window less a margin (320 px phones). */
+.qmath {
+    position: fixed;
+    z-index: 450;
+    box-sizing: border-box;
+    max-width: calc(100vw / var(--ui-scale) - 8px);
+    padding: 4px;
+    background: var(--panel-bg);
+    color: var(--text-primary);
+    border: 1px solid var(--qb-navy);
+    box-shadow: 0 4px 14px rgba(0, 20, 50, 0.22);
+    font-family: var(--font);
+    font-size: 11px;
+    text-align: left;
+}
+#qmath-input {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    margin: 0;
+    padding: 3px 5px;
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    text-align: right;
+    color: var(--text-primary);
+    background: var(--panel-bg);
+    border: 1px solid var(--input-border);
+}
+.qmath-status {
+    min-height: 1.3em;
+    margin-top: 3px;
+    text-align: right;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+}
+.qmath--error .qmath-status { color: var(--danger); font-weight: 400; text-align: left; }
+.qmath--error #qmath-input { border-color: var(--danger); }
+.qmath-hint { color: var(--text-secondary); font-size: 10px; }
+
+/* The calculator tape's input (#696) draws the keyboard's ring, the
+   gold with its halo as every control at the top of the sheet: its own
+   look (#qmath-input, an id) beat the field's focus rule above, so with
+   the outline gone a focused tape showed nothing at all (2.31.6, W-111).
+   An id with :focus-visible wins on specificity, so it sits ahead of the
+   field's focus block, which stays last in the sheet. */
+#qmath-input:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 8px var(--focus-halo);
+    position: relative;
+}
+@media (forced-colors: active) {
+    #qmath-input:focus-visible { outline: 2px solid Highlight; }
 }
 
 /* ============================================================================

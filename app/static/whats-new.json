@@ -1,4 +1,56 @@
 {
+  "2.31.8": {
+    "title": "Settings in groups, a Text size setting, and a way back in when the password is forgotten",
+    "items": [
+      "Company Settings is nine groups chosen from a list down the left, one shown at a time, with Find a setting to search them all; Save Settings stays in view.",
+      "A Text size setting (Settings, Preferences): 100%, 115%, 125% or 150%, with the sidebar, the bottom bar and dialog buttons staying on screen at every size; in a small window the top bar folds its less-used entries into a More button.",
+      "Forgot your password? on the sign-in page: in the desktop app an administrator's password can be set again at the computer, or with the recovery key for an encrypted company file.",
+      "Click a line's ✓ cell in a bank or card register to mark it cleared as it posts at the bank; the next reconciliation opens with it ticked.",
+      "The reconcile list sorts by Date, Payee, Ref # or Amount, with check numbers in number order.",
+      "A bank feed with no bank account to import into says so and lets you pick an account you already have.",
+      "Importing QuickBooks Desktop's Transaction Detail by Account report keeps each line's Class, so P&L by Class shows the imported history.",
+      "Pay applications: a job with no schedule of values says to set the contract first; the PDF's original contract sum is right when the sum was typed on the job form; an application with no lines can be deleted.",
+      "Skip to main content is a small arrow button at the start of the top bar, still the first Tab stop, and no longer covers the menu button."
+    ]
+  },
+  "2.31.7": {
+    "title": "Install without an administrator, statement lines that import once, and Retained Earnings on the Balance Sheet",
+    "items": [
+      "The Windows installer no longer needs an administrator: \"Install for me only\" installs into your own account, \"Install for all users\" into Program Files as before, and your books stay in the same place either way.",
+      "A bank statement line imports once: the same month brought in as a CSV and again as the bank's OFX skips every line it already has, and the review list has Exclude all shown.",
+      "A QuickBooks Online import puts payables on Accounts Payable, brings an open invoice across at its full total with what was already paid, and imports the Employee list.",
+      "Reports have an All dates period, and the Balance Sheet shows Retained Earnings and Net Income as two lines.",
+      "Receive Payment's first Deposit To choice reads Undeposited Funds (deposit later); Migrate Data shows that an import is running.",
+      "The customer, vendor and item CSV imports list the columns they read, link a template each, and an item can name its income account.",
+      "On the Budgets page the account column and the month headers stay put while you scroll."
+    ]
+  },
+  "2.31.6": {
+    "title": "Ctrl+F, arithmetic in the amount box, and the big file that would not open",
+    "items": [
+      "Large company files open after an upgrade: the missing ledger indexes are added, and while the app catches up older records at its first start the company picker shows what it is doing instead of giving up after two minutes.",
+      "A QuickBooks Online export whose trial balance spells a sub-account differently from the balance sheet now imports with that account's opening balance; an account the import cannot place is named in the dry run, and any import problem comes back as a readable message instead of HTTP 500.",
+      "The job's Cost Detail tab has Save PDF and Save CSV.",
+      "The bank and card register has a Hide voided box that hides voided entries and their reversals, says how many it hid, and stays as you left it.",
+      "In the desktop app Ctrl+F (⌘F on a Mac) opens Search, and Search finds transactions by memo, reference or check number, or by amount.",
+      "Type +, −, × or ÷ after an amount in any amount box and a calculator tape opens; = or Enter puts the result in, Tab puts it in and moves on, Escape leaves the amount as it was."
+    ]
+  },
+  "2.31.5": {
+    "title": "Real payment terms, a sample company to try, and the window where you left it",
+    "items": [
+      "Payment terms are a list in Settings, the QuickBooks shape: Net N, a day of the month, and an early-payment discount on either; invoices, bills, recurring and memorized documents take their due date and discount from the term, and Receive Payments and Pay Bills offer the discount until its date.",
+      "A Display name for the company prints on invoices, estimates, statements and receipts while the tax and payroll forms keep the legal name; the customer documents can print the logo alone; an invoice shows Amount Due near the top.",
+      "The desktop window opens at the size and place you closed it.",
+      "Every report with Save PDF has a Print button beside it.",
+      "Try a sample company on the Companies page builds a worked example business in its own file, so there is something to look at before your own books are in.",
+      "Form history's Check no longer blames the pay runs after the company name or EIN changed.",
+      "A customer payment and a bill payment take a class, carried on their own posted lines.",
+      "The Journal Entries list sorts by entry date or date entered and narrows to a date range.",
+      "Sidebar sections fold, and the whole sidebar hides and returns with one control (or the [ key).",
+      "Every line in a report's drill-down and on the General Ledger has Edit; a kind with no edit of its own is voided and replaced in one step, each naming the other."
+    ]
+  },
   "2.31.4": {
     "title": "Class and job wherever money moves, and payments that cannot double up",
     "items": [

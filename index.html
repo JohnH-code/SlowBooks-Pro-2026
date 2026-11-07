@@ -8,6 +8,9 @@
          this web engine, it puts what to do where a white page would be
          (boot_check.js; tests/test_boot_check.py keeps it first). -->
     <script src="/static/js/boot_check.js"></script>
+    <!-- The text size (Settings, My Preferences) is on the page before its
+         first paint, the sign-in screen included (text_size.js, #717). -->
+    <script src="/static/js/text_size.js"></script>
     <link rel="stylesheet" href="/static/css/style.css">
     <link rel="stylesheet" href="/static/css/dark.css">
 </head>
@@ -61,13 +64,20 @@
     </div>
 
     <div id="app">
-        <!-- Skip link for keyboard users — first tab stop, lets them jump
-             past the topbar + sidebar straight into page content. It moves
-             focus there without changing the address (bootstrap.js): the
-             router took "#page-content" for a page, "Page not found". -->
-        <a href="#page-content" class="skip-link">Skip to main content</a>
         <!-- Toolbar -->
         <div id="topbar">
+            <!-- Skip to main content: the first Tab stop on every page, a
+                 small icon button at the start of the bar, so it covers
+                 nothing when it shows its ring (it was a large box over the
+                 menu button, the wordmark and Back). It moves focus to the
+                 page's content without changing the address (bootstrap.js):
+                 the router took "#page-content" for a page, "Page not found". -->
+            <a href="#page-content" class="skip-link skip-link--bar" id="skip-link" aria-label="Skip to main content" title="Skip to main content"><svg aria-hidden="true" focusable="false" viewBox="0 0 16 16" width="14" height="14"><path d="M2.5 3.5h5.5a3.5 3.5 0 0 1 3.5 3.5v6M8 9.8l3.5 3.5 3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+            <!-- Hide sidebar (#688): the menu put away, the page takes the
+                 width; pressed while hidden, pressed again shows it. Kept
+                 per computer (app.js App.setSidebarHidden). Not shown on a
+                 phone-width window, where the sidebar stays as it was. -->
+            <button class="tb-btn tb-sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Hide sidebar" aria-pressed="false" aria-keyshortcuts="[" title="Hide the sidebar ([)"><span aria-hidden="true">&#9776;</span></button>
             <div class="topbar-brand">Slowbooks Pro <span>2026</span></div>
             <!-- Back, within the app: enabled while an app page is behind
                  (app.js App.canGoBack); the desktop window has no Back of
@@ -95,6 +105,11 @@
                 <div class="topbar-clock" id="topbar-clock"></div>
                 <button class="tb-btn" id="about-btn">About</button>
                 <button class="tb-btn" id="support-btn" title="Contact support">Contact support</button>
+                <!-- More (W-126): in the bar only when the bar has folded
+                     things away to fit the window (topbar_fit.js); it lists
+                     them, and the name signed in. -->
+                <button class="tb-btn tb-more" id="topbar-more" type="button" aria-expanded="false" aria-controls="topbar-more-menu" hidden>More <span aria-hidden="true">&#9662;</span></button>
+                <div class="tb-more-menu" id="topbar-more-menu" role="group" aria-label="More" hidden></div>
                 <button class="tb-btn" id="logout-btn" title="Sign out">Sign Out</button>
             </div>
         </div>
@@ -274,11 +289,13 @@
     <div id="toast-container" role="status" aria-live="polite" aria-atomic="false"></div>
 
     <script src="/static/js/desktop_shim.js"></script>
+    <script src="/static/js/topbar_fit.js"></script>
     <script src="/static/js/api.js"></script>
     <script src="/static/js/utils.js"></script>
     <script src="/static/js/combobox.js"></script>
     <script src="/static/js/line_order.js"></script>
     <script src="/static/js/terms.js"></script>
+    <script src="/static/js/payment_terms.js"></script>
     <script src="/static/js/active_lists.js"></script>
     <script src="/static/js/ocr_canvas.js"></script>
     <script src="/static/js/ocr.js"></script>
@@ -345,6 +362,7 @@
     <script src="/static/js/budgets.js"></script>
     <!-- Contact support form (uses API / openModal / toast; standalone of App) -->
     <script src="/static/js/support.js"></script>
+    <script src="/static/js/edit_everywhere.js"></script>
     <!-- App must be last -->
     <script src="/static/js/app.js"></script>
     <!-- Static-page event wiring (replaces what used to be inline onclick=) -->

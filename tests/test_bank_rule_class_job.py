@@ -256,8 +256,9 @@ def test_the_migration_adds_the_columns_and_walks_back(tmp_path):
     db = tmp_path / "rules.db"
     cfg = _cfg(db)
     script = ScriptDirectory.from_config(cfg)
-    # John's build: its own merge revision is the head, on top of this one
-    assert REVISION in script.get_revision(script.get_heads()[0]).down_revision
+    # John's build: its own merge revision is the head, on top of 2.31.8's
+    # (the transaction_lines indexes, #693)
+    assert "d7f3a9c1b5e2" in script.get_revision(script.get_heads()[0]).down_revision
     assert script.get_revision(REVISION).down_revision == "4810bd59e481"
     command.upgrade(cfg, "head")
     engine = create_engine(f"sqlite:///{db}")

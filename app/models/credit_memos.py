@@ -16,6 +16,7 @@ from sqlalchemy import (
     Text,
     Enum,
     ForeignKey,
+    false,
     func,
 )
 from sqlalchemy.orm import relationship
@@ -58,6 +59,20 @@ class CreditMemo(Base):
     is_write_off = Column(Boolean, nullable=False, default=False)
     # Job-costing dimension (QB "Customer:Job"); NULL = no job
     job_id = Column(Integer, ForeignKey("jobs.id"), nullable=True)
+    # An early-payment discount the customer took (#664): the payment it was
+    # taken with. Posts to the discount account the payment named; voiding
+    # the payment voids it.
+    discount_payment_id = Column(Integer, ForeignKey("payments.id"), nullable=True)
+    # Void-and-replace (#689): a posted credit memo with no edit of its own is
+    # changed by voiding it and posting a new one; each names the other.
+    # Plain ids, no foreign key: both rows always stay (a void keeps the
+    # original). NULL on everything else.
+    replaces_id = Column(Integer, nullable=True)
+    replaced_by_id = Column(Integer, nullable=True)
+    # Taken against the terms with allow_discount_override (#664).
+    discount_override = Column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(

@@ -13,6 +13,7 @@ why this route exists."""
 
 import io
 import zipfile
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -77,10 +78,10 @@ def test_the_bundles_files_are_told_apart_by_name():
     assert qbo.classify_filename("Trial_balance.xlsx") == "tb"
     assert qbo.classify_filename("Customers.xlsx") == "customers"
     assert qbo.classify_filename("Vendors.xlsx") == "vendors"
-    # read nothing from: the ledger repeats the journal by account, and
-    # the employee list is payroll's, which the export does not carry
+    # the employee list's names and contact details come in (#711)
+    assert qbo.classify_filename("Employees.xlsx") == "employees"
+    # read nothing from: the ledger repeats the journal by account
     assert qbo.classify_filename("General_ledger.xlsx") == "skip"
-    assert qbo.classify_filename("Employees.xlsx") == "skip"
     assert qbo.classify_filename("holiday_photos.jpg") is None
 
 
@@ -102,12 +103,17 @@ def test_the_chart_comes_from_the_two_reports_typed_and_nested():
     assert by_name["Opening Balance Equity"]["type"] == AccountType.EQUITY
     assert by_name["Commission Income"]["type"] == AccountType.INCOME
     assert by_name["Office Supplies"]["type"] == AccountType.EXPENSE
-    # a sub-account keeps QuickBooks' Parent:Child name and knows its parent
-    assert by_name["Advertising:Facebook"]["parent"] == "Advertising"
-    assert by_name["Commission Income:Referral Fees"]["parent"] == "Commission Income"
+    # a sub-account is named by its leaf and knows its parent; its full
+    # Parent:Child path is what the Journal and the Trial Balance write, and
+    # the statements join the parent's name to the leaf (NEW-203)
+    assert by_name["Facebook"]["parent"] == "Advertising"
+    assert by_name["Facebook"]["path"] == "Advertising:Facebook"
+    assert by_name["Referral Fees"]["parent"] == "Commission Income"
+    assert by_name["Referral Fees"]["path"] == "Commission Income:Referral Fees"
+    assert not any(":" in a["name"] for a in accounts)
     # a parent with no activity of its own is a bare heading over its children
     assert by_name["Promotional"]["type"] == AccountType.EXPENSE
-    assert by_name["Promotional:Flyers"]["parent"] == "Promotional"
+    assert by_name["Flyers"]["parent"] == "Promotional"
     # report arithmetic is not an account
     for total in ("Net Income", "Gross Profit", "Net Operating Income", "TOTAL ASSETS"):
         assert total not in by_name
@@ -151,8 +157,9 @@ def test_the_trial_balance_reads_and_names_its_basis():
     text = (FIXTURES / "Trial_balance.csv").read_text()
     balances, errors = qbo.parse_tb(text)
     assert errors == []
-    assert balances["operating account"] == 4010
-    assert balances["company visa"] == -120
+    # names as written; the engine keys them as it keys the journal (#690)
+    assert balances["Operating Account"] == 4010
+    assert balances["Company Visa"] == -120
     assert "total" not in balances
     assert qbo.trial_balance_basis(text) == "cash"
     assert (
@@ -196,7 +203,7 @@ def test_the_bundle_imports_the_chart_the_journals_and_the_contacts(
         + (FIXTURES / "Profit_and_loss.csv").read_text()
     )
     seeded = {a.name.lower() for a in db_session.query(Account).all()}
-    already = {a["name"].lower() for a in parsed} & seeded
+    already = {a["path"].lower() for a in parsed} & seeded
     assert "undeposited funds" in already
     resp = client.post("/api/migration/qbo_export/import", files=_csv_files())
     data = resp.json()
@@ -208,9 +215,7 @@ def test_the_bundle_imports_the_chart_the_journals_and_the_contacts(
     )
     assert data["imported_journals"] == 19
     assert data["imported_customers"] == 2 and data["imported_vendors"] == 4
-    facebook = (
-        db_session.query(Account).filter(Account.name == "Advertising:Facebook").one()
-    )
+    facebook = db_session.query(Account).filter(Account.name == "Facebook").one()
     advertising = db_session.query(Account).filter(Account.name == "Advertising").one()
     assert facebook.parent_id == advertising.id
     assert facebook.account_number is None
@@ -218,9 +223,7 @@ def test_the_bundle_imports_the_chart_the_journals_and_the_contacts(
     assert (
         visa.bank_kind == "credit_card" and visa.account_type == AccountType.LIABILITY
     )
-    postcards = (
-        db_session.query(Account).filter(Account.name == "Advertising:Postcards").one()
-    )
+    postcards = db_session.query(Account).filter(Account.name == "Postcards").one()
     assert (
         postcards.parent_id == advertising.id
     )  # hidden by the P&L, typed by its parent
@@ -384,3 +387,827 @@ def test_the_page_takes_a_zip_or_a_workbook():
     )
     assert 'accept=".csv,.txt,.xlsx,.zip,.iif"' in js
     assert "upload the Export data zip as downloaded" in js
+
+
+def _sheet(rows) -> bytes:
+    """A small report workbook, cells as QuickBooks Online writes them."""
+    openpyxl = pytest.importorskip("openpyxl")
+    book = openpyxl.Workbook()
+    for row in rows:
+        book.active.append([cell if cell != "" else None for cell in row])
+    out = io.BytesIO()
+    book.save(out)
+    return out.getvalue()
+
+
+_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_GHOST = "Ghost Holdings:Mystery Account (777)"
+
+
+def _payroll_files(parent, *, listed=True, ghost=None, packed="loose"):
+    """A small export: the Balance Sheet lists Federal Unemployment (940)
+    indented under ``parent`` (unless ``listed`` is False), the Trial
+    Balance writes it "Payroll Liabilities:Federal Unemployment (940)" with
+    a 100.00 credit, and the journal never posts to it, so its balance is
+    an opening balance. ``ghost`` adds a Trial Balance row for an account
+    whose parent is in neither report, with that credit. ``packed`` is
+    "loose" (four workbooks) or "zip" (them in one zip)."""
+    footer = "Tuesday, Nov 03, 2026 09:00:00 AM GMT-6 - Accrual Basis"
+    child = [["               Federal Unemployment (940)", "=100.00"]] if listed else []
+    balance_sheet = [
+        ["Invented Payroll Co"],
+        ["Balance Sheet"],
+        ["", "Total"],
+        ["ASSETS"],
+        ["   Current Assets"],
+        ["      Bank Accounts"],
+        ["         Payroll Checking", "=150.00"],
+        ["      Total Bank Accounts", "=150.00"],
+        ["LIABILITIES AND EQUITY"],
+        ["   Liabilities"],
+        ["      Current Liabilities"],
+        ["         Other Current Liabilities"],
+        [f"            {parent}"],
+        *child,
+        [f"            Total {parent}", "=100.00"],
+        ["   Equity"],
+        ["      Net Income", "=50.00"],
+        [""],
+        [footer],
+    ]
+    profit_and_loss = [
+        ["Invented Payroll Co"],
+        ["Profit and Loss"],
+        ["", "Total"],
+        ["Income"],
+        ["   Payroll Service Fees", "=50.00"],
+        ["Total Income", "=50.00"],
+        ["Net Income", "=50.00"],
+        [""],
+        [footer],
+    ]
+    journal = [
+        ["", "Invented Payroll Co"],
+        ["", "Journal"],
+        [
+            "",
+            "Date",
+            "Transaction Type",
+            "Num",
+            "Name",
+            "Memo/Description",
+            "Account",
+            "Debit",
+            "Credit",
+        ],
+        ["", "03/02/2026", "Deposit", "", "", "Fee", "Payroll Checking", "=50.00"],
+        ["", "", "", "", "", "Fee", "Payroll Service Fees", "", "=50.00"],
+        ["", "", "", "", "", "", "", "=50.00", "=50.00"],
+        [""],
+    ]
+    checking = 150 + (ghost or 0)
+    ghost_row = [] if ghost is None else [[_GHOST, "", f"={ghost:.2f}"]]
+    trial_balance = [
+        ["Invented Payroll Co"],
+        ["Trial Balance"],
+        ["", "Debit", "Credit"],
+        ["Payroll Checking", f"={checking:.2f}"],
+        ["Payroll Liabilities:Federal Unemployment (940)", "", "=100.00"],
+        *ghost_row,
+        ["Payroll Service Fees", "", "=50.00"],
+        ["TOTAL", f"={checking:.2f}", f"={checking:.2f}"],
+        [""],
+        [footer],
+    ]
+    books = [
+        (name, _sheet(rows))
+        for name, rows in (
+            ("Balance_sheet.xlsx", balance_sheet),
+            ("Profit_and_loss.xlsx", profit_and_loss),
+            ("Journal.xlsx", journal),
+            ("Trial_balance.xlsx", trial_balance),
+        )
+    ]
+    if packed == "zip":
+        zipped = io.BytesIO()
+        with zipfile.ZipFile(zipped, "w") as archive:
+            for name, data in books:
+                archive.writestr(name, data)
+        return lambda: [
+            (
+                "files",
+                (
+                    "Invented Payroll Co.zip",
+                    io.BytesIO(zipped.getvalue()),
+                    "application/zip",
+                ),
+            )
+        ]
+    return lambda: [("files", (n, io.BytesIO(d), _XLSX)) for n, d in books]
+
+
+def _opening_lands_on(db_session, child):
+    opening = (
+        db_session.query(Transaction)
+        .filter(Transaction.source_type == "opening_balance")
+        .one()
+    )
+    lines = db_session.query(TransactionLine).filter_by(transaction_id=opening.id).all()
+    assert len(lines) == 2
+    assert sum(ln.debit for ln in lines) == sum(ln.credit for ln in lines) == 100
+    assert {ln.account_id for ln in lines if ln.credit == 100} == {child.id}
+
+
+def _planned(warnings):
+    return [w for w in warnings if "is on the trial balance but not in the chart" in w]
+
+
+@pytest.mark.parametrize("packed", ["loose", "zip"])
+@pytest.mark.parametrize(
+    "parent", ["Payroll Liabilities", "Payroll Liabilities (2100)"]
+)
+def test_a_sub_account_the_two_files_spell_differently_carries_its_opening_balance(
+    client, db_session, seed_accounts, parent, packed
+):
+    # GATE case A. The Balance Sheet lists the child indented under its
+    # parent, the Trial Balance writes it Parent:Child with a "(940)"
+    # suffix: one account. The import used to drop it and post a short
+    # opening entry, answered as HTTP 500 (#690).
+    files = _payroll_files(parent, packed=packed)
+    data = client.post("/api/migration/qbo_export/dry-run", files=files()).json()
+    assert data["ok"] is True, data["errors"]
+    assert len(data["opening_balances"]) == 2
+    assert _planned(data["warnings"]) == []  # the chart has it: nothing planned
+    resp = client.post("/api/migration/qbo_export/import", files=files())
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["ok"] is True, data["errors"]
+
+    # named by its leaf under its parent (NEW-203), one account for both
+    # spellings
+    child = (
+        db_session.query(Account)
+        .filter(Account.name == "Federal Unemployment (940)")
+        .one()
+    )
+    assert db_session.get(Account, child.parent_id).name == parent
+    assert (
+        db_session.query(Account)
+        .filter(Account.name.like("%Federal Unemployment%"))
+        .count()
+        == 1
+    )
+    _opening_lands_on(db_session, child)
+
+
+@pytest.mark.parametrize("packed", ["loose", "zip"])
+def test_a_trial_balance_sub_account_the_reports_leave_off_is_planned_with_one_note(
+    client, db_session, seed_accounts, packed
+):
+    # GATE case B (W-108): the Balance Sheet does not list the sub-account.
+    # It is planned under its parent and said so, in the engine's words,
+    # once; it used to be placed with no word.
+    files = _payroll_files("Payroll Liabilities", listed=False, packed=packed)
+    data = client.post("/api/migration/qbo_export/dry-run", files=files()).json()
+    assert data["ok"] is True, data["errors"]
+    assert _planned(data["warnings"]) == [
+        "Account 'Payroll Liabilities:Federal Unemployment (940)' is on the trial "
+        "balance but not in the chart files; it will be created as a sub-account "
+        "of 'Payroll Liabilities' (liability) to carry its opening balance"
+    ], data["warnings"]
+    resp = client.post("/api/migration/qbo_export/import", files=files())
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["ok"] is True, data["errors"]
+    assert len(_planned(data["warnings"])) == 1, data["warnings"]
+    child = (
+        db_session.query(Account)
+        .filter(Account.name.like("%Federal Unemployment%"))
+        .one()
+    )
+    assert child.name == "Federal Unemployment (940)"
+    assert child.account_type == AccountType.LIABILITY
+    assert db_session.get(Account, child.parent_id).name == "Payroll Liabilities"
+    _opening_lands_on(db_session, child)
+
+
+@pytest.mark.parametrize("packed", ["loose", "zip"])
+def test_a_balance_on_an_account_with_no_known_parent_refuses_the_import(
+    client, db_session, seed_accounts, packed
+):
+    # GATE case C (W-108): the parent is in neither report and the Trial
+    # Balance carries a balance on it. It used to be typed from its
+    # neighbours and made a top-level account; it is named and refused.
+    files = _payroll_files("Payroll Liabilities", ghost=100, packed=packed)
+    data = client.post("/api/migration/qbo_export/dry-run", files=files()).json()
+    assert data["ok"] is False
+    named = [e for e in data["errors"] if _GHOST in e]
+    assert len(named) == 1 and "chart files do not list" in named[0], data["errors"]
+    assert not any(_GHOST in w for w in data["warnings"]), data["warnings"]
+    accounts = db_session.query(Account).count()
+    resp = client.post("/api/migration/qbo_export/import", files=files())
+    assert resp.status_code == 422, resp.text
+    assert _GHOST in resp.json()["detail"]
+    assert db_session.query(Account).count() == accounts
+    assert db_session.query(Transaction).count() == 0
+
+
+@pytest.mark.parametrize("packed", ["loose", "zip"])
+def test_a_zero_row_with_no_known_parent_is_typed_by_its_neighbours(
+    client, db_session, seed_accounts, packed
+):
+    # the same account at 0.00: a zero row the reports leave off, placed by
+    # its Trial Balance neighbour (2.27.0's rule), with its note
+    files = _payroll_files("Payroll Liabilities", ghost=0, packed=packed)
+    data = client.post("/api/migration/qbo_export/dry-run", files=files()).json()
+    assert data["ok"] is True, data["errors"]
+    assert any(
+        _GHOST in w and "liability account" in w for w in data["warnings"]
+    ), data["warnings"]
+    resp = client.post("/api/migration/qbo_export/import", files=files())
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ok"] is True, resp.json()["errors"]
+    ghost = db_session.query(Account).filter(Account.name == _GHOST).one()
+    assert ghost.account_type == AccountType.LIABILITY and ghost.parent_id is None
+
+
+def test_the_statements_name_an_imported_sub_account_once(
+    client, db_session, seed_accounts
+):
+    # NEW-203: the export named the sub-account "Payroll Liabilities:Federal
+    # Unemployment (940)" and set its parent, so the statements, which join
+    # the parents' names to the account's, printed the parent twice
+    files = _payroll_files("Payroll Liabilities")
+    data = client.post("/api/migration/qbo_export/import", files=files()).json()
+    assert data["ok"] is True, data["errors"]
+    once = "Payroll Liabilities: Federal Unemployment (940)"
+    tb = client.get(
+        "/api/reports/trial-balance?start_date=2026-01-01&end_date=2026-12-31"
+    ).json()
+    paths = [row["account_path"] for row in tb["items"]]
+    assert once in paths, paths
+    assert not any("Payroll Liabilities: Payroll Liabilities" in p for p in paths)
+    bs = client.get("/api/reports/balance-sheet?as_of_date=2026-12-31").json()
+    rows = [row["account_path"] for row in bs["liabilities"]]
+    assert once in rows, rows
+    assert not any("Payroll Liabilities: Payroll Liabilities" in r for r in rows)
+
+
+def test_a_leaf_name_under_another_parent_is_another_account(
+    client, db_session, seed_accounts
+):
+    # the books already have a top-level "Federal Unemployment (940)": the
+    # export's, under Payroll Liabilities, is a second account, and the
+    # Trial Balance's "Payroll Liabilities:Federal Unemployment (940)" lands
+    # on it, not on the top-level one (NEW-203)
+    other = Account(name="Federal Unemployment (940)", account_type=AccountType.EXPENSE)
+    db_session.add(other)
+    db_session.commit()
+    files = _payroll_files("Payroll Liabilities")
+    data = client.post("/api/migration/qbo_export/import", files=files()).json()
+    assert data["ok"] is True, data["errors"]
+    both = (
+        db_session.query(Account)
+        .filter(Account.name == "Federal Unemployment (940)")
+        .all()
+    )
+    assert len(both) == 2
+    child = next(a for a in both if a.id != other.id)
+    assert db_session.get(Account, child.parent_id).name == "Payroll Liabilities"
+    _opening_lands_on(db_session, child)
+
+
+# ── the controls, the carried invoice at its total, the employees ─────────
+# (#704, #711): a small export in the workbook layout, with an A/P account,
+# an invoice of 1,240.00 with 500.00 paid on it, its A/R Aging Detail row,
+# and the Employee Contact List.
+
+_FOOTER = "Tuesday, Nov 03, 2026 09:00:00 AM GMT-6 - Accrual Basis"
+
+
+def _controls_export(*, aging=True, journal_invoice=True, more=False, bill_paid=False):
+    """The export as loose workbooks. ``aging`` adds the A/R Aging Detail
+    report (invoice 1001 open for 740.00 of 1,240.00); ``journal_invoice``
+    False numbers the Journal's invoice 999, so the Journal does not hold
+    the report's invoice. ``more`` adds Cedar Hollow's other two open
+    invoices (1141 for 5,750.00 and 1148 for 8,090.00, nothing paid) and a
+    300.00 customer payment not applied. ``bill_paid`` pays the 300.00
+    bill from Checking, leaving nothing on Accounts Payable (A/P)."""
+    num = "1001" if journal_invoice else "999"
+    balance_sheet = [
+        ["Invented Landscaping Co"],
+        ["Balance Sheet"],
+        ["", "Total"],
+        ["ASSETS"],
+        ["   Current Assets"],
+        ["      Bank Accounts"],
+        ["         Checking", "=200.00"],
+        ["      Total Bank Accounts", "=200.00"],
+        ["      Accounts Receivable"],
+        ["         Accounts Receivable (A/R)", "=740.00"],
+        ["      Total Accounts Receivable", "=740.00"],
+        ["TOTAL ASSETS", "=940.00"],
+        ["LIABILITIES AND EQUITY"],
+        ["   Liabilities"],
+        ["      Current Liabilities"],
+        ["         Accounts Payable"],
+        ["            Accounts Payable (A/P)", "=300.00"],
+        ["         Total Accounts Payable", "=300.00"],
+        ["   Equity"],
+        ["      Net Income", "=640.00"],
+        ["TOTAL LIABILITIES AND EQUITY", "=940.00"],
+        [""],
+        [_FOOTER],
+    ]
+    profit_and_loss = [
+        ["Invented Landscaping Co"],
+        ["Profit and Loss"],
+        ["", "Total"],
+        ["Income"],
+        ["   Installation", "=1240.00"],
+        ["Total Income", "=1240.00"],
+        ["Expenses"],
+        ["   Job Materials", "=600.00"],
+        ["Total Expenses", "=600.00"],
+        ["Net Income", "=640.00"],
+        [""],
+        [_FOOTER],
+    ]
+    head = [
+        "",
+        "Date",
+        "Transaction Type",
+        "Num",
+        "Name",
+        "Memo/Description",
+        "Account",
+        "Debit",
+        "Credit",
+    ]
+    journal = [
+        ["", "Invented Landscaping Co"],
+        ["", "Journal"],
+        head,
+        ["", "08/01/2026", "Expense", "", "Brookside", "Stone", "Job Materials"]
+        + ["=300.00"],
+        ["", "", "", "", "", "Stone", "Checking", "", "=300.00"],
+        ["", "", "", "", "", "", "", "=300.00", "=300.00"],
+        [""],
+        ["", "08/06/2026", "Bill", "BN-1", "Brookside", "Plants", "Job Materials"]
+        + ["=300.00"],
+        ["", "", "", "", "", "Plants", "Accounts Payable (A/P)", "", "=300.00"],
+        ["", "", "", "", "", "", "", "=300.00", "=300.00"],
+        [""],
+        ["", "08/14/2026", "Invoice", num, "Walt Okafor", "Install"]
+        + ["Accounts Receivable (A/R)", "=1240.00"],
+        ["", "", "", "", "", "Labor", "Installation", "", "=520.00"],
+        ["", "", "", "", "", "Materials", "Installation", "", "=720.00"],
+        ["", "", "", "", "", "", "", "=1240.00", "=1240.00"],
+        [""],
+        ["", "08/24/2026", "Payment", "2474", "Walt Okafor", "Payment"]
+        + ["Checking", "=500.00"],
+        ["", "", "", "", "", "Payment", "Accounts Receivable (A/R)", "", "=500.00"],
+        ["", "", "", "", "", "", "", "=500.00", "=500.00"],
+        [""],
+    ]
+    extra_customers, extra_aging = [], []
+    if more:
+        for day, number, who, amount in (
+            ("10/01/2026", "1141", "Oakview Terrace HOA", "5750.00"),
+            ("10/17/2026", "1148", "Tom & Becca Lindqvist", "8090.00"),
+        ):
+            journal += [
+                ["", day, "Invoice", number, who, "Services"]
+                + ["Accounts Receivable (A/R)", f"={amount}"],
+                ["", "", "", "", "", "Services", "Installation", "", f"={amount}"],
+                ["", "", "", "", "", "", "", f"={amount}", f"={amount}"],
+                [""],
+            ]
+            extra_customers.append(["", who, "", "", who])
+            extra_aging.append(
+                ["", day, "Invoice", number, who, day, amount[:-3], amount[:-3]]
+            )
+        journal += [
+            ["", "10/20/2026", "Payment", "880", "Oakview Terrace HOA", "Deposit"]
+            + ["Checking", "=300.00"],
+            ["", "", "", "", "", "Deposit", "Accounts Receivable (A/R)", "", "=300.00"],
+            ["", "", "", "", "", "", "", "=300.00", "=300.00"],
+            [""],
+        ]
+        extra_aging.append(
+            ["", "10/20/2026", "Payment", "880", "Oakview Terrace HOA", "10/20/2026"]
+            + ["-300", "-300"]
+        )
+    checking, receivable, income = (
+        ("500.00", "14280.00", "15080.00") if more else ("200.00", "740.00", "1240.00")
+    )
+    payable_row = ["Accounts Payable (A/P)", "", "=300.00"]
+    if bill_paid:
+        journal += [
+            ["", "08/20/2026", "Bill Payment (Check)", "", "Brookside", "Plants"]
+            + ["Accounts Payable (A/P)", "=300.00"],
+            ["", "", "", "", "", "Plants", "Checking", "", "=300.00"],
+            ["", "", "", "", "", "", "", "=300.00", "=300.00"],
+            [""],
+        ]
+        checking = f"{Decimal(checking) - 300:.2f}"
+        payable_row = ["Accounts Payable (A/P)", "", ""]
+        for row in balance_sheet:
+            if row[0].strip() in ("Accounts Payable (A/P)", "Total Accounts Payable"):
+                row[1] = "=0.00"
+            elif row[0].strip() == "Checking":
+                row[1] = f"={checking}"
+    trial_balance = [
+        ["Invented Landscaping Co"],
+        ["Trial Balance"],
+        ["", "Debit", "Credit"],
+        ["Checking", f"={checking}"],
+        ["Accounts Receivable (A/R)", f"={receivable}"],
+        payable_row,
+        ["Installation", "", f"={income}"],
+        ["Job Materials", "=600.00"],
+        ["TOTAL", "=1540.00", "=1540.00"],
+        [""],
+        [_FOOTER],
+    ]
+    customers = [
+        ["", "Invented Landscaping Co"],
+        ["", "Customer Contact List"],
+        ["", "Customer", "Phone Numbers", "Email", "Full Name", "Billing Address"],
+        ["", "Walt Okafor", "Mobile: (815) 555-0182", "walt@example.com", "Walt"],
+        *extra_customers,
+    ]
+    vendors = [
+        ["", "Invented Landscaping Co"],
+        ["", "Vendor Contact List"],
+        ["", "Vendor", "Phone Numbers", "Email", "Full Name", "Address"],
+        ["", "Brookside", "Phone: (815) 555-0100", "orders@example.com", ""],
+    ]
+    employees = [
+        ["", "Invented Landscaping Co"],
+        ["", "Employee Contact List"],
+        [""],
+        ["", "Employee", "Phone Numbers", "Email", "Address"],
+        ["", "Evan Pruitt", "Mobile: (815) 555-0191", "evan@example.com"]
+        + ["312 Sycamore Street\nCedar Hollow IL 60999"],
+        ["", "Luis Arredondo", "Mobile: (815) 555-0194", "luis@example.com"]
+        + ["48 Prairie View Lane\nCedar Hollow IL 60999"],
+        ["", "Dana Whitfield", "", "dana@example.com", ""],
+    ]
+    aging_report = [
+        ["Invented Landscaping Co"],
+        ["A/R Aging Detail Report"],
+        ["As of October 31, 2026"],
+        [""],
+        ["", "Date", "Transaction type", "Num", "Customer full name", "Due date"]
+        + ["Amount", "Open balance"],
+        ["61 - 90 days past due"],
+        ["", "08/14/2026", "Invoice", "1001", "Walt Okafor", "08/29/2026"]
+        + ["1240", "740"],
+        *extra_aging,
+        ["Total for 61 - 90 days past due", "", "", "", "", "", "=G7", "=H7"],
+        ["TOTAL", "", "", "", "", "", "=G8", "=H8"],
+    ]
+    books = [
+        ("Balance_sheet.xlsx", balance_sheet),
+        ("Profit_and_loss.xlsx", profit_and_loss),
+        ("Journal.xlsx", journal),
+        ("Trial_balance.xlsx", trial_balance),
+        ("Customers.xlsx", customers),
+        ("Vendors.xlsx", vendors),
+        ("Employees.xlsx", employees),
+    ]
+    if aging:
+        books.append(("Invented_A_R_Aging_Detail_Report.xlsx", aging_report))
+    made = [(name, _sheet(rows)) for name, rows in books]
+    return lambda: [("files", (n, io.BytesIO(d), _XLSX)) for n, d in made]
+
+
+def _account_named(client, *fragments):
+    return [
+        a
+        for a in client.get("/api/accounts").json()
+        if any(f in a["name"].lower() for f in fragments)
+    ]
+
+
+@pytest.mark.parametrize("aging", [True, False])
+def test_the_payable_account_lands_on_the_ap_control(
+    client, db_session, seed_accounts, aging
+):
+    # #704: QuickBooks' "Accounts Payable (A/P)" is 2000 here: its balance
+    # lands on the control, which keeps its type, and no second account is
+    # made beside it
+    files = _controls_export(aging=aging)
+    dry = client.post("/api/migration/qbo_export/dry-run", files=files()).json()
+    assert dry["ok"] is True, dry["errors"]
+    assert any(
+        "Accounts Payable (A/P) is 2000 Accounts Payable here" in w
+        for w in dry["warnings"]
+    ), dry["warnings"]
+    data = client.post("/api/migration/qbo_export/import", files=files()).json()
+    assert data["ok"] is True, data["errors"]
+    (payable,) = [
+        a for a in _account_named(client, "payable") if Decimal(str(a["balance"]))
+    ]
+    assert payable["account_number"] == "2000" and payable["is_control"] is True
+    assert payable["account_type"] == "liability"
+    assert payable["detail_type"] == "accounts_payable"
+    assert Decimal(str(payable["balance"])) == Decimal("300.00")
+    assert (
+        db_session.query(Account).filter_by(name="Accounts Payable (A/P)").count() == 0
+    )
+    # a bill entered now posts to the same account
+    vendor = db_session.query(Vendor).filter(Vendor.name == "Brookside").one()
+    bill = client.post(
+        "/api/bills",
+        json={
+            "vendor_id": vendor.id,
+            "date": "2026-11-04",
+            "lines": [
+                {
+                    "description": "Mulch",
+                    "account_id": seed_accounts["6000"].id,
+                    "quantity": 1,
+                    "rate": 50,
+                    "line_order": 0,
+                }
+            ],
+        },
+    )
+    assert bill.status_code == 201, bill.text
+    (after,) = [
+        a for a in _account_named(client, "payable") if Decimal(str(a["balance"]))
+    ]
+    assert after["id"] == payable["id"]
+    assert Decimal(str(after["balance"])) == Decimal("350.00")
+
+
+_AP_NOTE = (
+    "The export brings 300.00 owed to vendors as a balance on 2000 Accounts "
+    "Payable, with no bills behind it. A/P Aging lists only bills entered "
+    "here, so it will not show that 300.00 until those bills are entered "
+    "here or paid off against 2000 Accounts Payable."
+)
+
+
+def test_the_payable_balance_is_said_to_have_no_bills_behind_it(
+    client, db_session, seed_accounts
+):
+    # W-117: the export brings A/P's balance and none of its open bills;
+    # the dry run and the import result say so, with the amount
+    files = _controls_export()
+    dry = client.post("/api/migration/qbo_export/dry-run", files=files()).json()
+    assert dry["ok"] is True, dry["errors"]
+    assert _AP_NOTE in dry["warnings"], dry["warnings"]
+    data = client.post("/api/migration/qbo_export/import", files=files()).json()
+    assert data["ok"] is True, data["errors"]
+    assert _AP_NOTE in data["warnings"], data["warnings"]
+
+
+def test_no_payable_note_when_nothing_is_owed(client, db_session, seed_accounts):
+    files = _controls_export(bill_paid=True)
+    dry = client.post("/api/migration/qbo_export/dry-run", files=files()).json()
+    assert dry["ok"] is True, dry["errors"]
+    assert not any("A/P Aging" in w for w in dry["warnings"]), dry["warnings"]
+    data = client.post("/api/migration/qbo_export/import", files=files()).json()
+    assert data["ok"] is True, data["errors"]
+    assert not any("A/P Aging" in w for w in data["warnings"]), data["warnings"]
+    (payable,) = [
+        a for a in _account_named(client, "payable") if a["account_number"] == "2000"
+    ]
+    assert Decimal(str(payable["balance"])) == 0
+
+
+def test_no_empty_receivable_is_left_beside_1100(client, db_session, seed_accounts):
+    # #704: the report carries all the Journal leaves on "Accounts
+    # Receivable (A/R)", so that is 1100 here and no empty account is made
+    files = _controls_export()
+    data = client.post("/api/migration/qbo_export/import", files=files()).json()
+    assert data["ok"] is True, data["errors"]
+    receivables = _account_named(client, "receivable")
+    assert [(a["account_number"], Decimal(str(a["balance"]))) for a in receivables] == [
+        ("1100", Decimal("740.00"))
+    ]
+    assert receivables[0]["is_control"] is True
+
+
+def test_an_open_invoice_the_journal_holds_is_carried_at_its_total(
+    client, db_session, seed_accounts
+):
+    # #711: invoice 1001 was 1,240.00 with 500.00 paid; it reads so, with
+    # the payment applied, and A/R holds the 740.00 open, as before
+    from app.models.invoices import Invoice, InvoiceStatus
+    from app.models.payments import Payment
+
+    files = _controls_export()
+    dry = client.post("/api/migration/qbo_export/dry-run", files=files()).json()
+    assert dry["ok"] is True, dry["errors"]
+    assert dry["open_invoices"] == 1
+    assert any(
+        "1 of the open invoices is carried at its total from the Journal" in w
+        for w in dry["warnings"]
+    ), dry["warnings"]
+    data = client.post("/api/migration/qbo_export/import", files=files()).json()
+    assert data["ok"] is True, data["errors"]
+    invoice = db_session.query(Invoice).filter(Invoice.invoice_number == "1001").one()
+    assert invoice.total == Decimal("1240.00")
+    assert invoice.amount_paid == Decimal("500.00")
+    assert invoice.balance_due == Decimal("740.00")
+    assert invoice.status == InvoiceStatus.PARTIAL
+    assert invoice.date.isoformat() == "2026-08-14"
+    (allocation,) = invoice.payment_allocations
+    payment = allocation.payment
+    assert allocation.amount == Decimal("500.00")
+    assert payment.amount == Decimal("500.00")
+    assert payment.date.isoformat() == "2026-08-24" and payment.reference == "2474"
+    assert db_session.query(Payment).count() == 1
+    shown = client.get(f"/api/invoices/{invoice.id}").json()
+    assert Decimal(str(shown["total"])) == Decimal("1240.00")
+    assert Decimal(str(shown["amount_paid"])) == Decimal("500.00")
+    assert Decimal(str(shown["balance_due"])) == Decimal("740.00")
+    (ar,) = _account_named(client, "receivable")
+    assert Decimal(str(ar["balance"])) == Decimal("740.00")
+    aging = client.get("/api/reports/ar-aging", params={"as_of_date": "2026-10-31"})
+    assert Decimal(str(aging.json()["totals"]["total"])) == Decimal("740.00")
+    # the pseudo-item stays on it and out of the pickers
+    item = invoice.lines[0].item
+    assert item.name == qbo.CARRY_ITEM and item.is_active is False
+    picker = client.get("/api/items", params={"active_only": "true"}).json()
+    assert qbo.CARRY_ITEM not in [i["name"] for i in picker]
+    # a second upload carries nothing twice
+    again = client.post("/api/migration/qbo_export/import", files=files()).json()
+    assert again["ok"] is True, again["errors"]
+    assert again["imported_open_invoices"] == 0
+    assert db_session.query(Payment).count() == 1
+
+
+def test_without_the_journals_invoice_the_single_line_shape_stays(
+    client, db_session, seed_accounts
+):
+    from app.models.invoices import Invoice
+
+    files = _controls_export(journal_invoice=False)
+    dry = client.post("/api/migration/qbo_export/dry-run", files=files()).json()
+    assert dry["ok"] is True, dry["errors"]
+    assert not any("carried at" in w for w in dry["warnings"]), dry["warnings"]
+    data = client.post("/api/migration/qbo_export/import", files=files()).json()
+    assert data["ok"] is True, data["errors"]
+    invoice = db_session.query(Invoice).filter(Invoice.invoice_number == "1001").one()
+    assert invoice.total == Decimal("740.00") and invoice.amount_paid == 0
+    (line,) = invoice.lines
+    assert line.description == (
+        "QuickBooks Online invoice 1001 of 08/14/2026 for 1,240.00, 740.00 of it open"
+    )
+    assert invoice.payment_allocations == []
+
+
+def test_the_employee_list_comes_in_as_employees(client, db_session, seed_accounts):
+    # #711: name, email and address; nothing about pay; one already on the
+    # Employees list by name is left as it is
+    from app.models.payroll import Employee
+
+    db_session.add(Employee(first_name="Dana", last_name="Whitfield", is_active=True))
+    db_session.commit()
+    files = _controls_export(aging=False)
+    dry = client.post("/api/migration/qbo_export/dry-run", files=files()).json()
+    assert dry["ok"] is True, dry["errors"]
+    assert dry["employees"] == 2
+    data = client.post("/api/migration/qbo_export/import", files=files()).json()
+    assert data["ok"] is True, data["errors"]
+    assert data["imported_employees"] == 2
+    evan = db_session.query(Employee).filter(Employee.first_name == "Evan").one()
+    assert evan.last_name == "Pruitt" and evan.email == "evan@example.com"
+    assert evan.address1 == "312 Sycamore Street"
+    assert (evan.city, evan.state, evan.zip) == ("Cedar Hollow", "IL", "60999")
+    assert evan.pay_rate in (None, 0) and evan.ssn_last_four is None
+    assert db_session.query(Employee).count() == 3
+    again = client.post("/api/migration/qbo_export/import", files=files()).json()
+    assert again["imported_employees"] == 0
+    assert db_session.query(Employee).count() == 3
+
+
+# ── voiding what was carried onto 1100 (#704) ─────────────────────────────
+
+
+def _ar_and_qbo(client):
+    """(1100's balance, QuickBooks' receivable's balance or None)."""
+    control = qbo_ = None
+    for account in client.get("/api/accounts").json():
+        if account["account_number"] == "1100":
+            control = Decimal(str(account["balance"]))
+        elif account["name"] == "Accounts Receivable (A/R)":
+            qbo_ = Decimal(str(account["balance"]))
+    return control, qbo_
+
+
+def _aging_total(client):
+    aging = client.get("/api/reports/ar-aging", params={"as_of_date": "2099-12-31"})
+    return Decimal(str(aging.json()["totals"]["total"]))
+
+
+def _holds(client, before_sum):
+    control, qbo_ = _ar_and_qbo(client)
+    assert _aging_total(client) == control
+    assert control + (qbo_ or 0) == before_sum
+
+
+def test_voiding_what_was_carried_onto_1100_keeps_the_aging_on_1100(
+    client, db_session, seed_accounts
+):
+    from app.models.invoices import Invoice
+    from app.models.payments import Payment
+    from app.models.transactions import Transaction, TransactionLine
+
+    data = client.post(
+        "/api/migration/qbo_export/import", files=_controls_export(more=True)()
+    ).json()
+    assert data["ok"] is True, data["errors"]
+    assert data["imported_open_invoices"] == 3
+    assert data["imported_unapplied_payments"] == 1
+    control, qbo_ = _ar_and_qbo(client)
+    assert control == Decimal("14280.00") and qbo_ is None  # made at the first void
+    assert _aging_total(client) == control
+    whole = control
+
+    def invoice(number):
+        return db_session.query(Invoice).filter_by(invoice_number=number).one()
+
+    # the single-line invoice: its open balance leaves 1100 for QuickBooks'
+    # receivable, made now as an Other Current Asset that is no control
+    resp = client.post(f"/api/invoices/{invoice('1141').id}/void")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["notice"] == (
+        "Invoice 1141 was carried over from QuickBooks Online: its 5,750.00 moved "
+        "from 1100 Accounts Receivable to Accounts Receivable (A/R), where it sat "
+        "in QuickBooks Online."
+    )
+    _holds(client, whole)
+    made = db_session.query(Account).filter_by(name="Accounts Receivable (A/R)").one()
+    assert made.account_type == AccountType.ASSET
+    assert made.detail_type == "other_current_asset" and made.account_number is None
+    entry = (
+        db_session.query(Transaction)
+        .filter_by(source_type="invoice_void", source_id=invoice("1141").id)
+        .one()
+    )
+    lines = db_session.query(TransactionLine).filter_by(transaction_id=entry.id).all()
+    assert {(ln.account_id, ln.debit, ln.credit) for ln in lines} == {
+        (made.id, Decimal("5750.00"), Decimal("0")),
+        (seed_accounts["1100"].id, Decimal("0"), Decimal("5750.00")),
+    }
+    assert "carried over from QuickBooks Online" in entry.description
+
+    # the invoice carried at its total: its payment goes first, as for any
+    refused = client.post(f"/api/invoices/{invoice('1001').id}/void")
+    assert refused.status_code == 400
+    assert "Void the payment(s) first" in refused.json()["detail"]
+    paid = invoice("1001").payment_allocations[0].payment
+    resp = client.post(f"/api/payments/{paid.id}/void")
+    assert resp.status_code == 200, resp.text
+    assert "moved from Accounts Receivable (A/R) back to 1100" in resp.json()["notice"]
+    _holds(client, whole)
+    db_session.expire_all()
+    assert invoice("1001").balance_due == Decimal("1240.00")
+    resp = client.post(f"/api/invoices/{invoice('1001').id}/void")
+    assert resp.status_code == 200, resp.text
+    _holds(client, whole)
+
+    # the customer credit not applied
+    credit = (
+        db_session.query(Payment)
+        .filter(Payment.reference == "880", Payment.is_voided.isnot(True))
+        .one()
+    )
+    resp = client.post(f"/api/payments/{credit.id}/void")
+    assert resp.status_code == 200, resp.text
+    _holds(client, whole)
+    control, qbo_ = _ar_and_qbo(client)
+    assert control == Decimal("8090.00")  # 1148, still open
+    assert qbo_ == whole - control
+    assert (
+        db_session.query(Account).filter_by(name="Accounts Receivable (A/R)").count()
+        == 1
+    )
+
+
+def test_a_void_of_a_carried_document_keeps_the_closed_period(
+    client, db_session, seed_accounts
+):
+    from app.models.invoices import Invoice
+
+    data = client.post(
+        "/api/migration/qbo_export/import", files=_controls_export(more=True)()
+    ).json()
+    assert data["ok"] is True, data["errors"]
+    from app.services.settings_service import set_setting
+
+    set_setting(db_session, "closing_date", "2026-12-31")
+    db_session.commit()
+    number = db_session.query(Invoice).filter_by(invoice_number="1141").one().id
+    resp = client.post(f"/api/invoices/{number}/void")
+    assert resp.status_code in (400, 403, 409, 422), resp.text
+    assert (
+        db_session.query(Account).filter_by(name="Accounts Receivable (A/R)").count()
+        == 0
+    )

@@ -29,6 +29,8 @@ from sqlalchemy import (
     Text,
     Enum,
     ForeignKey,
+    Boolean,
+    false,
     func,
 )
 from sqlalchemy.orm import relationship
@@ -71,6 +73,21 @@ class VendorCredit(Base):
     class_id = Column(Integer, ForeignKey("classes.id"), nullable=True)
     # Job-costing dimension (QB "Customer:Job"); NULL = no job
     job_id = Column(Integer, ForeignKey("jobs.id"), nullable=True)
+    # An early-payment discount we took on the vendor's bill (#664): the bill
+    # payment it was taken with. Voiding that payment voids it.
+    discount_bill_payment_id = Column(
+        Integer, ForeignKey("bill_payments.id"), nullable=True
+    )
+    # Void-and-replace (#689): a posted vendor credit with no edit of its own is
+    # changed by voiding it and posting a new one; each names the other.
+    # Plain ids, no foreign key: both rows always stay (a void keeps the
+    # original). NULL on everything else.
+    replaces_id = Column(Integer, nullable=True)
+    replaced_by_id = Column(Integer, nullable=True)
+    # Taken against the terms with allow_discount_override (#664).
+    discount_override = Column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(

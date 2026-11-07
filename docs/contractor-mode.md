@@ -1,6 +1,6 @@
 # Contractor mode
 
-Settings → Company Information → Company Type → **Construction** sets a
+Settings → Company → Company Information → Company Type → **Construction** sets a
 company up the way a contractor keeps its books, the same way **Nonprofit**
 does for a ministry: one switch, no change to any data, reversible at any
 time. It is the counterpart to QuickBooks Desktop's Contractor Edition.
@@ -98,7 +98,7 @@ what a subcontractor bids and gets awarded; a cost-code **section** is what
 costs post to. The two are mapped many-to-many — a package can span
 divisions, and a division can be split across packages. Construction setup
 seeds a default set of packages mapped to the sections it has; edit them, and
-the section mapping, under **Settings → Trade Packages** (shown only for
+the section mapping, under **Settings → Lists → Trade Packages** (shown only for
 construction companies). Estimate lines, commitments, the schedule of values
 and the Buyout tab all use them.
 
@@ -225,7 +225,9 @@ owner. A construction job grows a **Contract** tab (construction mode only;
 every other company sees the job pages exactly as before) that holds the
 terms, a few summary tiles and the owner's schedule of values. A job with no
 contract type set behaves the way it always has — the plain Contract amount on
-the job form still works for everyone.
+the job form still works for everyone. A newly created job opens on its
+**Overview**; each job you open keeps the tab you left it on for the rest of
+the session, so one job's Pay apps no longer carries over to the next (#723).
 
 **The three types.** A job's contract is a **lump sum** (one fixed price), a
 **GMP** — guaranteed maximum price (cost-plus up to a ceiling the owner is
@@ -251,7 +253,14 @@ not-to-exceed). The type decides how the fee and the cap read:
 
 The summary stamps the **original contract amount** once, the first time a sum
 is set with a type (building from an estimate stamps it too, even when the sum
-came from the job form). The **contract sum and the contingency edit freely**
+came from the job form). A sum typed on the job form alone is not a contract
+yet: the type stays empty until the job gets a schedule of values. Saving the
+schedule of values by hand, making a pay application or approving one then
+takes a sum with no type as a **lump sum** and stamps its original, the same
+as building from an estimate. A job that already has a sum and no original
+(one billed before 2.31.8) reads its original as the contract sum less the
+approved change orders, on the Contract tab, the WIP schedule, the
+change-order log and the pay application PDF alike (#723). The **contract sum and the contingency edit freely**
 (and the original follows the sum) until the job has any billing on the
 schedule of values or any approved owner change order (a draft or pending
 one, a potential change order or a sub change order does not lock it, and a void
@@ -505,6 +514,25 @@ application** — the contractor's periodic bill against the contract, the
 counterpart to a commercial payment application and its line detail (#555).
 Each application bills a period; approving it creates the invoice.
 
+**A job needs a schedule of values first.** An application has one line per
+SOV line, so on a job with none the Pay apps tab says "This job has no
+schedule of values yet: set the contract on the job's Contract tab (Build
+from accepted estimate, or add the lines by hand), then bill against it
+here." in place of **+ New pay application**, with a link to the Contract
+tab, and `POST /api/pay-applications` refuses with 409 and the same sentence
+(#714).
+
+**An application with no lines can be deleted.** One made before 2.31.8 on a
+job with no schedule of values has no lines, so it could not be given amounts
+or approved, and as the job's open application it kept New from making
+another. Its row on the Pay apps tab offers **Delete** in place of Submit and
+Approve, and Edit says why there is nothing on it to bill
+(`DELETE /api/pay-applications/{id}`; only a draft or submitted application
+with no lines is deleted: 409 `application_has_lines` or
+`application_not_open` otherwise). While it is open, New is refused with a
+sentence that names it and says to delete it. An approved application with
+no lines and a zero total is voided like any other (#723).
+
 **The application and its math.** Every SOV line (work, allowance, contingency
 and change-order lines all bill the same way) carries, per period:
 
@@ -592,7 +620,11 @@ the same application is refused (release at the held percent, or bill the
 release on its own application). A lien waiver is for one payment and one
 job, and its amount is the part of the payment applied to that job's invoices. At approval the application keeps the contract sums as they
 stood (original, and to date with change orders), and its PDF prints those, not
-today's job. An invoice made from a payment application can't be edited on the
+today's job. The PDF's **net change by change orders** is the owner change
+orders approved on or before the application's approval, and the original
+plus the net change is the contract sum to date; an application approved
+before 2.31.8 with no original kept reads it as the sum less those change
+orders, so it prints right with no repair (#723). An invoice made from a payment application can't be edited on the
 Invoices screen except for its notes (409); change the application instead.
 
 **Owner deposits.** Money an owner pays ahead of the work is a **deposit**

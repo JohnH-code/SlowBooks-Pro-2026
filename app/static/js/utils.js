@@ -719,7 +719,7 @@ const DataEntryPrefs = {
         if (typeof fetch !== 'function') return Promise.resolve();
         const headers = {};
         try {
-            const company = localStorage.getItem('slowbooks_company');
+            const company = Store.get('slowbooks_company');
             if (company) headers['X-Company-Id'] = company;
         } catch (e) { /* no storage */ }
         return fetch('/api/preferences/data_entry', { credentials: 'same-origin', headers })
@@ -890,6 +890,296 @@ const DateKeys = {
 };
 document.addEventListener('keydown', DateKeys.handle, true);
 
+// QuickMath (#696), as QuickBooks Desktop has it: +, -, * or / typed in an
+// amount box that already holds a figure opens a calculator tape under the
+// box, its first term the box's figure ("12.50 + "). The tape is a text
+// box (a number box shows no expression and reports none). = or Enter
+// works the sum out and puts it in the amount box, rounded to the box's
+// own places, with the box's input and change events, so the line and the
+// form total follow; Tab does the same and moves on; Escape closes the
+// tape and leaves the amount as it was. A minus typed in an empty box is
+// still a sign. One delegated handler, as DateKeys.
+const QuickMath = {
+    // The sum as a fraction of BigInts [numerator, denominator], worked out
+    // exactly (no eval): a recursive descent over numbers, + - * / and
+    // parentheses, * and / before + and -. { value } or { error } where the
+    // error is 'divide' (by zero), 'unfinished' (an operator or a
+    // parenthesis waiting for more) or 'invalid' (anything else).
+    evaluate(text) {
+        const src = String(text == null ? '' : text)
+            .replace(/[−–]/g, '-').replace(/×/g, '*').replace(/÷/g, '/');
+        const tokens = [];
+        const re = /\s*(?:(\d[\d,]*\.?\d*|\.\d+)|([-+*/()]))/y;
+        let at = 0;
+        while (at < src.length) {
+            if (/^\s*$/.test(src.slice(at))) break;
+            re.lastIndex = at;
+            const m = re.exec(src);
+            if (!m) return { error: 'invalid' };
+            tokens.push(m[1] !== undefined ? { num: QuickMath._parse(m[1].replace(/,/g, '')) } : { op: m[2] });
+            at = re.lastIndex;
+        }
+        if (!tokens.length) return { error: 'unfinished' };
+        let i = 0;
+        const fail = (kind) => { throw new Error(kind); };
+        const peek = () => tokens[i];
+        const factor = () => {
+            const t = tokens[i++];
+            if (!t) fail('unfinished');
+            if (t.op === '-') { const [n, d] = factor(); return [-n, d]; }
+            if (t.op === '+') return factor();
+            if (t.op === '(') {
+                const v = sum();
+                if (!peek()) fail('unfinished');
+                if (peek().op !== ')') fail('invalid');
+                i++;
+                return v;
+            }
+            if (t.num) return t.num;
+            return fail('invalid');
+        };
+        const term = () => {
+            let v = factor();
+            while (peek() && (peek().op === '*' || peek().op === '/')) {
+                const op = tokens[i++].op;
+                const w = factor();
+                if (op === '*') v = QuickMath._norm(v[0] * w[0], v[1] * w[1]);
+                else {
+                    if (w[0] === 0n) fail('divide');
+                    v = QuickMath._norm(v[0] * w[1], v[1] * w[0]);
+                }
+            }
+            return v;
+        };
+        const sum = () => {
+            let v = term();
+            while (peek() && (peek().op === '+' || peek().op === '-')) {
+                const op = tokens[i++].op;
+                const w = term();
+                const n = op === '+' ? v[0] * w[1] + w[0] * v[1] : v[0] * w[1] - w[0] * v[1];
+                v = QuickMath._norm(n, v[1] * w[1]);
+            }
+            return v;
+        };
+        try {
+            const value = sum();
+            if (i < tokens.length) return { error: 'invalid' };
+            return { value };
+        } catch (e) {
+            if (/^(divide|unfinished|invalid)$/.test(e.message)) return { error: e.message };
+            throw e;
+        }
+    },
+    _parse(s) {
+        const [whole, frac = ''] = s.split('.');
+        return QuickMath._norm(BigInt((whole || '0') + frac), 10n ** BigInt(frac.length));
+    },
+    _norm(n, d) {
+        if (d < 0n) { n = -n; d = -d; }
+        let a = n < 0n ? -n : n, b = d;
+        while (b) [a, b] = [b, a % b];
+        return a > 1n ? [n / a, d / a] : [n, d];
+    },
+    // The fraction as the box shows a figure: rounded half away from zero
+    // to `places`, and never fewer than two decimals ("150.00").
+    format(value, places = 2) {
+        const [n, d] = value;
+        const scale = 10n ** BigInt(places);
+        const abs = n < 0n ? -n : n;
+        let q = (abs * scale) / d;
+        if ((abs * scale) % d * 2n >= d) q += 1n;
+        let digits = q.toString().padStart(places + 1, '0');
+        let out = places ? `${digits.slice(0, -places)}.${digits.slice(-places)}` : digits;
+        if (places > 2) out = out.replace(/0+$/, '').replace(/\.(\d?)$/, (m, x) => `.${x.padEnd(2, '0')}`);
+        return (n < 0n && q > 0n ? '-' : '') + out;
+    },
+    // The sum worked out for the box: { text } or { error, message }.
+    result(expr, places = 2) {
+        const r = QuickMath.evaluate(expr);
+        if (r.error) return { error: r.error, message: QuickMath.MESSAGES[r.error] };
+        return { text: QuickMath.format(r.value, places) };
+    },
+    MESSAGES: {
+        divide: 'This divides by zero. Change the sum, or press Escape to keep the amount as it was.',
+        unfinished: 'The sum is not finished. Add a number, or press Escape to keep the amount as it was.',
+        invalid: 'Only numbers, + - * / and parentheses work here. Fix the sum, or press Escape.',
+    },
+    // The boxes it works in: an amount (step 0.01, or a money field such as
+    // a line's rate) that can be typed in.
+    isAmountBox(el) {
+        if (!el || el.tagName !== 'INPUT' || el.type !== 'number') return false;
+        if (el.readOnly || el.disabled) return false;
+        const step = el.getAttribute ? el.getAttribute('step') : el.step;
+        return step === '0.01' || !!(el.classList && el.classList.contains('money'));
+    },
+    // The box's decimal places: its step's, two at least.
+    places(el) {
+        const step = String((el.getAttribute ? el.getAttribute('step') : el.step) || '');
+        const m = /^0?\.(\d+)$/.exec(step);
+        return Math.max(2, m ? m[1].length : 2);
+    },
+    // What the box is called, for the tape's own name: its label, its
+    // aria-label, or a line table's column ("Rate, line 2").
+    boxName(el) {
+        const clean = (s) => String(s || '').replace(/\s+/g, ' ').replace(/\s*\*\s*$/, '').trim();
+        const aria = clean(el.getAttribute('aria-label'));
+        if (aria) return aria;
+        const by = el.getAttribute('aria-labelledby');
+        if (by) {
+            const t = clean(by.split(/\s+/).map(id => (document.getElementById(id) || {}).textContent || '').join(' '));
+            if (t) return t;
+        }
+        if (el.labels && el.labels.length) {
+            const t = clean(el.labels[0].textContent);
+            if (t) return t;
+        }
+        const cell = el.closest && el.closest('td');
+        const table = cell && cell.closest('table');
+        if (table && table.tHead && table.tHead.rows.length) {
+            const head = table.tHead.rows[table.tHead.rows.length - 1].cells[cell.cellIndex];
+            const t = clean(head && head.textContent);
+            const row = cell.parentElement;
+            const body = row && row.parentElement;
+            const n = body && body.tagName === 'TBODY' ? [...body.rows].indexOf(row) + 1 : 0;
+            if (t) return n > 0 ? `${t}, line ${n}` : t;
+        }
+        return clean(el.placeholder) || 'the amount';
+    },
+    _open: null,
+    // The keydown handler: opens the tape from an amount box, and keeps the
+    // tape's own keys. True when the key was taken.
+    handle(e) {
+        const open = QuickMath._open;
+        if (open && e.target === open.input) return QuickMath._tapeKey(e, open);
+        const el = e.target;
+        if (!QuickMath.isAmountBox(el) || e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return false;
+        if (!['+', '-', '*', '/'].includes(e.key)) return false;
+        if (typeof placeDecimal === 'function') placeDecimal(el);
+        if (String(el.value).trim() === '') return false;  // a leading minus is a sign
+        e.preventDefault();
+        e.stopPropagation();
+        QuickMath.show(el, e.key);
+        return true;
+    },
+    _tapeKey(e, open) {
+        e.stopPropagation();  // the tape's keys are its own: no dialog Escape, no form Enter
+        if (e.key === 'Escape') { e.preventDefault(); QuickMath.close(true); return true; }
+        if (e.key === 'Enter' || e.key === '=') { e.preventDefault(); QuickMath.commit(); return true; }
+        if (e.key === 'Tab') { e.preventDefault(); QuickMath.commit(e.shiftKey ? -1 : 1); return true; }
+        if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return false;
+        if (e.code === 'NumpadDecimal' && e.key !== '.') {
+            e.preventDefault();
+            open.input.setRangeText('.', open.input.selectionStart, open.input.selectionEnd, 'end');
+            open.input.dispatchEvent(new Event('input', { bubbles: true }));
+            return true;
+        }
+        if (e.key.length === 1 && !/[\d.,+\-*/() ]/.test(e.key)) { e.preventDefault(); return true; }
+        return false;
+    },
+    show(box, op) {
+        QuickMath.close(false);
+        const tape = document.createElement('div');
+        tape.className = 'qmath';
+        tape.id = 'qmath';
+        const name = `Calculator for ${QuickMath.boxName(box)}`;
+        tape.innerHTML = `<input id="qmath-input" class="qmath-input" type="text" inputmode="decimal"
+                autocomplete="off" spellcheck="false" aria-describedby="qmath-hint qmath-status">
+            <div id="qmath-status" class="qmath-status" role="status" aria-live="polite"></div>
+            <div id="qmath-hint" class="qmath-hint">Enter or = puts it in · Esc cancels</div>`;
+        const input = tape.querySelector('input');
+        input.setAttribute('aria-label', name);
+        input.value = `${box.value} ${op} `;
+        // in the box's own place in the page, so a dialog's name and its
+        // modal reading take it in; outside a label that wraps the box
+        const wrap = box.closest('label');
+        (wrap || box).insertAdjacentElement('afterend', tape);
+        const open = { box, tape, input, status: tape.querySelector('.qmath-status'), places: QuickMath.places(box) };
+        open.place = () => QuickMath._place(open);
+        open.left = () => setTimeout(() => {
+            if (QuickMath._open !== open) return;
+            if (!box.isConnected || (document.activeElement !== input && !tape.contains(document.activeElement))) {
+                QuickMath.close(false);
+            }
+        }, 0);
+        QuickMath._open = open;
+        input.addEventListener('input', () => QuickMath._preview(open));
+        input.addEventListener('focusout', open.left);
+        window.addEventListener('scroll', open.place, true);
+        window.addEventListener('resize', open.place);
+        QuickMath._place(open);
+        input.focus();
+        const end = input.value.length;
+        input.setSelectionRange(end, end);
+    },
+    // Under the box (over it near the bottom of the window), inside the
+    // window from side to side, as the type-ahead's list sits.
+    _place(open) {
+        const { box, tape } = open;
+        if (!box.isConnected) { QuickMath.close(false); return; }
+        // in the page's pixels, as the type-ahead's list (Combobox._place)
+        const z = typeof SlowbooksTextSize !== 'undefined' ? SlowbooksTextSize.ratio() : 1;
+        const raw = box.getBoundingClientRect();
+        const r = { left: raw.left / z, top: raw.top / z, bottom: raw.bottom / z };
+        const winW = window.innerWidth / z, winH = window.innerHeight / z;
+        const w = Math.min(260, winW - 8);
+        tape.style.width = `${w}px`;
+        tape.style.left = `${Math.max(4, Math.min(r.left, winW - w - 4))}px`;
+        const h = tape.offsetHeight || 70;
+        const below = winH - r.bottom - 4;
+        if (below < h && r.top - 4 > below) tape.style.top = `${Math.max(4, r.top - h - 2)}px`;
+        else tape.style.top = `${r.bottom + 2}px`;
+    },
+    // The running total, said politely as the sum is typed; nothing while
+    // it is unfinished (a sentence only when = asks for the total).
+    _preview(open) {
+        const r = QuickMath.result(open.input.value, open.places);
+        open.tape.classList.remove('qmath--error');
+        open.input.removeAttribute('aria-invalid');
+        open.status.textContent = r.error ? '' : `= ${r.text}`;
+    },
+    // Works the sum out into the box and closes; `move` (1 or -1) goes on
+    // to the next or previous field, as Tab. A sum that cannot be worked
+    // out says why and the tape stays open.
+    commit(move) {
+        const open = QuickMath._open;
+        if (!open) return false;
+        const r = QuickMath.result(open.input.value, open.places);
+        if (r.error) {
+            open.tape.classList.add('qmath--error');
+            open.input.setAttribute('aria-invalid', 'true');
+            open.status.textContent = r.message;
+            return false;
+        }
+        const box = open.box;
+        QuickMath.close(false);
+        box.value = r.text;
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+        box.dispatchEvent(new Event('change', { bubbles: true }));
+        if (!move) { focusFor(box, true); return true; }
+        const modal = box.closest('#modal');
+        const root = modal || document.body;
+        const stops = _tabStops(root, box);
+        const i = stops.indexOf(box);
+        let next = i < 0 ? null : stops[i + move];
+        if (!next && modal && stops.length) next = stops[(i + move + stops.length) % stops.length];
+        if (next) _tabTo(next); else focusFor(box, true);
+        return true;
+    },
+    // Takes the tape away; `refocus` puts the caret back in the box.
+    close(refocus) {
+        const open = QuickMath._open;
+        if (!open) return;
+        QuickMath._open = null;
+        window.removeEventListener('scroll', open.place, true);
+        window.removeEventListener('resize', open.place);
+        open.input.removeEventListener('focusout', open.left);
+        const hadFocus = document.activeElement === open.input;
+        open.tape.remove();
+        if (refocus || hadFocus) focusFor(open.box, true);
+    },
+};
+document.addEventListener('keydown', QuickMath.handle, true);
+
 // opts.wide: a form whose rows are wider than a dialog — the line-item
 // tables with ten or eleven columns (job cost entry). The default 700px
 // dialog clipped the last columns of that table with no scrollbar (#174).
@@ -1024,6 +1314,17 @@ document.addEventListener('keydown', modalKeydown);
 function statusBadge(status) {
     return `<span class="badge badge-${status}">${status}</span>`;
 }
+
+// Per-computer conveniences live in localStorage. Under WebKitGTK in
+// pywebview's private mode `window.localStorage` is null, and a browser with
+// storage blocked throws on touching it; either way the app must start and
+// simply forget the preference (2.31.5 gate: the Linux desktop window died
+// at start on a null localStorage). Every read and write goes through here.
+const Store = {
+    get(key) { try { return window.localStorage ? window.localStorage.getItem(key) : null; } catch (e) { return null; } },
+    set(key, value) { try { if (window.localStorage) window.localStorage.setItem(key, value); } catch (e) { /* this page load only */ } },
+    remove(key) { try { if (window.localStorage) window.localStorage.removeItem(key); } catch (e) { /* nothing kept */ } },
+};
 
 function escapeHtml(str) {
     str = String(str ?? '');
@@ -1660,6 +1961,42 @@ function classIdFromForm(form) {
     return v ? parseInt(v) : null;
 }
 
+// A payment's Class (#686): Receive Payments and Pay Bills, under the rule
+// the register's entry row and the feed's rows follow (#671). Shown once
+// the company has a class of its own; the default class chosen unless
+// Settings asks for a class to be picked every time, and the documents'
+// own class when every one applied has the same. A class the person picks
+// stays picked.
+const PaymentClass = {
+    _classes: [],
+    async load() {
+        try { PaymentClass._classes = await API.get('/classes'); } catch (e) { PaymentClass._classes = []; }
+        return PaymentClass._classes;
+    },
+    shown() { return (PaymentClass._classes || []).some(c => !c.is_system_default && !c.is_archived); },
+    groupHtml(id) {
+        if (!PaymentClass.shown()) return '';
+        const blank = ClassWarn.enabled();
+        const opts = (blank ? `<option value="" selected>— choose a ${T('class').toLowerCase()} —</option>` : '')
+            + PaymentClass._classes.filter(c => !c.is_archived)
+                .map(c => `<option value="${c.id}"${!blank && c.is_system_default ? ' selected' : ''}>${escapeHtml(c.name)}</option>`).join('');
+        return `<div class="form-group"><label for="${id}">${T('Class')}</label>
+            <select id="${id}" name="class_id" data-write data-no-search onchange="this.dataset.edited = '1'">${opts}</select></div>`;
+    },
+    // `classIds`: the class of each document applied (null for none)
+    follow(select, classIds) {
+        if (!select || select.dataset.edited) return;
+        const ids = [...new Set((classIds || []).map(v => (v ? String(v) : '')))];
+        const has = v => [...select.options].some(o => o.value === v);
+        let want = ids.length === 1 && ids[0] && has(ids[0]) ? ids[0] : null;
+        if (want === null) {
+            const def = (PaymentClass._classes || []).find(c => c.is_system_default);
+            want = ClassWarn.enabled() || !def || !has(String(def.id)) ? '' : String(def.id);
+        }
+        if (has(want)) select.value = want;
+    },
+};
+
 // ---------------------------------------------------------------------------
 // Job-costing dimension — shared "Customer: Job" dropdown for entry forms.
 // Lists every active job; when the form has a customer select (pass its id),
@@ -2183,3 +2520,111 @@ if (typeof MutationObserver === 'function' && typeof document !== 'undefined' &&
     new MutationObserver(() => nameFields(document)).observe(document.body, { childList: true, subtree: true });
     nameFields(document);
 }
+
+// ---------------------------------------------------------------------------
+// Edit from a report line (#689). Every drill-down line (a statement's, a
+// total's, the P&L Detail's, the General Ledger's) carries `edit` from the
+// server (app/services/edit_targets.py): {kind, id, replace}. Edit sits
+// beside the line's link and opens that kind's own form. An invoice, a
+// bill, a deposit, a hand-entered journal entry and a register entry edit
+// in place; an expense, a card charge, a transfer, a credit memo, a vendor
+// credit, a payment and a bill payment open their form filled in, and Save
+// voids the original and posts the new one (POST /api/<kind>/{id}/replace),
+// the two linked. The accountant's sign-in and a read-only one see the
+// link only: Edit is data-write, which App.hideWriteControls hides.
+// ---------------------------------------------------------------------------
+const TxnEdit = {
+    WORDS: {
+        invoice: 'invoice', bill: 'bill', deposit: 'deposit', journal: 'journal entry',
+        bank_entry: 'register entry', expense: 'expense', cc_charge: 'card charge',
+        transfer: 'transfer', credit_memo: 'credit memo', vendor_credit: 'vendor credit',
+        payment: 'payment', bill_payment: 'bill payment',
+    },
+    // the line's Edit, or nothing (Open only)
+    button(e) {
+        const t = e && e.edit;
+        if (!t || !Object.hasOwn(TxnEdit.WORDS, String(t.kind))) return '';
+        const id = Number(t.id);
+        if (!Number.isInteger(id) || id <= 0) return '';
+        const word = TxnEdit.WORDS[t.kind];
+        const title = t.replace
+            ? `Edit this ${word}: saving voids it and posts the new one in its place`
+            : `Edit this ${word}`;
+        return ` <button type="button" class="btn btn-sm btn-secondary txn-edit" data-write data-edit-kind="${escapeHtml(t.kind)}" aria-label="Edit ${escapeHtml(word)} ${id}" title="${escapeHtml(title)}" onclick="TxnEdit.open(this.dataset.editKind, ${id})" style="padding:0 6px; font-size:10px;">Edit</button>`;
+    },
+    async open(kind, id) {
+        try {
+            switch (kind) {
+                case 'invoice': return await InvoicesPage.showForm(id);
+                case 'bill': return await BillsPage.showForm(id);
+                case 'deposit': return await DepositsPage.editDeposit(id);
+                case 'journal': return await JournalPage.editEntry(id);
+                case 'bank_entry': {
+                    const entry = await API.get(`/banking/entries/${id}`);
+                    return await BankingPage.showEntryForm(entry.account_id, entry);
+                }
+                case 'expense': return await ExpensesPage.replace(id);
+                case 'cc_charge': return await CCChargesPage.replace(id);
+                case 'transfer': return await BankingPage.replaceTransfer(id);
+                case 'credit_memo': return await CreditMemosPage.replace(id);
+                case 'vendor_credit': return await VendorCreditsPage.replace(id);
+                case 'payment': return await PaymentsPage.replace(id);
+                case 'bill_payment': return await BillsPage.replacePayment(id);
+                default: toast('This line has no edit; open it instead', 'error');
+            }
+        } catch (err) { toast(err.message, 'error'); }
+    },
+};
+
+// Void-and-replace on a kind's own form (#689): the form opened by Edit is
+// marked with the record it replaces; its Save posts to /replace and says
+// so; a view names the record on the other side of the link.
+const Replace = {
+    // the open form, filled in, now saves as a replacement for `id`
+    mark(form, kind, id) {
+        if (!form) return;
+        const word = TxnEdit.WORDS[kind] || 'transaction';
+        form.dataset.replaceOf = String(Number(id));
+        form.dataset.replaceKind = kind;
+        const submit = form.querySelector('button[type="submit"]');
+        if (submit) submit.textContent = 'Void and Replace';
+        const note = `<p class="replace-note" role="note" style="margin:0 0 8px; font-size:11px; color:var(--gray-500);">Saving voids ${escapeHtml(word)} #${Number(id)} and posts this one in its place; the two are linked. A reconciled line or a closed period stops it, as a void does.</p>`;
+        form.insertAdjacentHTML('afterbegin', note);
+        const title = document.getElementById('modal-title');
+        if (title) title.textContent = `Edit ${word.charAt(0).toUpperCase()}${word.slice(1)} #${Number(id)}`;
+    },
+    // Where each kind's replace posts, one literal per kind (the wiring
+    // test reads these; the forms build the same path from the create's
+    // path plus suffix()).
+    REPLACE_PATHS: {
+        expense: id => `/api/expenses/${id}/replace`,
+        cc_charge: id => `/api/cc-charges/${id}/replace`,
+        transfer: id => `/api/transfers/${id}/replace`,
+        credit_memo: id => `/api/credit-memos/${id}/replace`,
+        vendor_credit: id => `/api/vendor-credits/${id}/replace`,
+        payment: id => `/api/payments/${id}/replace`,
+        bill_payment: id => `/api/bill-payments/${id}/replace`,
+    },
+    // what follows the create's path where the form posts: '' for a new
+    // record, '/12/replace' for the marked one
+    suffix(form) {
+        const id = form && form.dataset ? form.dataset.replaceOf : '';
+        return id ? `/${Number(id)}/replace` : '';
+    },
+    replacing(form) { return !!(form && form.dataset && form.dataset.replaceOf); },
+    // "Replaced by …" / "Replaces …" on a record's view; `href(id)` is the
+    // kind's own address
+    links(rec, kind, href) {
+        if (!rec) return '';
+        const word = TxnEdit.WORDS[kind] || 'transaction';
+        const out = [];
+        if (rec.replaced_by_id) out.push(`<div class="replaced-by" style="margin-top:4px;">Replaced by <a href="${escapeHtml(href(Number(rec.replaced_by_id)))}">${escapeHtml(word)} #${Number(rec.replaced_by_id)}</a></div>`);
+        if (rec.replaces_id) out.push(`<div class="replaces" style="margin-top:4px;">Replaces <a href="${escapeHtml(href(Number(rec.replaces_id)))}">${escapeHtml(word)} #${Number(rec.replaces_id)}</a> (void)</div>`);
+        return out.join('');
+    },
+    // set a select or input by name, if the form has it
+    set(form, name, value) {
+        const el = form && form.querySelector(`[name="${name}"]`);
+        if (el && value !== undefined && value !== null) el.value = String(value);
+    },
+};

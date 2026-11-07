@@ -323,7 +323,9 @@ const ReportsPage = {
                 // once there are more than a handful; the choice sticks.
                 let collapsed = false;
                 try { collapsed = localStorage.getItem('sb_saved_reports_collapsed') === '1'; } catch (e) { /* ignore */ }
-                if (saved.length > 6 && localStorage.getItem('sb_saved_reports_collapsed') === null) collapsed = true;
+                let chosen = null;
+                try { chosen = window.localStorage ? window.localStorage.getItem('sb_saved_reports_collapsed') : null; } catch (e) { chosen = null; }
+                if (saved.length > 6 && chosen === null) collapsed = true;
                 const period = (p) => !p ? '' : (p.as_of_date ? `as of ${escapeHtml(p.as_of_date)}` : (p.start_date ? `${escapeHtml(p.start_date)} → ${escapeHtml(p.end_date || '')}` : (p.period ? escapeHtml(String(p.period).replace(/_/g, ' ')) : '')));
                 const names = await ReportsPage._savedNames(saved);
                 const rows = saved.slice().sort((a, b) => a.name.localeCompare(b.name)).map(s => `
@@ -764,7 +766,7 @@ const ReportsPage = {
                     <td>${escapeHtml(e.payee || '')}</td>
                     <td>${escapeHtml(e.reference || '')}</td>
                     <td>${escapeHtml(e.description || '')}</td>
-                    <td>${src}${e.voided ? ' <span class="badge badge-void" style="text-decoration:none;">void</span>' : ''}</td>
+                    <td>${src}${e.voided ? ' <span class="badge badge-void" style="text-decoration:none;">void</span>' : ''}${TxnEdit.button(e)}</td>
                     <td class="amount">${e.debit > 0 ? formatCurrency(e.debit) : ''}</td>
                     <td class="amount">${e.credit > 0 ? formatCurrency(e.credit) : ''}</td>
                     <td class="amount">${formatCurrency(e.running_balance)}</td>
@@ -902,7 +904,7 @@ const ReportsPage = {
                 return `<tr${e.voided ? ' class="row--void" style="color:var(--text-muted); text-decoration:line-through;"' : ''}>
                     <td>${formatDate(e.date)}</td>
                     <td>${escapeHtml(e.account_label || '')}</td>
-                    <td><a href="${escapeHtml(link)}" data-row-key="line:${escapeHtml(String(e.line_id))}" aria-label="${escapeHtml(words)}" onclick="ReportsPage._leaveFrom(this)" style="color:var(--text-link); text-decoration:none;">${escapeHtml(e.type)}</a>${e.voided ? ' <span class="badge badge-void" style="text-decoration:none;">void</span>' : ''}</td>
+                    <td><a href="${escapeHtml(link)}" data-row-key="line:${escapeHtml(String(e.line_id))}" aria-label="${escapeHtml(words)}" onclick="ReportsPage._leaveFrom(this)" style="color:var(--text-link); text-decoration:none;">${escapeHtml(e.type)}</a>${e.voided ? ' <span class="badge badge-void" style="text-decoration:none;">void</span>' : ''}${TxnEdit.button(e)}</td>
                     <td>${escapeHtml(e.num || '')}</td>
                     <td>${escapeHtml(e.name || '')}</td>
                     <td>${escapeHtml(e.memo || '')}</td>
@@ -1030,8 +1032,11 @@ const ReportsPage = {
         ReportsPage.setParam('account_id', sel.value);
     },
 
-    periodOptions(selected) {
+    // opts.allDates false leaves All dates out: an as-of report (the
+    // Balance Sheet) reads one date, and All dates has no end of its own.
+    periodOptions(selected, opts = {}) {
         const options = [
+            ...(opts.allDates === false ? [] : [["all_dates", "All dates"]]),
             ["this_month", "This Month"],
             ["this_quarter", "This Quarter"],
             ["this_year", "This Year"],
@@ -1064,6 +1069,18 @@ const ReportsPage = {
     _fiscalYearStartMonth() {
         const m = parseInt((App.settings && App.settings.fiscal_year_start_month) || "1", 10);
         return (m >= 1 && m <= 12) ? m : 1;
+    },
+
+    // The date of the first transaction in the books, for All dates (#707):
+    // a QuickBooks Online export's reports are "All Dates", and a missing
+    // start date means the fiscal year to the report routes. Read again on
+    // every All dates render (an import moves it); null with no books yet.
+    _firstDate: null,
+
+    async loadFirstDate() {
+        const data = await API.get('/reports/first-date');
+        ReportsPage._firstDate = (data && data.first_date) || null;
+        return ReportsPage._firstDate;
     },
 
     // Most recent first-of-start-month on or before `today` (a Date).
@@ -1208,6 +1225,13 @@ const ReportsPage = {
                 end = new Date(year - 1, month, Math.min(day, new Date(year - 1, month + 1, 0).getDate()));
                 break;
             }
+            case "all_dates":
+                // from the first transaction to today; with no books yet,
+                // the fiscal year to date (there is nothing before it)
+                return {
+                    start: ReportsPage._firstDate || ReportsPage._isoDate(ReportsPage._fiscalYearStart(today)),
+                    end: ReportsPage._isoDate(today),
+                };
             case "custom":
                 return {
                     start: customStart || ReportsPage._isoDate(ReportsPage._fiscalYearStart(today)),
@@ -1297,7 +1321,8 @@ const ReportsPage = {
 
         const defaultCustomStart = prefill.start_date || ReportsPage._isoDate(ReportsPage._fiscalYearStart(new Date()));
         const defaultCustomEnd = prefill.end_date || prefill.as_of_date || todayISO();
-        const known = ReportsPage.periodOptions('').includes(`value="${prefill.period}"`);
+        const periodChoices = { allDates: !useAsOfOnly };
+        const known = ReportsPage.periodOptions('', periodChoices).includes(`value="${prefill.period}"`);
         const dated = !!(prefill.start_date || prefill.end_date || prefill.as_of_date);
         const startingPeriod = (prefill.period && known) ? prefill.period : (dated ? 'custom' : initialPeriod);
 
@@ -1310,7 +1335,7 @@ const ReportsPage = {
                 <div class="form-group">
                     <label for="report-period-select">${label}</label>
                     <span style="display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap;">
-                        <select id="report-period-select">${ReportsPage.periodOptions(startingPeriod)}</select>
+                        <select id="report-period-select">${ReportsPage.periodOptions(startingPeriod, periodChoices)}</select>
                         ${opts.step === false ? '' : `<button type="button" class="btn btn-sm btn-secondary" id="report-period-prev" aria-label="Previous period" onclick="ReportsPage.stepPeriod(-1)">&lsaquo; Prev</button>
                         <button type="button" class="btn btn-sm btn-secondary" id="report-period-next" aria-label="Next period" onclick="ReportsPage.stepPeriod(1)">Next &rsaquo;</button>`}
                     </span>
@@ -1390,6 +1415,7 @@ const ReportsPage = {
                     content.innerHTML = await loadContent(select.value, { as_of_date: asOfDate }, params());
                     stickyScrollbars(content);
                 } else {
+                    if (select.value === 'all_dates') await ReportsPage.loadFirstDate();
                     const range = ReportsPage.getDateRange(select.value, startInput.value, endInput.value);
                     // the boxes show the dates the report runs on: a date the
                     // address had that the box refused is replaced by the
@@ -1425,6 +1451,8 @@ const ReportsPage = {
         // stepping by the preset's length until its dates are typed.
         let stepUnit = null;
         const step = (dir) => {
+            // All dates is every date there is: no earlier or later one
+            if (select.value === 'all_dates') return;
             const months = ReportsPage._PERIOD_MONTHS[select.value];
             if (months) stepUnit = { months };
             if (useAsOfOnly) {
@@ -1438,7 +1466,7 @@ const ReportsPage = {
                 startInput.value = next.start;
                 endInput.value = next.end;
                 const preset = Array.from(select.options).map(o => o.value).find(v => {
-                    if (v === 'custom') return false;
+                    if (v === 'custom' || v === 'all_dates') return false;
                     const r = ReportsPage.getDateRange(v);
                     return r.start === next.start && r.end === next.end;
                 });
@@ -1696,7 +1724,7 @@ const ReportsPage = {
             const name = `${e.type}${e.num ? ` ${e.num}` : ''}, ${formatDate(e.date)}`;
             const type = `<a href="${escapeHtml(link)}" data-row-key="line:${escapeHtml(String(e.line_id))}" aria-label="${escapeHtml(name)}" onclick="ReportsPage._leaveFrom(this)" style="color:var(--text-link); text-decoration:none;">${escapeHtml(e.type)}</a>`;
             return `<tr${e.voided ? ' class="row--void" style="color:var(--text-muted); text-decoration:line-through;"' : ''}>
-                <td style="padding-left:${pad(depth)}px;">${type}${e.voided ? ' <span class="badge badge-void" style="text-decoration:none;">void</span>' : ''}</td>
+                <td style="padding-left:${pad(depth)}px;">${type}${e.voided ? ' <span class="badge badge-void" style="text-decoration:none;">void</span>' : ''}${TxnEdit.button(e)}</td>
                 <td>${formatDate(e.date)}</td>
                 <td>${escapeHtml(e.num || '')}</td>
                 <td>${escapeHtml(e.name || '')}</td>
@@ -2167,11 +2195,17 @@ const ReportsPage = {
                         <thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col">Reference</th><th scope="col">Source</th><th scope="col">${T('Class')}</th><th scope="col" class="amount">Debit</th><th scope="col" class="amount">Credit</th><th scope="col" class="amount">Balance</th></tr></thead><tbody>`;
                     html += `<tr style="color:var(--gray-500);"><td></td><td colspan="6">Balance brought forward</td><td class="amount">${formatCurrency(acct.opening_balance)}</td></tr>`;
                     for (const e of acct.entries) {
-                        html += `<tr>
+                        // the line opens its transaction and edits it (#689)
+                        const word = sourceWord(e.source_type, e.source_kind);
+                        const link = e.source_link || (e.transaction_id ? `/#/journal/${e.transaction_id}` : '');
+                        const src = link
+                            ? `<a href="${escapeHtml(link)}" class="gl-line-link" data-row-key="line:${escapeHtml(String(e.line_id || e.transaction_id || ''))}" onclick="ReportsPage._leaveFrom(this)" style="color:var(--text-link); text-decoration:none;">${escapeHtml(word)}</a>`
+                            : escapeHtml(word);
+                        html += `<tr${e.voided ? ' class="row--void" style="color:var(--text-muted);"' : ''}>
                             <td>${formatDate(e.date)}</td>
                             <td>${escapeHtml(e.description)}</td>
                             <td>${escapeHtml(e.reference)}</td>
-                            <td style="font-size:10px; color:var(--gray-500);">${escapeHtml(sourceWord(e.source_type, e.source_kind))}</td>
+                            <td style="font-size:10px; color:var(--gray-500);">${src}${e.voided ? ' <span class="badge badge-void">void</span>' : ''}${TxnEdit.button(e)}</td>
                             <td style="font-size:10px;">${escapeHtml(e.class_name || '')}</td>
                             <td class="amount">${e.debit > 0 ? formatCurrency(e.debit) : ""}</td>
                             <td class="amount">${e.credit > 0 ? formatCurrency(e.credit) : ""}</td>
@@ -2503,17 +2537,22 @@ const ReportsPage = {
                 </div>
                 <div class="form-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="button" class="btn btn-secondary" onclick="ReportsPage.openStatement(event, 'print')">Print</button>
                     <button type="submit" class="btn btn-primary">Generate PDF</button>
                 </div>
             </form>`);
     },
 
-    openStatement(e) {
+    // Generate PDF submits the form; Print (#683) opens the same statement
+    // as a page that brings up the print dialog.
+    openStatement(e, kind = 'pdf') {
         e.preventDefault();
-        const form = e.target;
+        const form = e.target.form || e.target;
+        if (!form.reportValidity()) return;
         const cid = form.customer_id.value;
         const asOf = form.as_of_date.value || todayISO();
-        window.open(`/api/reports/customer-statement/${cid}/pdf?as_of_date=${asOf}`, "_blank");
+        if (kind === 'print') window.open(`/api/reports/customer-statement/${cid}/print?as_of_date=${asOf}`, "_blank");
+        else window.open(`/api/reports/customer-statement/${cid}/pdf?as_of_date=${asOf}`, "_blank");
         closeModal();
     },
 
@@ -3785,6 +3824,7 @@ ReportsPage.reconciliationReports = async function () {
             <td>${r.completed_at ? formatDate(r.completed_at) : ''}</td>
             <td class="actions" style="white-space:nowrap;">
                 <button type="button" class="btn btn-sm btn-secondary" onclick="BankingPage.showReconReport(${r.id}, ReportsPage.reconciliationReports)">View</button>
+                <button type="button" class="btn btn-sm btn-secondary" onclick="window.open('/api/banking/reconciliations/${r.id}/print', '_blank')">Print</button>
                 <button type="button" class="btn btn-sm btn-secondary" onclick="window.open('/api/banking/reconciliations/${r.id}/pdf', '_blank')">Save PDF</button>
             </td>
         </tr>`).join('')}</tbody></table></div>`
@@ -3796,10 +3836,16 @@ ReportsPage.reconciliationReports = async function () {
 // Financial statements pack — one PDF with P&L, Balance Sheet, Trial Balance.
 ReportsPage.financialStatementsPdf = async function (prefill) {
     await ReportsPage.openPeriodModal("Financial Statements Pack", ReportsPage.defaultPeriod(), async (_period, range) => {
-        window.open(`/api/reports/financial-statements/pdf?start_date=${range.start}&end_date=${range.end}`, '_blank');
+        const qs = `start_date=${range.start}&end_date=${range.end}`;
+        window.open(`/api/reports/financial-statements/pdf?${qs}`, '_blank');
         // Said for both: a browser opens a tab, the desktop app saves the PDF,
         // opens it in a window of its own and says where it saved it (F24).
-        return `<div style="font-size:12px;">The statements pack has opened as a PDF —
+        // Print (#683) beside Save PDF: the pack as a page to print.
+        return `<div style="text-align:right; margin-bottom:6px;">
+                <button type="button" class="btn btn-sm btn-secondary" onclick="window.open('/api/reports/financial-statements/print?${qs}','_blank')">Print</button>
+                <button type="button" class="btn btn-sm btn-secondary" onclick="window.open('/api/reports/financial-statements/pdf?${qs}','_blank')">Save PDF</button>
+            </div>
+            <div style="font-size:12px;">The statements pack has opened as a PDF —
             ${T('P&L')} and Trial Balance for ${escapeHtml(range.start)} — ${escapeHtml(range.end)},
             ${T('Balance Sheet')} as of ${escapeHtml(range.end)}. Paper size follows
             Settings → Report PDF Paper Size.</div>`;
@@ -4341,9 +4387,11 @@ ReportsPage.restoreDuplicate = async function (id) {
 };
 
 // Save PDF and Save CSV for a report with both routes; a report with only
-// a CSV (the agings, #393) passes kinds = ['csv'].
+// a CSV (the agings, #393) passes kinds = ['csv']. Print sits beside Save
+// PDF (#683): the page the PDF is drawn from, opening the print dialog.
 ReportsPage._exportButtons = function (path, qs, kinds = ['pdf', 'csv']) {
-    const pdf = kinds.includes('pdf') ? `<button class="btn btn-sm btn-secondary" onclick="window.open('/api/reports/${path}/pdf?${qs}','_blank')">Save PDF</button>` : '';
+    const pdf = kinds.includes('pdf') ? `<button class="btn btn-sm btn-secondary" onclick="window.open('/api/reports/${path}/print?${qs}','_blank')">Print</button>
+        <button class="btn btn-sm btn-secondary" onclick="window.open('/api/reports/${path}/pdf?${qs}','_blank')">Save PDF</button>` : '';
     const csv = kinds.includes('csv') ? `<button class="btn btn-sm btn-secondary" onclick="window.open('/api/reports/${path}/csv?${qs}','_blank')">Save CSV</button>` : '';
     return `<div style="text-align:right; margin-bottom:6px; margin-left:auto;">
         ${pdf}

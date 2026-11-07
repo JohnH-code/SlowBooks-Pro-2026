@@ -97,6 +97,14 @@ class CreditMemoResponse(BaseModel):
     class_id: Optional[int] = None
     job_id: Optional[int] = None
     is_write_off: bool = False
+    # Set on an early-payment discount (#664): the payment it was taken with.
+    discount_payment_id: Optional[int] = None
+    # taken against the invoice's terms, with allow_discount_override (#665)
+    discount_override: bool = False
     lines: list[CreditMemoLineResponse] = []
     created_at: Optional[datetime] = None
+    # Void-and-replace (#689): the credit memo this one replaced, and the one that
+    # replaced it (this one is then void).
+    replaces_id: Optional[int] = None
+    replaced_by_id: Optional[int] = None
     model_config = {"from_attributes": True}

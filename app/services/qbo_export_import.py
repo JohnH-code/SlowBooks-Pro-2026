@@ -16,14 +16,22 @@
 #   gl   the Journal — one block per transaction: a dated first line, its
 #        split lines, a totals row, a blank row
 #   tb   the Trial Balance — and the basis its footer names
-#   customers / vendors — the contact lists, names as QuickBooks has them
+#   customers / vendors / employees — the contact lists, names as
+#        QuickBooks has them (an employee's name and contact details only:
+#        the export carries nothing of pay or payroll)
 #   ar_aging  the A/R Aging Detail report, a download of its own beside the
 #        zip (Reports → A/R Aging Detail → Export to Excel): the invoices
 #        still open and the customer payments not yet applied. The Journal
 #        posts them to the export's own receivable account as history; they
-#        are carried over from it to 1100 Accounts Receivable as documents,
-#        so the aging and every customer's balance are right, and the
-#        receivable account ends at zero.
+#        are carried over to 1100 Accounts Receivable as documents, so the
+#        aging and every customer's balance are right. When the report
+#        carries all the Journal leaves there, that account is 1100 itself
+#        (no empty one beside it, #704); otherwise they are moved from it.
+#        An invoice the Journal holds at a larger total comes at that total
+#        with a payment for the part paid (#711).
+#
+# The export's payable account ("Accounts Payable (A/P)") is 2000 Accounts
+# Payable here, its balance on the control, no second account made (#704).
 #
 # The bundle's quirks, read as they come: a leading blank column on the
 # journal and the lists, every figure as formula text ("=23683.16", the
@@ -55,12 +63,17 @@ from app.models.accounts import AccountType, DetailType
 from app.models.contacts import Customer, Vendor
 from app.services.account_label import label_for
 from app.services.migration_common import (
+    _missing_problem,
+    books_by_name,
     dry_run_bundle,
     parse_amount,
     parse_date,
+    planned_sub_account_note,
     run_import_bundle,
+    spec_path,
     strip_code_suffix,
 )
+from app.services.safe_errors import DataProblem
 
 LABEL = "QuickBooks Online export"
 SOURCE_TYPE = "qbo_export_import"
@@ -89,7 +102,8 @@ _KINDS = (
     ("customer", "customers"),
     ("vendor", "vendors"),
     ("supplier", "vendors"),
-    ("employee", "skip"),
+    # the Employee Contact List: names and contact details, no pay (#711)
+    ("employee", "employees"),
 )
 
 # The section a leaf sits under decides its type. "LIABILITIES AND EQUITY"
@@ -158,6 +172,12 @@ _BASIS = re.compile(r"\b(cash|accrual)\s+basis\b", re.I)
 # What parse_coa inferred about accounts the reports hide, for the dry run
 # to say (the engine's parser contract returns accounts and errors only).
 _COA_NOTES: list[str] = []
+# Trial-balance accounts with a balance that parse_coa could not place (no
+# parent the chart has): the import refuses them by name (#690, W-108).
+_COA_UNPLACED: list[str] = []
+# The export's payable account, mapped onto 2000, as (its path, the
+# control's name in a sentence), for the A/P note (W-117).
+_COA_PAYABLE: list[tuple[str, str]] = []
 
 
 def classify_filename(name: str) -> str | None:
@@ -189,7 +209,10 @@ def _cell(row: list[str], i: int) -> str:
 
 
 def parse_coa(
-    csv_text: str, also: tuple[str, ...] = (), ordered: tuple[str, ...] = ()
+    csv_text: str,
+    also: tuple[str, ...] = (),
+    ordered: tuple[str, ...] = (),
+    amounts: dict | None = None,
 ) -> tuple[list[dict], list[str]]:
     """Accounts from one or both reports (the route joins them). A row with
     a label and a figure is an account; a labelled row with no figure is a
@@ -199,14 +222,25 @@ def parse_coa(
     ``also`` names accounts the books use (the Journal's, the Trial
     Balance's) that the reports may not show: QuickBooks Online leaves a
     zero-balance row off the Balance Sheet and the Profit and Loss. A
-    sub-account of one the reports do show takes its parent's type; a
-    top-level one takes the type of its neighbour in ``ordered`` (the
-    Trial Balance's names, in the chart's order), and with neither it is
-    named, for the person to add first."""
+    sub-account of one the reports do show is planned under it with its
+    parent's type, and a Trial Balance account so planned is noted in the
+    engine's words (#690). Any other is placed by the type of its neighbour
+    in ``ordered`` (the Trial Balance's names, in the chart's order) when
+    the accrual Trial Balance's ``amounts`` give it no balance (a
+    zero-balance row the reports leave off); one with a balance is not
+    placed, and the import refuses it by name (W-108). With neither it is
+    named, for the person to add first.
+
+    A sub-account is named by its leaf ("Federal Unemployment (940)"), its
+    parent set, and carries its full "Parent:Child" ``path``, the name the
+    Journal and the Trial Balance write and the import matches it by: the
+    statements join the parents' names to it (NEW-203)."""
     accounts: list[dict] = []
     errors: list[str] = []
     notes = _COA_NOTES
     notes.clear()
+    unplaced = _COA_UNPLACED
+    unplaced.clear()
     seen: set[str] = set()
     stack: list[tuple[int, str, bool]] = []  # (indent, name, is_account)
     in_report = False
@@ -259,7 +293,8 @@ def parse_coa(
                     accounts.append(
                         {
                             "code": None,
-                            "name": full,
+                            "name": name,
+                            "path": full,
                             "type": acct_type,
                             "description": None,
                             "bank_kind": kind,
@@ -276,23 +311,53 @@ def parse_coa(
                             # payments post to (QuickBooks names it
                             # "Accounts Receivable (A/R)")
                             "receivable": "accounts receivable" in sections,
+                            # the account its bills post to ("Accounts
+                            # Payable (A/P)"): it lands on 2000 (#704)
+                            "payable": "accounts payable" in sections,
                         }
                     )
         stack.append((indent, name, is_account))
-    by_name = {a["name"].lower(): a for a in accounts}
+    by_name = {spec_path(a).lower(): a for a in accounts}
+    # an account the books name another way ("Parent:Child (940)" beside the
+    # report's indented child) is the same account, not a new one (#690)
+    by_key = {strip_code_suffix(spec_path(a)): a for a in accounts}
+    on_tb = {n.strip().lower() for n in ordered}
     for name in also:
         key = name.strip().lower()
         if not key or key in by_name or key in _ARITHMETIC:
             continue
+        if strip_code_suffix(name) in by_key:
+            continue
         parent = name.rsplit(":", 1)[0] if ":" in name else ""
-        parent_spec = by_name.get(parent.lower()) if parent else None
+        parent_spec = (
+            by_name.get(parent.lower()) or by_key.get(strip_code_suffix(parent))
+            if parent
+            else None
+        )
         if parent_spec is not None:
-            acct_type, parent_name = parent_spec["type"], parent_spec["name"]
+            acct_type, parent_path = parent_spec["type"], spec_path(parent_spec)
+            leaf = name.rsplit(":", 1)[1].strip()
+            path = f"{parent_path}:{leaf}"
+            if key in on_tb:
+                # the engine's own words (#690): one note, and the engine
+                # finds the account planned here and plans no second one
+                notes.append(
+                    planned_sub_account_note(name.strip(), parent_path, acct_type)
+                )
         else:
+            balance = (amounts or {}).get(name.strip(), Decimal("0"))
+            if amounts is not None and key in on_tb and balance != 0:
+                # A balance on an account with no parent the chart has: not
+                # a zero row the reports left off. Guessing its type would
+                # put the balance on a made-up top-level account; it is
+                # named and the import refuses (W-108, #690).
+                unplaced.append(name.strip())
+                continue
             # The Trial Balance lists accounts in the chart's order, assets
             # through expenses: the nearest listed neighbour the reports do
             # show says what kind this one is.
-            acct_type, parent_name = _type_from_neighbours(name, ordered, by_name), None
+            acct_type = _type_from_neighbours(name, ordered, by_name, by_key)
+            parent_path, leaf, path = None, name.strip(), name.strip()
             if acct_type is None:
                 errors.append(
                     f"Account {name!r} is in the books but not on the Balance Sheet "
@@ -308,30 +373,39 @@ def parse_coa(
             )
         spec = {
             "code": None,
-            "name": name.strip(),
+            "name": leaf,
+            "path": path,
             "type": acct_type,
             "description": None,
             "bank_kind": None,
             # a sub-account takes its parent's (the model's rule); a
             # top-level one guessed from its neighbours, the default
             "detail_type": None,
-            "parent": parent_name,
+            "parent": parent_path,
         }
         accounts.append(spec)
         by_name[key] = spec
+        by_name.setdefault(path.lower(), spec)
+        by_key.setdefault(strip_code_suffix(name), spec)
     return accounts, errors
 
 
-def _type_from_neighbours(name: str, listed: tuple[str, ...], by_name: dict):
+def _type_from_neighbours(
+    name: str, listed: tuple[str, ...], by_name: dict, by_key: dict | None = None
+):
     """The type of the nearest account before ``name`` in ``listed`` (the
-    Trial Balance's order) that the chart knows, else the nearest after."""
+    Trial Balance's order) that the chart knows, else the nearest after; a
+    neighbour the Trial Balance spells another way is found by its matching
+    key (#690)."""
     lowered = [n.strip().lower() for n in listed]
     key = name.strip().lower()
     if key not in lowered:
         return None
     i = lowered.index(key)
     for j in list(range(i - 1, -1, -1)) + list(range(i + 1, len(lowered))):
-        spec = by_name.get(lowered[j])
+        spec = by_name.get(lowered[j]) or (by_key or {}).get(
+            strip_code_suffix(lowered[j])
+        )
         if spec is not None:
             return spec["type"]
     return None
@@ -467,6 +541,11 @@ def parse_gl(csv_text: str) -> tuple[list[dict], list[str]]:
                 "reference": current_key,
                 "debit": debit,
                 "credit": credit,
+                # the block's own words, for the carry-over to find an
+                # invoice and its payments by (#711)
+                "type": block_type,
+                "num": block_num,
+                "name": block_name,
             }
         )
     if current:
@@ -510,7 +589,9 @@ def parse_tb(csv_text: str) -> tuple[dict, list[str]]:
         except Exception as exc:
             errors.append(f"Trial balance row {n}: {exc}")
             continue
-        balances[strip_code_suffix(name)] = net
+        # the name as written: the engine keys it as it keys the journal
+        # (strip_code_suffix), and names it so if the chart lacks it (#690)
+        balances[name] = balances.get(name, Decimal("0")) + net
     return balances, errors
 
 
@@ -518,8 +599,8 @@ def parse_tb(csv_text: str) -> tuple[dict, list[str]]:
 
 
 def parse_contacts(csv_text: str, label: str) -> list[dict]:
-    """Rows of the Customer or Vendor Contact List: {name, email, phone,
-    address} with the list's own column names."""
+    """Rows of the Customer, Vendor or Employee Contact List: {name,
+    email, phone, address} with the list's own column names."""
     rows = _rows(csv_text)
     header_at = None
     for i, row in enumerate(rows):
@@ -650,13 +731,76 @@ def _import_contacts(db: Session, bundle: dict) -> tuple[int, int]:
     return created_customers, created_vendors
 
 
+def _city_state_zip(line: str) -> tuple[str, str, str] | None:
+    """ "Cedar Hollow IL 60999" or "Springfield, IL 62701" → its parts."""
+    m = re.match(r"^(.+?)[,\s]+([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$", line.strip())
+    if not m:
+        return None
+    return m.group(1).strip(" ,"), m.group(2).upper(), m.group(3)
+
+
+def _new_employees(db: Session, bundle: dict) -> list[dict]:
+    """The Employee Contact List's people not on the Employees list yet,
+    matched by name under every spelling the list may use (#711)."""
+    from app.services.qb_time_import import _employees, _key
+
+    if "employees" not in bundle:
+        return []
+    have = set(_employees(db))
+    out = []
+    for spec in parse_contacts(bundle["employees"], "Employee"):
+        key = _key(spec["name"])
+        if key in have:
+            continue
+        have.add(key)
+        out.append(spec)
+    return out
+
+
+def _import_employees(db: Session, bundle: dict) -> int:
+    """The Employee Contact List into Employees: the name, the email and
+    the address, the fields an employee has here. Nothing about pay: the
+    export carries none, and payroll is set up on the employee when it is
+    wanted. The list's phone has no field on an employee and is left."""
+    from app.models.payroll import Employee
+    from app.services.qb_time_import import _split_name
+
+    made = 0
+    for spec in _new_employees(db, bundle):
+        first, last = _split_name(spec["name"])
+        employee = Employee(
+            first_name=first[:100], last_name=last[:100], is_active=True
+        )
+        employee.email = spec["email"] or None
+        lines = [
+            ln.strip()
+            for ln in spec["address"].replace("\r", "").split("\n")
+            if ln.strip()
+        ]
+        if lines:
+            employee.address1 = lines[0][:200]
+            rest = lines[1:]
+            parts = _city_state_zip(rest[-1]) if rest else None
+            if parts:
+                employee.city, employee.state, employee.zip = parts
+                rest = rest[:-1]
+            if rest:
+                employee.address2 = ", ".join(rest)[:200]
+        db.add(employee)
+        made += 1
+    db.flush()
+    return made
+
+
 # ── the open invoices: the A/R Aging Detail report ─────────────────────────
 
 # The item a carried-over invoice's line is on. Its income account is the
 # export's own receivable account, on purpose: the sale is in the imported
 # history already, so the invoice's posting moves its open balance from
-# that account to 1100 Accounts Receivable and touches no income. An edit
-# or a void of the invoice posts through the same item, so it stays true.
+# that account to 1100 Accounts Receivable and touches no income (when that
+# account is 1100 itself, nothing moves). An edit or a void of the invoice
+# posts through the same item, so it stays true. It is inactive after the
+# import: on the carried invoices, in no item picker (#711).
 CARRY_ITEM = "QuickBooks Online open balance"
 
 
@@ -791,11 +935,14 @@ def _receivable_name(bundle: dict, groups: list[list[dict]]) -> str | None:
     under Accounts Receivable (if there are several, the one the Journal's
     invoices post to), else the account the invoices debit."""
     saved = list(_COA_NOTES)  # parse_coa keeps its notes for the dry run
+    saved_unplaced = list(_COA_UNPLACED)
     try:
         accounts, _ = parse_coa(bundle.get("coa", ""))
     finally:
         _COA_NOTES[:] = saved
-    listed = [a["name"] for a in accounts if a.get("receivable")]
+        _COA_UNPLACED[:] = saved_unplaced
+    # the path, the name the Journal posts to (NEW-203)
+    listed = [spec_path(a) for a in accounts if a.get("receivable")]
     used: dict[str, int] = {}
     for group in groups:
         if group and group[0]["journal"].startswith("Invoice "):
@@ -829,6 +976,67 @@ def _customer_names(db: Session, bundle: dict) -> dict[str, str]:
     return names
 
 
+# The words a carried invoice's payment for its paid part opens its notes
+# with: it is no unapplied credit, and a second upload does not take it
+# for one (#711).
+_PAID_PART = "The part of QuickBooks Online invoice"
+
+
+def _journal_invoices(groups: list[list[dict]], receivable: str) -> dict:
+    """What the Journal says of each invoice and customer payment, for
+    carrying an open invoice at its total (#711): {"invoices": {(number,
+    name): (date, total on the receivable)}, "payments": [(name, date,
+    amount off the receivable, number)]}, names lowercased."""
+    invoices: dict = {}
+    payments: list = []
+    for group in groups:
+        first = group[0] if group else None
+        if first is None:
+            continue
+        kind = (first.get("type") or "").lower()
+        on_ar = sum(
+            (r["debit"] - r["credit"] for r in group if r["account"] == receivable),
+            Decimal("0"),
+        )
+        name = (first.get("name") or "").lower()
+        if kind == "invoice" and first.get("num"):
+            invoices.setdefault((first["num"], name), (first["date"], on_ar))
+        elif kind == "payment" and on_ar < 0:
+            payments.append((name, first["date"], -on_ar, first.get("num") or ""))
+    return {"invoices": invoices, "payments": payments}
+
+
+def _at_total(item: dict, journal: dict) -> bool:
+    """Whether the Journal holds the open invoice ``item`` (its number and
+    customer) at a total above what is open: then it is carried at that
+    total, dated as the Journal dates it, with a payment for the part paid,
+    dated as the Journal's payment of that amount from the customer on or
+    after the invoice (else on the invoice's date). Sets item["total"],
+    item["paid"], item["paid_on"] and item["paid_ref"]."""
+    names = {item["customer"].lower(), item.get("listed_as", "").lower()}
+    hit = next(
+        (
+            journal["invoices"][(item["num"], n)]
+            for n in names
+            if (item["num"], n) in journal["invoices"]
+        ),
+        None,
+    )
+    if hit is None or hit[1] <= item["open"]:
+        return False
+    day, total = hit
+    paid = total - item["open"]
+    paid_on, paid_ref = day, ""
+    for name, when, amount, num in sorted(
+        journal["payments"], key=lambda p: (p[1], p[3])
+    ):
+        if name in names and when >= day and amount == paid:
+            paid_on, paid_ref = when, num
+            break
+    item.update(date=day, total=total, paid=paid, paid_on=paid_on, paid_ref=paid_ref)
+    return True
+
+
 def _carry_plan(db: Session, bundle: dict) -> dict:
     """What the A/R Aging Detail report carries over, checked against the
     Journal and the books before anything is written: the invoices and
@@ -848,6 +1056,10 @@ def _carry_plan(db: Session, bundle: dict) -> dict:
         "errors": [],
         "notes": [],
         "receivable": None,
+        # the Journal's receivable is 1100 here (#704)
+        "onto_control": False,
+        # invoices carried at their Journal total, with a payment (#711)
+        "at_total": 0,
     }
     if "gl" not in bundle or "coa" not in bundle:
         return plan  # the engine names what is missing
@@ -888,7 +1100,23 @@ def _carry_plan(db: Session, bundle: dict) -> dict:
         control = db.get(Account, get_ar_account_id(db))
     except Exception:
         control = None
-    if control is not None and control.name.lower() == receivable.lower():
+    total = sum((i["open"] for i in items), Decimal("0"))
+    found = books_by_name(db).get(receivable.lower())
+    # The report carries every cent the Journal leaves on the receivable:
+    # the Journal's receivable lands on 1100 itself, as the A/P account
+    # lands on 2000, and no empty account is left beside it (#704). The
+    # carried documents then post nothing: their balance is in 1100 by the
+    # history already. A receivable an earlier import made stays as it is.
+    plan["onto_control"] = (
+        control is not None
+        and total == left
+        and (found is None or found.id == control.id)
+    )
+    if (
+        control is not None
+        and not plan["onto_control"]
+        and control.name.lower() == receivable.lower()
+    ):
         plan["errors"].append(
             f"The export's receivable account is named {receivable!r}, as 1100 is "
             "here, so the history already posts to 1100 and the open invoices "
@@ -898,8 +1126,10 @@ def _carry_plan(db: Session, bundle: dict) -> dict:
         )
         return plan
     names = _customer_names(db, bundle)
+    journal = _journal_invoices(groups, receivable)
     unknown = set()
     for item in items:
+        item["listed_as"] = item["customer"]  # as the report writes it
         name = names.get(item["customer"].lower())
         if name is None:
             unknown.add(item["customer"])
@@ -910,11 +1140,10 @@ def _carry_plan(db: Session, bundle: dict) -> dict:
             f"{name} is on the A/R Aging Detail report but not on the Customer "
             "list: the customer is created with the carried-over documents"
         )
-    receivable_id = (
-        db.query(Account.id).filter(Account.name == receivable).scalar()
-        if receivable
-        else None
-    )
+    if plan["onto_control"]:
+        receivable_id = control.id
+    else:
+        receivable_id = found.id if found is not None else None
     here = {
         inv.invoice_number: inv.customer.qb_name
         for inv in db.query(Invoice).options(joinedload(Invoice.customer))
@@ -930,6 +1159,8 @@ def _carry_plan(db: Session, bundle: dict) -> dict:
                 Payment.is_voided.isnot(True),
             )
         ):
+            if (pay.notes or "").startswith(_PAID_PART):
+                continue  # the paid part of a carried invoice, not a credit
             cname = pay.customer.qb_name if pay.customer is not None else ""
             key = (cname.lower(), pay.date, Decimal(str(pay.amount)))
             carried_payments[key] = carried_payments.get(key, 0) + 1
@@ -937,6 +1168,8 @@ def _carry_plan(db: Session, bundle: dict) -> dict:
         if item["kind"] == "invoice":
             owner = here.get(item["num"])
             if owner is None:
+                if _at_total(item, journal):
+                    plan["at_total"] += 1
                 plan["invoices"].append(item)
             elif owner.lower() == item["customer"].lower():
                 plan["duplicates"] += 1
@@ -952,7 +1185,6 @@ def _carry_plan(db: Session, bundle: dict) -> dict:
                 plan["duplicates"] += 1
             else:
                 plan["payments"].append(item)
-    total = sum((i["open"] for i in items), Decimal("0"))
     control_name = (
         label_for(control, db) if control is not None else "Accounts Receivable"
     )
@@ -968,7 +1200,23 @@ def _carry_plan(db: Session, bundle: dict) -> dict:
             "rows are in the books already from an earlier import and will be "
             "skipped, not carried over twice"
         )
-    if total == left:
+    if plan["at_total"]:
+        plan["notes"].append(
+            f"{plan['at_total']} of the open invoices "
+            f"{'is' if plan['at_total'] == 1 else 'are'} carried at "
+            f"{'its' if plan['at_total'] == 1 else 'their'} total from the "
+            "Journal, with a customer payment for the part already paid, so "
+            "the customer's history reads as it did in QuickBooks Online."
+        )
+    if plan["onto_control"]:
+        plan["notes"].append(
+            f"The A/R Aging Detail report's open invoices and unapplied payments "
+            f"come to {total:,.2f}, what the Journal leaves on {receivable}: "
+            f"{receivable} is {control_name} here, so the Journal posts to it "
+            "and no second receivable account is made; they come across as its "
+            "invoices and customer credits."
+        )
+    elif total == left:
         plan["notes"].append(
             f"The A/R Aging Detail report's open invoices and unapplied payments "
             f"come to {total:,.2f}, what the Journal leaves on {receivable}: they "
@@ -1013,18 +1261,35 @@ def _import_carried(db: Session, plan: dict) -> tuple[int, int]:
     number, dates and open balance on the CARRY_ITEM line (its posting:
     1100 debited, the receivable account credited), each unapplied
     payment for its open part, unapplied (its posting: the receivable
-    account debited, 1100 credited). Returns (invoices, payments)."""
+    account debited, 1100 credited). Returns (invoices, payments).
+
+    An invoice the Journal holds at a larger total is carried at that
+    total, with a customer payment for the part already paid applied to it
+    (its posting: the receivable account debited, 1100 credited), so it
+    reads as it did and 1100 moves by its open balance alone (#711).
+
+    When the Journal's receivable is 1100 itself (plan["onto_control"],
+    #704) the history has put the open balances there already: the
+    documents post nothing, and CARRY_ITEM's account is 1100, so an edit of
+    one posts nothing either.
+
+    CARRY_ITEM is made inactive once they are written: it stays on them and
+    out of every item picker (#711)."""
     from app.models.accounts import Account
     from app.models.invoices import Invoice, InvoiceLine, InvoiceStatus
-    from app.models.payments import Payment
+    from app.models.payments import Payment, PaymentAllocation
     from app.routes.invoices.helpers import _post_invoice_journal
     from app.services.accounting import create_journal_entry, get_ar_account_id
     from app.services.sub_customers import invoice_addresses
 
     if not (plan["invoices"] or plan["payments"]):
         return 0, 0
-    receivable = db.query(Account).filter(Account.name == plan["receivable"]).one()
     ar_id = get_ar_account_id(db)
+    if plan.get("onto_control"):
+        receivable = db.get(Account, ar_id)
+    else:
+        receivable = books_by_name(db)[plan["receivable"].lower()]
+    post = not plan.get("onto_control")
     item = _carry_item(db, receivable.id)
     from app.services.jobs_service import resolve_customer_and_job
 
@@ -1043,26 +1308,62 @@ def _import_carried(db: Session, plan: dict) -> tuple[int, int]:
         customers[name.lower()] = found
         return found
 
+    def payment_posting(payment, who, amount, memo):
+        """The receivable debited and 1100 credited by ``amount``."""
+        if not post:
+            return
+        txn = create_journal_entry(
+            db,
+            payment.date,
+            f"Payment from {who.name} (carried over from QuickBooks Online)",
+            [
+                {
+                    "account_id": receivable.id,
+                    "debit": amount,
+                    "credit": Decimal("0"),
+                    "description": memo,
+                },
+                {
+                    "account_id": ar_id,
+                    "debit": Decimal("0"),
+                    "credit": amount,
+                    "description": memo,
+                },
+            ],
+            source_type="payment",
+            source_id=payment.id,
+            reference=payment.reference or "",
+        )
+        payment.transaction_id = txn.id
+
     for spec in plan["invoices"]:
         who = customer(spec["customer"])
         amount = spec["open"]
+        total = spec.get("total") or amount
+        paid = total - amount
         partly = spec["amount"] != amount
         invoice = Invoice(
             invoice_number=spec["num"],
             customer_id=who.id,
-            status=InvoiceStatus.SENT,
+            status=InvoiceStatus.PARTIAL if paid else InvoiceStatus.SENT,
             date=spec["date"],
             due_date=spec["due_date"],
             terms="",
-            subtotal=amount,
+            subtotal=total,
             tax_rate=Decimal("0"),
             tax_amount=Decimal("0"),
-            total=amount,
+            total=total,
             amount_paid=Decimal("0"),
-            balance_due=amount,
+            balance_due=total,
             notes=(
                 "Carried over from QuickBooks Online's A/R Aging Detail report: "
-                "the sale is in the imported history, and this is what was open."
+                + (
+                    f"the sale is in the imported history, at its total, with "
+                    f"the {paid:,.2f} already paid."
+                    if paid
+                    else "the sale is in the imported history, and this is "
+                    "what was open."
+                )
             ),
             # The report carries no address: billed as a new invoice is,
             # through the one helper, the payer's Bill To (the property's
@@ -1079,21 +1380,44 @@ def _import_carried(db: Session, plan: dict) -> tuple[int, int]:
                 f"QuickBooks Online invoice {spec['num']} of {spec['date']:%m/%d/%Y}"
                 + (
                     f" for {spec['amount']:,.2f}, {amount:,.2f} of it open"
-                    if partly
+                    if partly and not paid
                     else ""
                 )
             ),
             quantity=Decimal("1"),
-            rate=amount,
-            amount=amount,
+            rate=total,
+            amount=total,
             is_taxable=False,
             line_order=0,
         )
         db.add(line)
         db.flush()
-        txn = _post_invoice_journal(db, invoice, [line], who.name)
-        # A $0.00 line posts no journal (#499).
-        invoice.transaction_id = txn.id if txn is not None else None
+        if post:
+            txn = _post_invoice_journal(db, invoice, [line], who.name)
+            # A $0.00 line posts no journal (#499).
+            invoice.transaction_id = txn.id if txn is not None else None
+        if paid:
+            payment = Payment(
+                customer_id=who.id,
+                date=spec.get("paid_on") or spec["date"],
+                amount=paid,
+                reference=spec.get("paid_ref") or None,
+                deposit_to_account_id=receivable.id,
+                notes=(
+                    f"{_PAID_PART} {spec['num']} already paid there. The money "
+                    "is in the imported history."
+                ),
+            )
+            db.add(payment)
+            db.flush()
+            db.add(
+                PaymentAllocation(
+                    payment_id=payment.id, invoice_id=invoice.id, amount=paid
+                )
+            )
+            invoice.amount_paid = paid
+            invoice.balance_due = amount
+            payment_posting(payment, who, paid, "Paid part carried over")
     for spec in plan["payments"]:
         who = customer(spec["customer"])
         amount = -spec["open"]
@@ -1116,31 +1440,165 @@ def _import_carried(db: Session, plan: dict) -> tuple[int, int]:
         )
         db.add(payment)
         db.flush()
-        txn = create_journal_entry(
-            db,
-            payment.date,
-            f"Payment from {who.name} (carried over from QuickBooks Online)",
-            [
-                {
-                    "account_id": receivable.id,
-                    "debit": amount,
-                    "credit": Decimal("0"),
-                    "description": "Unapplied payment carried over",
-                },
-                {
-                    "account_id": ar_id,
-                    "debit": Decimal("0"),
-                    "credit": amount,
-                    "description": "Unapplied payment carried over",
-                },
-            ],
-            source_type="payment",
-            source_id=payment.id,
-            reference=payment.reference or "",
-        )
-        payment.transaction_id = txn.id
+        payment_posting(payment, who, amount, "Unapplied payment carried over")
+    if not post:
+        # the name a void of one of them moves its balance to (#704)
+        from app.services.settings_service import set_setting
+
+        set_setting(db, RECEIVABLE_SETTING, plan["receivable"])
+    # on the carried invoices, in no picker (#711)
+    item.is_active = False
     db.flush()
     return len(plan["invoices"]), len(plan["payments"])
+
+
+# ── voiding a document carried onto 1100 (#704) ────────────────────────────
+#
+# With the export's receivable on 1100 itself, a carried invoice or payment
+# has no posting of its own: its balance is in 1100 by the history. A void
+# takes it off the A/R aging, so it also moves the amount off 1100, to
+# QuickBooks Online's own receivable account (by the name the export used,
+# made when first needed), as the carry-over through that account did
+# before: the aging still equals 1100, and nothing leaves the books.
+
+RECEIVABLE_SETTING = "qbo_export_receivable_name"
+_DEFAULT_RECEIVABLE = "Accounts Receivable (A/R)"
+
+
+def _ar_control(db: Session):
+    from app.models.accounts import Account
+    from app.services.accounting import get_ar_account_id
+
+    try:
+        return db.get(Account, get_ar_account_id(db))
+    except Exception:  # MissingControlAccount: nothing carried onto it
+        return None
+
+
+def is_carried_invoice(db: Session, invoice) -> bool:
+    """An invoice the carry-over wrote onto 1100 with no posting."""
+    if invoice.transaction_id is not None:
+        return False
+    control = _ar_control(db)
+    if control is None:
+        return False
+    return any(
+        line.item is not None
+        and line.item.name == CARRY_ITEM
+        and line.item.income_account_id == control.id
+        for line in invoice.lines
+    )
+
+
+def is_carried_payment(db: Session, payment) -> bool:
+    """A customer payment the carry-over wrote onto 1100 with no posting:
+    an unapplied credit, or the paid part of an invoice."""
+    if payment.transaction_id is not None:
+        return False
+    control = _ar_control(db)
+    if control is None or payment.deposit_to_account_id != control.id:
+        return False
+    notes = payment.notes or ""
+    return notes.startswith(_PAID_PART) or notes.startswith(
+        "Carried over from QuickBooks Online"
+    )
+
+
+def _receivable_account(db: Session, control):
+    """QuickBooks Online's receivable account, made now if the books lack
+    it: an Other Current Asset, not a control."""
+    from app.models.accounts import Account, AccountType, DetailType
+    from app.services.settings_service import get_setting_raw
+
+    name = (get_setting_raw(db, RECEIVABLE_SETTING) or "").strip()
+    name = name or _DEFAULT_RECEIVABLE
+    found = books_by_name(db).get(name.lower())
+    if found is not None and found.id == control.id:
+        # the export named it as 1100 is named here
+        name = f"{name} (QuickBooks Online)"
+        found = books_by_name(db).get(name.lower())
+    if found is not None:
+        return found
+    account = Account(
+        name=name[:200],
+        account_type=AccountType.ASSET,
+        detail_type=DetailType.OTHER_CURRENT_ASSET.value,
+        description=(
+            "QuickBooks Online's receivable: the balances of carried-over "
+            "invoices and customer credits voided here."
+        ),
+    )
+    db.add(account)
+    db.flush()
+    return account
+
+
+def void_carried_posting(db: Session, *, invoice=None, payment=None) -> str | None:
+    """For a carried document voided: the entry that moves what the void
+    takes off the aging off 1100 (an invoice's open balance to QuickBooks'
+    receivable; a payment's amount back from it), dated today. Returns the
+    sentence for the person, or None for any other document. Call it
+    before the document's own amounts change."""
+    from datetime import date
+
+    from app.services.accounting import create_journal_entry
+
+    if invoice is not None:
+        if not is_carried_invoice(db, invoice):
+            return None
+        amount = Decimal(str(invoice.balance_due or 0))
+        from app.services.donor_documents import document_label
+        from app.services.terminology import terms_from_db
+
+        what = f"{document_label(invoice, terms_from_db(db))} {invoice.invoice_number}"
+        source_type, source_id = "invoice_void", invoice.id
+        reference = invoice.invoice_number or ""
+    else:
+        if payment is None or not is_carried_payment(db, payment):
+            return None
+        amount = Decimal(str(payment.amount or 0))
+        what = "Payment" + (f" {payment.reference}" if payment.reference else "")
+        source_type, source_id = "payment_void", payment.id
+        reference = payment.reference or ""
+    if amount <= 0:
+        return None
+    control = _ar_control(db)
+    receivable = _receivable_account(db, control)
+    memo = f"VOID {what}, carried over from QuickBooks Online"
+    off_control = invoice is not None  # an invoice leaves 1100; a payment returns
+    create_journal_entry(
+        db,
+        date.today(),
+        memo,
+        [
+            {
+                "account_id": receivable.id if off_control else control.id,
+                "debit": amount,
+                "credit": Decimal("0"),
+                "description": memo,
+            },
+            {
+                "account_id": control.id if off_control else receivable.id,
+                "debit": Decimal("0"),
+                "credit": amount,
+                "description": memo,
+            },
+        ],
+        source_type=source_type,
+        source_id=source_id,
+        reference=reference,
+    )
+    control_name = label_for(control, db)
+    if off_control:
+        return (
+            f"{what} was carried over from QuickBooks Online: its {amount:,.2f} "
+            f"moved from {control_name} to {receivable.name}, where it sat in "
+            "QuickBooks Online."
+        )
+    return (
+        f"{what} was carried over from QuickBooks Online: its {amount:,.2f} "
+        f"moved from {receivable.name} back to {control_name}."
+    )
 
 
 # ── the engine's hooks ─────────────────────────────────────────────────────
@@ -1178,12 +1636,62 @@ def _tb_names(csv_text: str) -> list[str]:
     return names
 
 
-def _parsers(bundle: dict) -> dict:
+def _onto_controls(db: Session, accounts: list[dict], plan: dict | None) -> None:
+    """Map the export's control accounts onto the books' (#704): its
+    payable account ("Accounts Payable (A/P)", the one under the Balance
+    Sheet's Accounts Payable; of several, the one by that name) onto 2000,
+    always; its receivable onto 1100 when the carry-over says so
+    (plan["onto_control"]). The engine then makes no second account, and
+    the Journal's and the Trial Balance's lines land on the control, which
+    keeps its type. A note says so for the payable."""
+    from app.services.accounting import get_ap_account_id, get_ar_account_id
+    from app.services.migration_common import onto_accounts
+
+    payables = [a for a in accounts if a.get("payable")]
+    if len(payables) > 1:
+        payables = [
+            a for a in payables if spec_path(a).lower() == "accounts payable (a/p)"
+        ]
+    mapped = []
+    if len(payables) == 1:
+        try:
+            payables[0]["onto"] = get_ap_account_id(db)
+            mapped.append(payables[0])
+        except Exception:  # MissingControlAccount: the account is made as before
+            pass
+    if plan and plan.get("onto_control") and plan.get("receivable"):
+        wanted = plan["receivable"].lower()
+        for spec in accounts:
+            if spec_path(spec).lower() == wanted:
+                spec["onto"] = get_ar_account_id(db)
+    landed = onto_accounts(db, mapped)
+    _COA_PAYABLE.clear()
+    for spec in mapped:
+        control = landed.get(spec_path(spec).lower())
+        if control is not None:
+            _COA_PAYABLE.append((spec_path(spec), label_for(control, db)))
+            _COA_NOTES.append(
+                f"{spec_path(spec)} is {label_for(control, db)} here: its balance "
+                "lands there, and no second payable account is made."
+            )
+
+
+def _parsers(bundle: dict, db: Session | None = None, plan: dict | None = None):
     also = _names_in_use(bundle)
     tb_text = bundle.get("tb") or bundle.get("tb_names_only")
     ordered = tuple(_tb_names(tb_text)) if tb_text else ()
+    # the accrual Trial Balance's figures, the ones the opening balances
+    # come from: a cash-basis one is set aside and gives none
+    amounts = parse_tb(bundle["tb"])[0] if "tb" in bundle else None
+
+    def coa(text):
+        accounts, errors = parse_coa(text, also, ordered, amounts)
+        if db is not None:
+            _onto_controls(db, accounts, plan)
+        return accounts, errors
+
     return {
-        "coa": lambda text: parse_coa(text, also, ordered),
+        "coa": coa,
         "gl": parse_gl,
         "tb": parse_tb,
     }
@@ -1224,15 +1732,81 @@ def _counts(db: Session, bundle: dict) -> dict:
     return {
         "customers": new("customers", "Customer", Customer),
         "vendors": new("vendors", "Vendor", Vendor),
+        "employees": len(_new_employees(db, bundle)),
     }
 
 
+def _unplaced_problem(errors: list[str]) -> str | None:
+    """The refusal for the Trial Balance accounts parse_coa could not place
+    (W-108), unless the engine has already named them in its own words."""
+    unplaced = list(_COA_UNPLACED)
+    if not unplaced:
+        return None
+    problem = _missing_problem(unplaced)
+    if any("do not list" in e and all(repr(n) in e for n in unplaced) for e in errors):
+        return None
+    return problem
+
+
+def _payable_balance(prepared: dict, path: str) -> Decimal:
+    """What the export leaves owed on its payable account, a credit as a
+    positive figure: the accrual Trial Balance's, else the Journal's sum."""
+    key = strip_code_suffix(path)
+    if "tb" in prepared:
+        balances, _ = parse_tb(prepared["tb"])
+        found = [v for n, v in balances.items() if strip_code_suffix(n) == key]
+        if found:
+            return -sum(found, Decimal("0"))
+    total = Decimal("0")
+    if "gl" in prepared:
+        groups, _ = parse_gl(prepared["gl"])
+        for group in groups:
+            for row in group:
+                if strip_code_suffix(row["account"]) == key:
+                    total += (row["credit"] or Decimal("0")) - (
+                        row["debit"] or Decimal("0")
+                    )
+    return total
+
+
+def _payable_note(prepared: dict) -> list[str]:
+    """W-117: the export brings the payable account's balance and none of
+    the bills behind it, so A/P Aging cannot show it; said when it is not
+    zero."""
+    if len(_COA_PAYABLE) != 1:
+        return []
+    path, control = _COA_PAYABLE[0]
+    owed = _payable_balance(prepared, path)
+    if not owed:
+        return []
+    what = (
+        f"{owed:,.2f} owed to vendors"
+        if owed > 0
+        else f"{-owed:,.2f} paid to vendors ahead of their bills"
+    )
+    return [
+        f"The export brings {what} as a balance on {control}, with no bills "
+        f"behind it. A/P Aging lists only bills entered here, so it will not "
+        f"show that {abs(owed):,.2f} until those bills are entered here or "
+        f"paid off against {control}."
+    ]
+
+
 def dry_run(db: Session, bundle: dict) -> dict:
-    prepared, notes = _prepare(bundle)
-    verdict = dry_run_bundle(db, prepared, _parsers(prepared), LABEL, SOURCE_TYPE)
-    verdict["warnings"] = notes + list(_COA_NOTES) + verdict["warnings"]
-    verdict.update(_counts(db, bundle))
     plan = _carry_plan(db, bundle)
+    prepared, notes = _prepare(bundle)
+    _COA_PAYABLE.clear()
+    verdict = dry_run_bundle(
+        db, prepared, _parsers(prepared, db, plan), LABEL, SOURCE_TYPE
+    )
+    verdict["warnings"] = (
+        notes + list(_COA_NOTES) + _payable_note(prepared) + verdict["warnings"]
+    )
+    unplaced = _unplaced_problem(verdict["errors"])
+    if unplaced:
+        verdict["errors"] = verdict["errors"] + [unplaced]
+        verdict["ok"] = False
+    verdict.update(_counts(db, bundle))
     verdict["errors"] = verdict["errors"] + plan["errors"]
     verdict["ok"] = verdict["ok"] and not plan["errors"]
     verdict["warnings"] = verdict["warnings"] + plan["notes"]
@@ -1251,17 +1825,33 @@ def run_import(db: Session, bundle: dict) -> dict:
             imported_journals=0,
             imported_customers=0,
             imported_vendors=0,
+            imported_employees=0,
         )
         if plan["given"]:
             refused.update(imported_open_invoices=0, imported_unapplied_payments=0)
         return refused
     prepared, notes = _prepare(bundle)
-    result = run_import_bundle(db, prepared, _parsers(prepared), SOURCE_TYPE, LABEL)
-    result["warnings"] = notes + list(_COA_NOTES) + result["warnings"] + plan["notes"]
+    _COA_PAYABLE.clear()
+    parsers = _parsers(prepared, db, plan)
+    if "coa" in prepared:
+        # a balance the chart has no place for refuses before anything is
+        # written, as a 422 with its names (#690, W-108)
+        parsers["coa"](prepared["coa"])
+        if _COA_UNPLACED:
+            raise DataProblem(_missing_problem(list(_COA_UNPLACED)))
+    result = run_import_bundle(db, prepared, parsers, SOURCE_TYPE, LABEL)
+    result["warnings"] = (
+        notes
+        + list(_COA_NOTES)
+        + _payable_note(prepared)
+        + result["warnings"]
+        + plan["notes"]
+    )
     result.update(_counts(db, bundle))
     invoices = payments = 0
     if result["ok"]:
         customers, vendors = _import_contacts(db, bundle)
+        employees = _import_employees(db, bundle)
         invoices, payments = _import_carried(db, plan)
         db.commit()
         # the payments it created get their cash-basis lines now (#483)
@@ -1269,9 +1859,10 @@ def run_import(db: Session, bundle: dict) -> dict:
 
         backfill_after_import(db)
     else:
-        customers = vendors = 0
+        customers = vendors = employees = 0
     result["imported_customers"] = customers
     result["imported_vendors"] = vendors
+    result["imported_employees"] = employees
     if plan["given"]:
         result["imported_open_invoices"] = invoices
         result["imported_unapplied_payments"] = payments

@@ -5,8 +5,35 @@ const JournalPage = {
     // 'adjusting' shows the accountant's adjusting entries alone (#341)
     _show: 'all',
 
+    // The list's Sort (#687): 'date' (entry date, as before) or 'entered'
+    // (newest entered first), kept per computer; the From / To range
+    // holds for this visit only.
+    _SORT_KEY: 'slowbooks-journal-sort',
+    _from: '',
+    _to: '',
+
+    sortChoice() {
+        let v = '';
+        try { v = localStorage.getItem(JournalPage._SORT_KEY) || ''; } catch (e) { /* the default */ }
+        return v === 'entered' ? 'entered' : 'date';
+    },
+
+    listPath() {
+        // built by hand: the node probes have no URLSearchParams
+        const parts = [];
+        if (JournalPage._from) parts.push('start_date=' + encodeURIComponent(JournalPage._from));
+        if (JournalPage._to) parts.push('end_date=' + encodeURIComponent(JournalPage._to));
+        const sort = JournalPage.sortChoice();
+        if (sort !== 'date') parts.push('sort=' + encodeURIComponent(sort));
+        const base = JournalPage._show === 'adjusting' ? '/journal?adjusting=true' : '/journal';
+        if (!parts.length) return base;
+        return base + (base.includes('?') ? '&' : '?') + parts.join('&');
+    },
+
     async render() {
-        const entries = await API.get(JournalPage._show === 'adjusting' ? '/journal?adjusting=true' : '/journal');
+        const entries = await API.get(JournalPage.listPath());
+        const sort = JournalPage.sortChoice();
+        const ranged = !!(JournalPage._from || JournalPage._to);
         // The accountant's sign-in keeps this page's own controls (#340):
         // the server lets it post journal entries and void its own.
         let html = `
@@ -14,22 +41,47 @@ const JournalPage = {
                 <h2>Journal Entries</h2>
                 <button class="btn btn-primary" data-accountant-ok onclick="JournalPage.showForm()">+ New Journal Entry</button>
             </div>
-            <div class="form-group" style="max-width:260px; margin-bottom:12px;">
-                <label for="journal-show">Show</label>
-                <select id="journal-show" data-no-search data-readonly-ok onchange="JournalPage.setShow(this.value)">
-                    <option value="all" ${JournalPage._show === 'all' ? 'selected' : ''}>All entries</option>
-                    <option value="adjusting" ${JournalPage._show === 'adjusting' ? 'selected' : ''}>Adjusting entries only</option>
-                </select>
-            </div>`;
+            <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; margin-bottom:12px;">
+                <div class="form-group" style="max-width:260px; margin-bottom:0;">
+                    <label for="journal-show">Show</label>
+                    <select id="journal-show" data-no-search data-readonly-ok onchange="JournalPage.setShow(this.value)">
+                        <option value="all" ${JournalPage._show === 'all' ? 'selected' : ''}>All entries</option>
+                        <option value="adjusting" ${JournalPage._show === 'adjusting' ? 'selected' : ''}>Adjusting entries only</option>
+                    </select>
+                </div>
+                <div class="form-group" style="max-width:260px; margin-bottom:0;">
+                    <label for="journal-sort">Sort</label>
+                    <select id="journal-sort" data-no-search data-readonly-ok onchange="JournalPage.setSort(this.value)">
+                        <option value="date" ${sort === 'date' ? 'selected' : ''}>By entry date</option>
+                        <option value="entered" ${sort === 'entered' ? 'selected' : ''}>By date entered</option>
+                    </select>
+                </div>
+                <div class="form-group" style="margin-bottom:0;">
+                    <label for="journal-from">From</label>
+                    <input type="date" id="journal-from" data-readonly-ok value="${escapeHtml(JournalPage._from)}" onblur="JournalPage.setRange()" onkeydown="JournalPage.rangeKey(event)">
+                </div>
+                <div class="form-group" style="margin-bottom:0;">
+                    <label for="journal-to">To</label>
+                    <input type="date" id="journal-to" data-readonly-ok value="${escapeHtml(JournalPage._to)}" onblur="JournalPage.setRange()" onkeydown="JournalPage.rangeKey(event)">
+                </div>
+            </div>
+            <p id="journal-count" role="status" style="color:var(--gray-500); margin:0 0 8px;">${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}${ranged ? ' in this date range' : ''}</p>`;
 
+        html += `<div id="journal-list">${JournalPage.listHtml(entries, ranged)}</div>`;
+        return html;
+    },
+
+    // the rows under the controls; drawn alone when the range changes (W-99)
+    listHtml(entries, ranged) {
+        let out = '';
         if (entries.length === 0) {
-            html += `<div class="empty-state"><p>${JournalPage._show === 'adjusting' ? 'No adjusting entries' : 'No journal entries yet'}</p></div>`;
+            out += `<div class="empty-state"><p>${ranged ? 'No journal entries in this date range' : JournalPage._show === 'adjusting' ? 'No adjusting entries' : 'No journal entries yet'}</p></div>`;
         } else {
-            html += `<div class="table-container"><table>
+            out += `<div class="table-container"><table>
                 <thead><tr><th scope="col">ID</th><th scope="col">Date</th><th scope="col">Description</th><th scope="col">Reference</th><th scope="col">Posted by</th>
                 <th scope="col" class="amount">Debit</th><th scope="col" class="amount">Credit</th><th scope="col">Actions</th></tr></thead><tbody>`;
             for (const e of entries) {
-                html += `<tr>
+                out += `<tr>
                     <td>${e.id}</td>
                     <td>${formatDate(e.date)}</td>
                     <td>${escapeHtml(e.description)}${JournalPage.adjustingMark(e)}</td>
@@ -45,14 +97,60 @@ const JournalPage = {
                     </td>
                 </tr>`;
             }
-            html += '</tbody></table></div>';
+            out += '</tbody></table></div>';
         }
-        return html;
+        return out;
     },
 
     setShow(value) {
         JournalPage._show = value === 'adjusting' ? 'adjusting' : 'all';
         App.navigate('#/journal');
+    },
+
+    async setSort(value) {
+        try { localStorage.setItem(JournalPage._SORT_KEY, value === 'entered' ? 'entered' : 'date'); } catch (e) { /* this view only */ }
+        await JournalPage._redraw('journal-sort');
+    },
+
+    // A date box fires `change` as soon as any segment makes a valid date
+    // (the first year digit gives year 0002), so the boxes are never
+    // rebuilt while one is being typed into (2.31.5 gate, W-99): the range
+    // takes effect when the box is left (blur) or Enter is pressed, and
+    // only the list under the controls is drawn again.
+    rangeKey(event) {
+        if (event.key === 'Enter') { event.preventDefault(); JournalPage.setRange(); }
+    },
+
+    async setRange() {
+        const from = document.getElementById('journal-from');
+        const to = document.getElementById('journal-to');
+        const next = { from: (from && from.value) || '', to: (to && to.value) || '' };
+        if (next.from === JournalPage._from && next.to === JournalPage._to) return;
+        JournalPage._from = next.from;
+        JournalPage._to = next.to;
+        await JournalPage._redrawList();
+    },
+
+    // the list and its count again, the controls left as they are
+    async _redrawList() {
+        const entries = await API.get(JournalPage.listPath());
+        const count = document.getElementById('journal-count');
+        const ranged = !!(JournalPage._from || JournalPage._to);
+        if (count) count.textContent = `${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}${ranged ? ' in this date range' : ''}`;
+        const host = document.getElementById('journal-list');
+        // Tab out of a date box can land on a row's button just before the
+        // blur redraws the rows under it (2.31.5 round 2, W-104): then the
+        // keyboard goes to the count line, which says what the range did.
+        const inRows = !!(host && document.activeElement && host.contains(document.activeElement));
+        if (host) host.innerHTML = JournalPage.listHtml(entries, ranged);
+        if (inRows && count) { count.setAttribute('tabindex', '-1'); count.focus(); }
+    },
+
+    // the list again, the keyboard back on the control that changed it
+    async _redraw(focusId) {
+        await App.navigate('#/journal');
+        const el = document.getElementById(focusId);
+        if (el) el.focus();
     },
 
     // "Adjusting" beside an adjusting entry's description (#341)
@@ -100,6 +198,15 @@ const JournalPage = {
         try { return await BankingPage.hrefShowing(id, entry.date); } catch (e) { return `#/banking/${id}`; }
     },
 
+    // A card charge or a transfer changed from a report line (#689) is
+    // viewed as its journal entry: "Replaced by …" / "Replaces …", each to
+    // the other's own address.
+    _replaceLinks(entry) {
+        const kinds = { cc_charge: n => `#/cc-charges/${n}`, transfer: n => `#/banking/transfers/${n}` };
+        const href = kinds[entry.source_type];
+        return href && typeof Replace !== 'undefined' ? Replace.links(entry, entry.source_type, href) : '';
+    },
+
     async view(id) {
         const entry = await API.get(`/journal/${id}`);
         // the Cost Code column is decided by CostCodes.any(): load the list
@@ -126,6 +233,7 @@ const JournalPage = {
                 ${entry.posted_by ? `<strong>Posted by:</strong> ${escapeHtml(entry.posted_by)}` : ''}
                 ${entry.register_account_id ? `<div id="journal-register-note" style="margin-top:6px; color:var(--gray-500);">Posted from the bank register of <a href="${escapeHtml(registerHref)}">${escapeHtml(entry.register_account_name)}</a>; edit it there.</div>` : ''}
                 ${entry.voided ? '<div class="journal-voided" style="color:var(--danger);font-weight:700;margin-top:6px;">Voided</div>' : ''}
+                ${JournalPage._replaceLinks(entry)}
             </div>
             <div class="table-container"><table>
                 <thead><tr><th scope="col">Account</th><th scope="col">Description</th>${jobCol ? `<th scope="col">${T('Job')}</th>` : ''}${CostCodes.headHtml()}<th scope="col" class="amount">Debit</th><th scope="col" class="amount">Credit</th></tr></thead>

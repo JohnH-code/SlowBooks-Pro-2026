@@ -8,6 +8,8 @@
  */
 const ExpensesPage = {
     _vendors: [],
+    // the vendor-list choice standing for a payee with no vendor (W-101)
+    PAYEE: '__payee__',
     _accounts: [],
 
     async render() {
@@ -148,6 +150,40 @@ const ExpensesPage = {
         }
         ExpensesPage.nextNumber();
         ScanHelper.wire(ExpensesPage._applyScan, ExpensesPage._applyScanField, ExpensesPage._scanFieldTarget);
+    },
+
+    // Edit from a report line (#689): the form filled in with the expense;
+    // Save voids it and posts the new one in its place.
+    async replace(id) {
+        const x = await API.get(`/expenses/${id}`);
+        if (x.status === 'void') { toast('This expense is void; there is nothing to change.', 'error'); return; }
+        await ExpensesPage.showForm();
+        const form = $('#expense-form');
+        if (!form) return;
+        Replace.set(form, 'date', x.date);
+        Replace.set(form, 'paid_from_account_id', x.paid_from_account_id);
+        Replace.set(form, 'amount', Number(x.amount).toFixed(2));
+        Replace.set(form, 'reference', x.reference || '');
+        Replace.set(form, 'memo', x.memo || '');
+        Replace.set(form, 'class_id', x.class_id || '');
+        Replace.set(form, 'job_id', x.job_id || '');
+        // the payee carries over (W-101): an expense with a payee and no
+        // vendor (one that came in over the API) replaces as one, its
+        // payee standing in the vendor list as its own choice
+        form.dataset.replacePayee = x.payee || '';
+        form.dataset.replaceVendor = x.vendor_id ? String(x.vendor_id) : '';
+        const vendor = document.getElementById('expense-vendor');
+        if (vendor && x.vendor_id) vendor.value = String(x.vendor_id);
+        else if (vendor && x.payee) {
+            const after = vendor.querySelector(`option[value="${VendorQuickAdd.NEW}"]`) || vendor.options[0];
+            after.insertAdjacentHTML('afterend', `<option value="${ExpensesPage.PAYEE}">${escapeHtml(x.payee)} (payee, no vendor)</option>`);
+            vendor.value = ExpensesPage.PAYEE;
+        }
+        $('#expense-lines').innerHTML = '';
+        (x.lines || []).forEach(l => ExpensesPage.addLine(l));
+        if (!(x.lines || []).length) ExpensesPage.addLine();
+        ExpensesPage.recalc();
+        Replace.mark(form, 'expense', id);
     },
 
     async vendorSelected(vendorId) {
@@ -405,11 +441,17 @@ const ExpensesPage = {
         try {
             const picked = ($('#expense-vendor') || {}).value || '';
             const otherPayee = picked.startsWith('payee:') ? picked.slice(6) : null;
-            const vendorId = otherPayee ? null : await VendorQuickAdd.ensure('expense-vendor');
+            const vendorSel = document.getElementById('expense-vendor');
+            const payeeOnly = !!vendorSel && vendorSel.value === ExpensesPage.PAYEE;
+            const vendorId = otherPayee || payeeOnly ? null : await VendorQuickAdd.ensure('expense-vendor');
+            // a replacement keeps the payee while its vendor is the one it had
+            const payee = otherPayee || (form.dataset.replacePayee
+                && (payeeOnly || String(vendorId) === form.dataset.replaceVendor)
+                ? form.dataset.replacePayee : null);
             const body = {
                 date: form.date.value,
                 vendor_id: vendorId,
-                ...(otherPayee ? { payee: otherPayee } : {}),
+                payee,
                 // a line's GST/HST is inside its amount, as on the receipt
                 ...(ExpensesPage._canada && !ExpensesPage._qbForm ? { amounts_include_tax: true } : {}),
                 paid_from_account_id: paidFrom,
@@ -426,11 +468,12 @@ const ExpensesPage = {
             const result = await CheckNumberWarn.send(
                 q => (editId
                     ? API.put(`/expenses/${editId}`, body, q ? { query: q } : undefined)
-                    : API.post('/expenses', body, q ? { query: q } : undefined)), form.reference);
+                    : API.post('/expenses' + (typeof Replace === 'undefined' ? '' : Replace.suffix(form)), body, q ? { query: q } : undefined)), form.reference);
             if (!result) return;
             ExpensesPage._qbSaved = result;  // write_cheques.js: print when saved
             await ScanHelper.attachAfterSave('expense', result.id);
             if (editId) toastPosted('Cheque saved');
+            else if ((typeof Replace !== 'undefined' && Replace.replacing(form))) toastPosted(`Expense voided and replaced by expense #${result.id}`);
             else toastPosted('Expense recorded');
             closeModal();
             ExpensesPage._backTo();
@@ -463,6 +506,7 @@ const ExpensesPage = {
                 <strong>Amount:</strong> ${formatCurrency(x.amount)}<br>
                 ${x.reference ? `<strong>Reference:</strong> ${escapeHtml(x.reference)}<br>` : ''}
                 ${x.memo ? `<strong>Memo:</strong> ${escapeHtml(x.memo).replace(/\n/g, '<br>')}<br>` : ''}
+                ${typeof Replace === 'undefined' ? '' : Replace.links(x, 'expense', n => `#/expenses/${n}`)}
             </div>
             <div style="margin-top:12px; border-top:1px solid var(--gray-300); padding-top:8px;">
                 <div style="font-weight:700; font-size:12px; margin-bottom:4px;">Attachments</div>

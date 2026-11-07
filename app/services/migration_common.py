@@ -95,8 +95,156 @@ def sniff_reader(csv_text: str) -> csv.DictReader:
 
 
 def strip_code_suffix(name: str) -> str:
-    """'Name (Code)' → 'name' for cross-file account matching."""
-    return name.split("(")[0].strip().lower()
+    """An account's matching key, the one every side of an import uses (the
+    chart files, the journal, the trial balance): 'Name (Code)' → 'name',
+    and the same for each level of a 'Parent:Child' path, so
+    'Payroll Liabilities (2100):Federal Unemployment (940)' and
+    'Payroll Liabilities:Federal Unemployment' are one account (#690).
+    Before #690 only the text before the first '(' was kept, which cut a
+    parent's suffix off together with every child under it."""
+    return ":".join(part.split("(")[0].strip() for part in name.lower().split(":"))
+
+
+def spec_path(spec: dict) -> str:
+    """A chart spec's full 'Parent:Child' path, the name every side of an
+    import matches it by. A dialect that names a sub-account by its leaf
+    (the QuickBooks Online export, NEW-203) gives the path beside the name;
+    for the others the name is the path."""
+    return spec.get("path") or spec["name"]
+
+
+def account_paths(db: Session) -> list[tuple[Account, str]]:
+    """Every account in the books with its 'Parent:Child' path: the names
+    up its parent chain joined by ':' (a top-level account's path is its
+    name). An account named by its leaf under a parent is found by the
+    path the journal and the trial balance write (NEW-203)."""
+    accounts = db.query(Account).all()
+    by_id = {a.id: a for a in accounts}
+    out = []
+    for acct in accounts:
+        parts: list[str] = []
+        seen: set = set()
+        cur = acct
+        while cur is not None and cur.id not in seen:
+            seen.add(cur.id)
+            parts.append(cur.name)
+            cur = by_id.get(cur.parent_id)
+        out.append((acct, ":".join(reversed(parts))))
+    return out
+
+
+def books_by_name(db: Session) -> dict:
+    """{lowercased path or name → Account}: paths first, so a leaf name
+    never stands in for a top-level account the path names."""
+    pairs = account_paths(db)
+    found: dict = {}
+    for acct, path in pairs:
+        found.setdefault(path.lower(), acct)
+    for acct, _ in pairs:
+        found.setdefault(acct.name.lower(), acct)
+    return found
+
+
+def onto_accounts(db: Session, accounts: list[dict]) -> dict:
+    """{lowercased path → Account} for the chart specs a dialect maps onto
+    an account the books have (a spec's "onto", an account id): QuickBooks
+    Online's "Accounts Payable (A/P)" lands on the 2000 control (#704). Such
+    a spec is not created; the journal, the trial balance and any child of
+    it resolve to that account. A path the books already hold (an earlier
+    import made it) keeps its own account."""
+    in_books = books_by_name(db)
+    found: dict = {}
+    for spec in accounts:
+        if spec.get("onto") is None:
+            continue
+        path = spec_path(spec).lower()
+        if path in in_books:
+            continue
+        acct = db.get(Account, spec["onto"])
+        if acct is not None:
+            found.setdefault(path, acct)
+    return found
+
+
+def planned_sub_account_note(name: str, parent_name: str, acct_type) -> str:
+    """The words for a trial-balance account planned under its parent
+    (#690), one sentence for the engine and for a dialect that plans it."""
+    return (
+        f"Account {name!r} is on the trial balance but not in the chart "
+        f"files; it will be created as a sub-account of {parent_name!r} "
+        f"({_value(acct_type)}) to carry its opening balance"
+    )
+
+
+def _account_keys(db: Session, accounts: list[dict]) -> dict:
+    """{matching key → (name, type)} for the accounts in the books and the
+    chart files' specs: the planned chart, as the import will have it. The
+    name is the one a spec's "parent" resolves through (the path)."""
+    keys: dict = {}
+    pairs = account_paths(db)
+    for acct, path in pairs:
+        keys.setdefault(strip_code_suffix(path), (path, acct.account_type))
+    for acct, _ in pairs:
+        keys.setdefault(strip_code_suffix(acct.name), (acct.name, acct.account_type))
+    for spec in accounts:
+        path = spec_path(spec)
+        keys.setdefault(strip_code_suffix(path), (path, spec["type"]))
+    return keys
+
+
+def _opening_accounts(
+    db: Session, accounts: list[dict], opening_balances: list[dict]
+) -> tuple[list[dict], list[str], list[str]]:
+    """The accounts the opening balances need that the chart files do not
+    list (#690): (specs to create, notes, names that cannot be planned).
+
+    A trial balance may name an account the Balance Sheet and the P&L leave
+    out. A sub-account of one the chart has is planned under it, with its
+    parent's type; any other is named, and the import refuses, rather than
+    dropping its balance from the opening journal at apply. Decided the same
+    way for the dry run and the apply."""
+    keys = _account_keys(db, accounts)
+    extra: list[dict] = []
+    notes: list[str] = []
+    missing: list[str] = []
+    # parents before their children, so a missing parent can be planned first
+    for entry in sorted(opening_balances, key=lambda e: e["account"].count(":")):
+        if entry["account"] in keys:
+            continue
+        name = (entry.get("name") or entry["account"]).strip()
+        parent = name.rsplit(":", 1)[0] if ":" in name else ""
+        found = keys.get(strip_code_suffix(parent)) if parent else None
+        if found is None:
+            missing.append(name)
+            continue
+        parent_name, acct_type = found
+        # named by its leaf under the parent, the path kept beside it, so the
+        # statements print the parent once (NEW-203) and the trial balance's
+        # "Parent:Child" spelling still finds it
+        leaf = name.rsplit(":", 1)[1].strip() or name
+        extra.append(
+            {
+                "code": None,
+                "name": leaf,
+                "type": acct_type,
+                "description": None,
+                "bank_kind": None,
+                "detail_type": None,
+                "parent": parent_name,
+                "path": name,
+            }
+        )
+        keys[entry["account"]] = (name, acct_type)
+        notes.append(planned_sub_account_note(name, parent_name, acct_type))
+    return extra, notes, missing
+
+
+def _missing_problem(missing: list[str]) -> str:
+    return (
+        f"The trial balance has a balance on {len(missing)} account(s) that the "
+        f"chart files do not list: {', '.join(repr(n) for n in missing)}. Add "
+        f"them to the chart of accounts with their type, then import again"
+    )
 
 
 # ── The engine ───────────────────────────────────────────────────────────
@@ -231,13 +379,15 @@ def _plan_accounts(db: Session, accounts: list[dict]) -> list[dict]:
     accounts are planned parents first, so a child listed above its parent
     still links and a grandchild inherits through its parent's settled detail
     type. Returns one decision per account to create, in creation order."""
-    in_books = {a.name.lower(): a for a in db.query(Account).all()}
+    in_books = books_by_name(db)
+    for path, acct in onto_accounts(db, accounts).items():
+        in_books.setdefault(path, acct)  # mapped onto it: not created (#704)
     used_numbers = {
         n for (n,) in db.query(Account.account_number).all() if n is not None
     }
     new_index: dict[str, int] = {}
     for i, spec in enumerate(accounts):
-        key = spec["name"].lower()
+        key = spec_path(spec).lower()
         if key not in in_books and key not in new_index:
             new_index[key] = i
 
@@ -350,9 +500,11 @@ def dry_run_bundle(
                 f"The file's header row is: {header[:300]}"
             )
 
-    known = {a["name"].lower() for a in accounts}
-    known |= {strip_code_suffix(a["name"]) for a in accounts}
-    known |= {a.name.lower() for a in db.query(Account).all()}
+    known = {spec_path(a).lower() for a in accounts}
+    known |= {strip_code_suffix(spec_path(a)) for a in accounts}
+    for acct, path in account_paths(db):
+        known |= {acct.name.lower(), strip_code_suffix(acct.name)}
+        known |= {path.lower(), strip_code_suffix(path)}
 
     # A journal whose every line is 0.00 "balances" — and then posts nothing.
     # That is what an unrecognised amount column looks like from here: the
@@ -417,8 +569,16 @@ def dry_run_bundle(
 
     opening_balances: list[dict] = []
     if "tb" in bundle and "tb" in parsers:
-        tb, tb_errors = parsers["tb"](bundle["tb"])
+        tb_read, tb_errors = parsers["tb"](bundle["tb"])
         errors.extend(tb_errors)
+        # the trial balance keyed the way the journal is (#690); a name as
+        # the file wrote it is kept for an account the chart lacks
+        tb: dict[str, Decimal] = {}
+        tb_names: dict[str, str] = {}
+        for raw_name, net in tb_read.items():
+            key = strip_code_suffix(raw_name)
+            tb[key] = tb.get(key, Decimal("0")) + net
+            tb_names.setdefault(key, raw_name)
         if not tb:
             header = (bundle["tb"].lstrip("\ufeff").splitlines() or [""])[0]
             errors.append(
@@ -446,7 +606,8 @@ def dry_run_bundle(
             # to exactly zero or that post fails mid-import.
             if _q(abs(sum(d for _, d in residuals))) == 0:
                 opening_balances = [
-                    {"account": name, "amount": float(diff)} for name, diff in residuals
+                    {"account": name, "name": tb_names[name], "amount": float(diff)}
+                    for name, diff in residuals
                 ]
                 warnings.append(
                     f"Trial balance differs from the journals on "
@@ -465,6 +626,15 @@ def dry_run_bundle(
         # beside an accrual journal) has said so in a note of its own.
         warnings.append("No trial balance file supplied — balance verification skipped")
 
+    # Every account an opening balance lands on is in the planned chart, or
+    # is planned now, or the import is refused with its name (#690): the
+    # apply used to skip one it could not find and post a short entry.
+    extra, notes, missing = _opening_accounts(db, accounts, opening_balances)
+    accounts = accounts + extra
+    warnings.extend(notes)
+    if missing:
+        errors.append(_missing_problem(missing))
+
     # Preview the parent rules the import applies (#416): the same plan the
     # apply follows, so the inheritance and refusal warnings — identical
     # words — are what the import will do with the links.
@@ -472,14 +642,16 @@ def dry_run_bundle(
         if decision["warning"]:
             warnings.append(decision["warning"])
 
-    existing = {a.name.lower() for a in db.query(Account).all()}
+    existing = set(books_by_name(db)) | set(onto_accounts(db, accounts))
     return {
         "ok": not errors,
         "errors": errors,
         "warnings": warnings,
         "accounts": len(accounts),
         # the chart's accounts not in the books yet: what an import would make
-        "new_accounts": len([a for a in accounts if a["name"].lower() not in existing]),
+        "new_accounts": len(
+            [a for a in accounts if spec_path(a).lower() not in existing]
+        ),
         "journals": len(journals),
         "duplicate_journals": len(duplicates),
         "opening_balances": opening_balances,
@@ -495,9 +667,28 @@ def run_import_bundle(
         return {**verdict, "imported_accounts": 0, "imported_journals": 0}
 
     accounts, _ = parsers["coa"](bundle["coa"])
+    # the accounts the dry run planned for the opening balances (#690),
+    # created with the chart; one it could not plan refuses before writing
+    extra, _, missing = _opening_accounts(
+        db, accounts, verdict.get("opening_balances") or []
+    )
+    if missing:
+        return {
+            **verdict,
+            "ok": False,
+            "errors": list(verdict["errors"]) + [_missing_problem(missing)],
+            "imported_accounts": 0,
+            "imported_journals": 0,
+        }
+    accounts = accounts + extra
     created = 0
     warnings = list(verdict.get("warnings") or [])
-    by_name: dict[str, Account] = {a.name.lower(): a for a in db.query(Account).all()}
+    # the books' accounts by path, then by name (NEW-203)
+    by_name: dict[str, Account] = books_by_name(db)
+    onto = onto_accounts(db, accounts)
+    for path, acct in onto.items():
+        by_name.setdefault(path, acct)
+    new_paths: list[tuple[str, Account]] = []
     # The dry run's plan, parents first. Its parent warnings are already in
     # `warnings` (carried from the verdict), so they are not added twice.
     made: dict[int, Account] = {}
@@ -531,8 +722,21 @@ def run_import_bundle(
                 f"as {detail_label(acct.detail_type)}"
             )
         made[decision["index"]] = acct
-        by_name[spec["name"].lower()] = acct
+        by_name[spec_path(spec).lower()] = acct
+        new_paths.append((spec_path(spec), acct))
         created += 1
+    for _, acct in new_paths:
+        by_name.setdefault(acct.name.lower(), acct)
+    # the matching key of every account, books' and new (#690): what the
+    # trial balance and the journal's "Name (Code)" forms resolve through,
+    # paths before leaf names (NEW-203)
+    by_key: dict[str, Account] = {}
+    for acct, path in account_paths(db):
+        by_key.setdefault(strip_code_suffix(path), acct)
+    for path, acct in onto.items():
+        by_key.setdefault(strip_code_suffix(path), acct)
+    for acct in by_name.values():
+        by_key.setdefault(strip_code_suffix(acct.name), acct)
 
     journals, _ = parsers["gl"](bundle["gl"])
 
@@ -543,10 +747,14 @@ def run_import_bundle(
 
         first_date = min(group[0]["date"] for group in journals if group)
         ob_lines = []
+        unresolved = []
         for entry in verdict["opening_balances"]:
             amount = _q(Decimal(str(entry["amount"])))
-            acct = by_name.get(entry["account"])
-            if acct is None or amount == 0:
+            acct = by_name.get(entry["account"]) or by_key.get(entry["account"])
+            if acct is None:
+                unresolved.append(entry.get("name") or entry["account"])
+                continue
+            if amount == 0:
                 continue
             ob_lines.append(
                 {
@@ -556,6 +764,10 @@ def run_import_bundle(
                     "description": f"Opening balance — {acct.name}",
                 }
             )
+        if unresolved:
+            # never a short opening entry (#690); nothing is committed yet
+            db.rollback()
+            raise DataProblem(_missing_problem(unresolved))
         opening_desc = f"{source_label} migration — opening balances"
         already_opened = (
             db.query(Transaction.id)
@@ -586,7 +798,7 @@ def run_import_bundle(
             # suffix); the stripped form covers "Name (Code)" GL exports.
             acct = (
                 by_name.get(row["account"].lower())
-                or by_name[strip_code_suffix(row["account"])]
+                or by_key[strip_code_suffix(row["account"])]
             )
             debit = _q(row["debit"])
             credit = _q(row["credit"])

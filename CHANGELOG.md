@@ -5,6 +5,165 @@ Notable changes between releases. Format roughly follows
 used during development is captured here so the README can stay focused
 on what the software does, not on what sprint shipped what.
 
+### v2.31.8 — Settings in groups, a Text size setting, and a way back in when the password is forgotten
+
+**Company Settings in nine groups** (#720). The page was thirty-two sections in one scroll. It is now nine groups chosen from a list down the left (Company, Sales documents, Email, Payroll and checks, Lists, Connections, Preferences, Users and security, Backups), one shown at a time, with **Find a setting** above the list to search every group by heading or field name. Save Settings stays at the bottom of the window and says which groups hold unsaved changes; a group with a change shows a dot; a field that stops the save in a group that is not showing is opened and focused; the links other pages make into Settings open the right group; and the group you last opened is remembered on this computer. Nothing was renamed or moved between screens, and a sign-in sees only the groups it has something in.
+
+**A Text size setting** (#717). Settings → Preferences → My Preferences → Text size makes the app's text 100%, 115%, 125% or 150%, in a browser and in the desktop app, kept on this computer and applied from the first moment a page shows, the sign-in screen included. Unlike zoom, the frame holds: the sidebar scrolls inside itself, the bottom bar stays in the window, a dialog keeps its title and its buttons in view while the form scrolls between them, and wide tables scroll sideways in their own box. The top bar folds to fit, down to the desktop app's smallest window: as room runs out it puts away the clock and the quick-entry buttons, then moves the signed-in name, About, Contact support, Home, Reports and the theme switch into a **More** button that lists them, with Sign Out, Back and Search always in view; a long signed-in name ends in "…" with the whole name in its tooltip; and Company Settings puts its list of groups above the form when the page is narrow. In the desktop app Ctrl + / Ctrl − / Ctrl 0 and Ctrl + wheel step through the same four sizes, and a zoom level set before the update carries over to the nearest one, the larger when it sat between two. Printing and PDFs are not enlarged.
+
+**Forgot your password?** (#719). The sign-in page says how to get back in to this company. In the desktop app an administrator's password can be set again at the computer: for a company file that is not encrypted, being at the computer that holds the file is the proof; for an encrypted file, opening it with its recovery key is, and the key goes on working afterwards. The reset is offered only in the desktop app's own window: a browser on the network or on the same computer, an API token and a server install are told where it can be done and offered nothing, and the sign-in page names no administrator to any of them. It ends that administrator's other sessions, and it is in the audit log. Where another administrator can reset the password, the page says to ask them.
+
+**Mark a line cleared in the register** (#715). A bank or card register's ✓ column is a control: click a line's cell, or Tab to it and press Space or Enter, to mark it cleared as it posts at the bank, and again to take the mark off. It is the mark a bank-feed match sets, so the next reconciliation opens with those lines ticked; a line a finished reconciliation holds shows R and cannot be changed, and a voided line cannot be marked. `POST /api/banking/registers/{account_id}/lines/{line_id}/cleared`.
+
+**Sort the reconcile list** (#716, from discussion #692). The reconciliation screen's Date, Payee / Description, Ref # and Amount headings sort the list, a second click reverses it, and Ref # sorts check numbers as numbers so a run of checks sits together. The order holds while lines are ticked, through Mark all, the date filter and a change of statement, and is remembered for each account on this computer. A read-only sign-in sees the ticks locked rather than offered and refused.
+
+**A bank feed with no account to import into says so** (#718, from discussion #588). On Banking → Bank Feeds, when no account in the chart is marked as a bank account the row says so in place of a list with nothing in it, and offers **+ New bank account** and **Use an account I already have…**, which turns an account already in the chart into a bank or credit-card account and maps the feed to it. A sign-in that may not change the mapping sees where each feed imports as text.
+
+**QuickBooks Desktop: Transaction Detail by Account keeps each line's Class** (#722). The report's Class column was never read, so a file that keeps entities or properties apart by class imported with every line unclassified and P&L by Class was empty, although the guide said the class travelled. Each row's class now lands on its line; a class the books lack is created and named in the result; a file with no Class column imports as before. Lines imported before this release do not gain a class from a second import: import into a fresh company, or restore the backup taken before the import.
+
+**The pay application's original contract sum** (#723). A job whose contract sum was typed on the job form, with no contract type saved, billed with no original recorded, and its pay application PDF printed Original contract sum $0.00 with the whole contract as Net change by change orders. The original is now the contract sum less the approved change orders, on the PDF, the Contract tab, the WIP schedule and the change-order log alike, applications already approved included; and saving a schedule of values or making an application settles the contract type as lump sum where none was saved.
+
+**A pay application with no lines has a way out** (#723). One made before the job had a schedule of values could not be given amounts, approved, voided or removed, and stopped any new one. It can be deleted from the Pay apps tab, and New pay application says why it is refused. `DELETE /api/pay-applications/{id}`.
+
+**A new job opens on Overview** (#723). The job page remembered one tab for every job, so a newly created job opened on whatever tab the last job was left on. Each job keeps its own tab now, and one opened for the first time starts on Overview.
+
+**A pay application needs a schedule of values, and says so** (#714). New pay application on a job with no schedule of values opened an empty grid with nothing to type into. It now says to set the contract on the job's Contract tab first, with a link, and creates nothing.
+
+**Skip to main content is a button in the top bar.** The link keyboard and screen-reader users take past the menus showed, on focus, as a large box over the menu button, the wordmark and Back. It is now a small arrow button at the start of the top bar, named and titled "Skip to main content", still the first Tab stop on every page with the bar's own focus ring, covering nothing.
+
+Also: the Save Settings bar no longer shows a strip of the page under it, and the Taken out box on a register entry's split lines is a plain checkbox.
+
+### v2.31.7 — Install without an administrator, statement lines that import once, and Retained Earnings on the Balance Sheet
+
+**The Windows installer no longer needs an administrator** (#699). Its first page asks who the app is for: "Install for me only" puts SlowBooks Pro in your own account with no password, "Install for all users" installs into Program Files as before, and `/CURRENTUSER` and `/ALLUSERS` do the same from a command line. Your books are in the same place either way. An upgrade keeps the kind of install already there; a standard user facing an all-users copy is told that only an administrator can update it, and nothing is changed. A per-user install says when the WebView2 runtime needs an administrator to update.
+
+**A statement line imports once, whatever the file** (#705). A month imported as a CSV and then as the bank's OFX (or the other way round) put every line into To review a second time: each format knew only its own ids. A line is now a duplicate by its id or by its content (the same date, the same amount to the cent and a matching description), skipped and counted; a line that differs in wording but shares its date and amount with one already matched to the books is set aside as already in the books and counted, never listed as "not in the books". The review list has **Exclude all shown**, and **Show excluded** lists the lines set aside, by you or as already in the books, each with Restore. The bank feeds use the same rule. `POST /api/banking/accounts/{id}/feed/exclude-all`, `GET /api/banking/accounts/{id}/feed/excluded`.
+
+**QuickBooks Online: payables on the control, invoices at their total, the Employee list** (#704, #711). QuickBooks' "Accounts Payable (A/P)" lands on 2000 Accounts Payable rather than on a second payable account beside it, so the first bill entered does not split A/P; when the A/R Aging Detail report carries everything the Journal leaves on receivables, they land on 1100 with no empty account left beside it. An open invoice the Journal holds at its full total comes across at that total with the part already paid applied as a customer payment (invoice 1132: 1,240.00, 500.00 paid, 740.00 open), the Employee list is imported (name, email, address), and the "QuickBooks Online open balance" item is hidden from the item pickers after the import. Voiding a carried invoice or payment moves its amount between 1100 and QuickBooks' own receivable account (made at the first such void) and says so, so the A/R aging always equals 1100; a carried invoice's lines are not edited (void it and enter it again, or post a credit memo), its dates, terms and notes are. The payables themselves come across as a balance: the dry run and the result say how much sits on Accounts Payable with no bills behind it, since A/P Aging lists only bills entered here.
+
+**Migrate Data says it is working, and names the file it cannot read** (#706). Import reads "Importing…" with a line saying what is being written and for how long, a second click does nothing, and the result takes the place of the dry-run text. A file it cannot recognise, loose or inside a zip, is named in a sentence, and a dry run that fails because the files are another source's export says which ("These look like a QuickBooks Online export…").
+
+**An All dates period** (#707). The reports' period list starts with All dates, from the first transaction in the books to today, kept in the address like the others; it is what matches a QuickBooks "All Dates" report. `GET /api/reports/first-date`.
+
+**Retained Earnings and Net Income on the Balance Sheet** (#708). One line, "Net Income (current period)", carried every earlier year's earnings with this year's. The Balance Sheet now shows Retained Earnings (net income before the fiscal year the as-of date falls in) and Net Income (that fiscal year to date) as two lines, the totals unchanged, on the page, the PDF, the CSV and the print page; a nonprofit reads Net Assets from Prior Years and Change in Net Assets. When a posted Retained Earnings account holds a balance of its own, the computed line beside it reads Net Income, prior years.
+
+**Deposit To names Undeposited Funds** (#709). Receive Payment, Sales Receipts and Batch Payments call their first, default choice "Undeposited Funds (deposit later)", with the bank accounts after it; what posts is unchanged.
+
+**The list CSV imports say what they read** (#710). The CSV Import page lists the columns each import reads for customers, vendors and items and links a template for each; headings match in any case and spacing with the obvious other names ("Item Name", "Customer", "Price", "Unit Cost"); an item row can name its income account by number, name or QuickBooks path (an unknown or non-income account refuses the row and says why); a Rate or Cost of "varies" reads as 0, a price set on each sale; a file with no name column gets one error naming its headings, and a row's error names the column it wanted. The chart import nests a Name written the QuickBooks way, "Parent:Child", under its parent and names the account by its last part.
+
+**The Budgets account column stays put** (#702). On the Budgets page and in Budget vs Actual the account column stays in place and the month headers stay at the top while the grid scrolls, also when Tab moves to a late month; and the page prints whole, landscape, every account and all twelve months with the month row on each page. **Print** on the Budgets page and in Budget vs Actual opens the sheet with the print dialog, as the reports' Print does (the desktop app has no print menu): `GET /api/budgets/print` and `GET /api/budgets/variance/print`. Every report PDF and print page now repeats its header row on each page and keeps a row whole.
+
+**Print opens its dialog in the Mac app** (found at the gate; older than this release). Every print page, the reports', the documents' and the Budgets sheets', printed at load, before the Mac app's window had its print hook, so Print opened the sheet and no dialog. The pages now print once the window is ready (at load in a browser), each carries a Print button of its own that is not printed, and a report's print page is titled for its sheet rather than "Report". On a Mac the print panel now offers Orientation, Paper Size and Scale, and a sheet laid out landscape (the Budgets sheets) starts landscape there: WebKit ignores a page's own landscape setting, and the app's panel had offered no way to turn it.
+
+### v2.31.6 — Ctrl+F, arithmetic in the amount box, and the big file that would not open
+
+**A large company file opens after the upgrade** (#693). The ledger-lines table had no index on its transaction or its account in any company file built by the migrations (the model declared both; the first migration made neither), and the once-only catch-up that 2.30 added at start-up, writing cash-basis lines for every payment that had none, read the whole table once per payment: a 959 MB file with 617,000 lines never finished, and the desktop launcher gave up after two minutes with "Server did not become healthy". One migration adds the two indexes (a file that already has them, by whatever name, is left alone); the start-up work writes what it is doing to `startup-progress.json` in the data folder ("Catching up cash-basis lines (payments), 1,200 of 8,580"), the company picker's status line shows it, and the launcher keeps waiting as long as that note keeps moving, giving up only when it has stood still for five minutes; the error, when it comes, names the last step.
+
+**A QuickBooks Online export whose files spell an account two ways** (#690). The trial balance writes a sub-account as a path with its code, `Payroll Liabilities:Federal Unemployment (940)`, and the balance sheet indents it under its parent as `Federal Unemployment (940)`; the import keyed one side with the code and the other without, never matched the two, dropped their opening balances without a word, and the opening entry it then wrote was out of balance and answered HTTP 500. One name key now serves every side of the import (chart files, journal, trial balance), the dry run checks every opening balance against the planned chart and plans a missing sub-account under its parent (saying so) or refuses with the names, the apply creates the planned accounts before the opening entry and refuses before writing anything if one is still missing, and a problem found in the books by any migration source comes back as a 422 with its sentence, never a 500. A sub-account the import places under a parent is named by its leaf ("Federal Unemployment (940)" under Payroll Liabilities) rather than the whole QuickBooks path, so the statements print the parent once (found at the gate; older imports keep the names they were given).
+
+**Save PDF and CSV of a job's Cost Detail** (#691). The tab's cost type › cost code tree (Original, Changes, Budget, Committed, Actual, Projected, Variance, % used, with the period or job to date) exports: the PDF, landscape, as the tab shows it, the rows open on screen; the CSV every row, with Level, Est. Rev and Act. Rev beside the figures. Both carry the job reports' header. `GET /api/jobs/{job_id}/cost-tree/pdf` and `/csv` take the tree's `start_date` and `end_date` (the PDF also `expanded`).
+
+**Hide voided in the register** (#694). A **Hide voided** box beside the register's filters leaves out voided entries and the entries that reversed them, says how many rows it hid, and stays as you set it per sign-in; the running balance of the rows shown still adds up, the ledger, reconciliation and reports are untouched.
+
+**Ctrl+F finds, and Search finds transactions** (#695, from discussion #692). In the desktop app Ctrl+F (⌘F on a Mac) opens Search as Ctrl+K does (in a browser it stays the browser's find in page), and Search has a **Transactions** section: a check by its number, a journal or register entry by its memo, an expense by its reference, a bill payment by its check number, or any posted transaction by its amount to the cent, newest first, each opening its own document (a bank entry opens its register), a voided one marked. `GET /api/search` returns them as `transactions`.
+
+**Arithmetic in every amount box** (#696, from discussion #692). Type `+`, `-`, `*` or `/` after a figure in any amount box and a small calculator tape opens under it holding the sum so far; `=` or Enter puts the result in the box and the form's totals follow, Tab puts it in and moves on, Escape leaves the box as it was. Division by zero or an unfinished sum says so and waits. The tape's input is named for its box, the running result is announced, and the arithmetic is exact decimal (0.1 + 0.2 is 0.30), no `eval`.
+
+**Found on the way:** the register's + Entry dialog kept its Category box in view while a split was open, where it was ignored (a user asked which one counted); the box now goes away while the split lines show, its pick carried to the first line, and comes back with the first line's account when the split is undone.
+
+### v2.31.5 — Real payment terms, a sample company to try, and the window where you left it
+
+**Payment terms beyond Net N** (#664). Terms were free text with one rule:
+"Net N", else 30 days, said to no one, so "2% 10 Net 30", "Net 10th" and
+"15th of following month" were all quietly due 30 days out. Settings now
+keeps a terms list, the QuickBooks shape: a standard term is due a number of
+days after the date, a date-driven term on its next day of the month
+(the one after, when the document is dated fewer than a set number of days
+before that day), and either can offer an early-payment discount. Every form that takes
+terms offers the list, and every document's due date (invoices, bills,
+recurring invoices, memorized bills, an estimate's or a PO's conversion, a
+duplicate) comes from one parser. An invoice, a bill and a recurring or
+memorized schedule are tied to the term their terms named when the person
+picked them, and keep that term's rule; a term added to the list later
+never reaches what was saved before it, even when it is saved again with
+exactly the same terms (any other text picked, even one differing only
+in case or spacing, ties it anew to the entry it names), and a term an
+invoice or bill was saved under keeps its rule and name. A duplicate and a
+schedule's next document keep their source's tie; an import ties nothing.
+Existing books don't change: Due on Receipt, Net 15, 30, 45 and 60 are on
+the list with the rules they always had, an entry is added for any other
+number of days the old parser read from text in use, and only the text the
+old parser read as exactly those days is tied to them ("net<TAB>45" was 30
+days and stays untied). Anything untied is read as the old parser read it,
+everywhere (A/P aging included); a document says what its due date is. Term
+names are stored with whitespace collapsed and invisible characters taken
+out, so a name reads, matches and parses alike. A name the app already
+reads ("Net 30", "COD") keeps its meaning. A recurring invoice whose terms
+are any of the receipt words (Due on Receipt, due upon receipt, COD, Net 0,
+in any case) is now due the day it is made; its generator had its own
+parser, which read all of them as 30 days. The discount shows on the invoice and bill and on
+their PDFs (a foreign-currency one offers none), and Receive Payments and
+Pay Bills suggest it until its date, on what the payment applies to: the
+customer's is a credit memo, ours a vendor credit, applied to the document,
+posted to the account you pick and voided with the payment. A discount the
+terms don't offer (none, after its date, more than the percent, or a second
+one) is refused unless the payment says `allow_discount_override`, which is
+an administrator's; the forms ask first, and the payment, the memo or
+credit and the audit log record who took it and why. A discount the
+customer took after a short payment is taken with that payment later
+(`POST /api/payments/{id}/discount`, and `/api/bill-payments/{id}/discount`).
+A discount is a percent of the document's total, never on a payment dated
+before the document, and never on money a payment's remainder paid later.
+**The CSV list import changes on purpose:** Terms are no longer limited to
+the five the forms offered. A row takes any term on the list (matched as
+the list matches, so "net<TAB>45" is the listed Net 45) or any terms the old
+parser reads ("Net 99", "COD", "Net 0", "Net 1_0"), kept as typed, so rows
+main refused now come in; terms nothing reads, and terms that would be due
+before their date ("Net -5"), are still refused, each naming its row. On the cash basis a discount settles its share of the
+document as a payment does, and is recomputed with the payments when the
+document is edited, so the cash Sales Tax report agrees with its ledger. An invoice or bill
+with a discount taken keeps its terms and date. On a new document, text the
+old parser did not understand now reads through the list: `net<TAB>45` and
+`net` with a no-break space before `45` are the listed Net 45, due in 45
+days where main gave 30, while a document stored with that text keeps main's
+reading until it is tied. A date-driven term's discount day that falls past
+its due day is in the month before the due month. A nonprofit's screens
+and the memo text stored with a discount it takes use its own words
+(a pledge, a donor). Migration `e5c1a7d3f9b2` (the list, seeded; nullable
+`payment_term_id` tying an invoice, bill, recurring or memorized schedule to
+its term, and nullable `discount_payment_id` / `discount_bill_payment_id`
+tying a discount to its payment; the NOT NULL flag columns
+`payments.discount_override`, `bill_payments.discount_override`,
+`credit_memos.discount_override`, `vendor_credits.discount_override` and
+`payment_allocations.from_remainder`, each default false; the indexes
+`ix_payment_terms_name_lower` on `lower(name)` and one on each of
+`invoices.payment_term_id`, `bills.payment_term_id`,
+`credit_memos.discount_payment_id` and
+`vendor_credits.discount_bill_payment_id`; its downgrade refuses while any
+discount taken against the terms still exists).
+
+**The February corner of a date-driven term, and a term that could never discount** (#664, follow-up). "By the 28th, net the 30th" clamped both days to February 28 and offered no discount on a February invoice, "by the 29th, net the 31st" the same; the order is now decided from the days as set, before the month shortens them, so the discount runs to the clamped due day. A term whose discount day is its due day is refused when saved, with the sentence. Each row of the terms list in Settings names its own Edit and Make Inactive buttons. A new document cannot be saved under an inactive term's name over the API either (the forms never offered it); a document saved under it before keeps its tie.
+
+**A display name on customer documents, the legal name on the forms** (#679). A company doing business under a trade name sets a **Display name** beside the company name (Settings → Company); invoices, sales receipts, estimates, statements, credit memos, the emails that carry them and the public pay page read it, and the W-2, W-3, 941, 940, 1099 and pay stubs keep the company name. Empty by default. A saved email template written as `{{ company.company_name }}` says the display name on a customer's email too, with the legal name under `{{ company.legal_name }}`; and a template's subject is now rendered as the text it is, not HTML, so "Pike's Plumbing" no longer reaches the Subject line as "Pike&#39;s Plumbing"; the built-in subject, used until the default templates are loaded, names the company too. The collection letter, the donor acknowledgment and giving statement, the change order, the pay application and the lien waiver read the display name as well; the sentence that carries the EIN, and the lien waiver's Claimant and signature, keep the legal name.
+
+**The logo alone, and Amount Due up top** (#682, #680). **Logo only** (Settings → Company, beside Show company logo on invoices) prints the customer documents with the logo and no company-name heading, the address block kept; with no logo the heading prints as before. A logo image that is cut short or damaged is refused at upload rather than breaking every PDF that prints it. The invoice PDF carries an **Amount Due** box beside Bill To, with the balance due and its due date (a pledge reads Balance; a paid invoice reads $0.00; a sales receipt or donation receipt, paid at the time of sale, has none).
+
+**The desktop window opens where you closed it** (#681). Size, position and maximized are kept in `window-geometry.json` in the data folder, written when the window closes; a saved position counts only when its title bar lands on a screen that is connected (a window saved on a monitor since unplugged comes back at the default), the window is shrunk to the screen when larger, never below 900×600, and the default is used when nothing was saved.
+
+**Form history's Check after a rename** (#678). A form whose company name or EIN changed after it was generated is no longer said to have had its pay runs change: Check walks the settings' audit log back and says which of the two changed, "the figures are as they were"; a pay run that did change still says so.
+
+**Print on reports** (#683). Every report with Save PDF has **Print** beside it, the reconciliation report included: `GET /api/reports/{report}/print` (and `/api/banking/reconciliations/{id}/print`) answers the page the PDF is made from with the print dialog opening on load, the same query string and the same role check as the PDF, as the documents' Print has done.
+
+**A sample company to try the app with** (#684). **Try a sample company** on the Companies page (`POST /api/companies/sample`, administrators) builds Henry Brown's Auto Body Shop, the example business of IRS Publication 583 (8 customers, 13 vendors, 8 items, 10 invoices, 5 payments, 3 estimates, every one with its journal entries, dated this year), in its own company file marked Sample in the picker; a second one is numbered; the company you are in is never touched. The `scripts/seed_irs_mock_data.py` script now calls the same code.
+
+**A class on customer payments and bill payments** (#686). Receive Payments and Pay Bills take a Class under the same rule as everywhere else (shown once the company has a class of its own, preselected to the documents' class when every one applied shares it, else the default class); it is carried on the payment's own lines, the bank and the receivable or payable, and on the early-payment discount's memo or credit taken with it, so Balance Sheet by Class and the register's class filter see the payment. Cash-basis class reporting keeps reading the documents' lines. `POST /api/payments` and `/api/bill-payments` take `class_id` (404 unknown, 400 archived); the IIF export and import carry it. One migration adds the two columns.
+
+**The Journal Entries list sorts and narrows** (#687). Sort by entry date (as before) or by date entered, newest entered first, the choice kept per computer; a From / To range above the list, either bound alone; `GET /api/journal` takes `sort=date|entered`, `start_date` and `end_date`. A count line says how many entries the filter left.
+
+**Sidebar sections fold, and the sidebar hides** (#688). Each section heading folds or opens its items, kept per computer, with the current page's section always open; a Hide sidebar control in the top bar (and `[`) puts the whole sidebar away and brings it back, kept per computer. Phone-width windows behave as before.
+
+**Edit from any report drill-down** (#689). Every line in the drill-down lists (a P&L, Balance Sheet, Trial Balance or P&L Detail line, a total's transactions) and on the General Ledger has Edit beside Open, and the General Ledger's Source links to the transaction. A kind that edits in place (invoice, bill, deposit, hand-entered journal entry, register entry) opens its own form. A kind with no edit of its own (expense, card charge, transfer, credit memo, vendor credit, customer payment, bill payment) opens its form filled in and **Void and Replace** voids the original and posts the new one in one transaction, under the same refusals and sentences as a void (a reconciled line, a closed period, a payment whose applications would be orphaned); each names the other ("Replaced by…", "Replaces…"), the audit log records the pair, and a record already replaced is refused. `POST /api/<kind>/{id}/replace` takes the kind's create payload. The accountant and read-only sign-ins see Open only. Found on the way: the journal view did not show a voided card charge or transfer as voided.
+
 ### v2.31.4 — Class and job wherever money moves, and payments that cannot double up
 
 **Simultaneous payments on one invoice no longer over-apply it** (#666). On SQLite the row lock the payment route takes was a no-op, and the driver began no transaction until the first write, so two payments sent at the same moment both read the same balance and both posted: four $98 payments on a $100 invoice all succeeded. Every row-lock site now takes the database's write lock first on SQLite; the second request waits for the first to finish, reads the balance it left and is refused, as it always was on PostgreSQL. Bill payments, batch payments, credit memos, vendor credits, deposits and the rest of the locked paths get the same.

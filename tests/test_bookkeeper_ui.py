@@ -75,6 +75,18 @@ SETTINGS_KEPT = {
         )
     ],
     "Edit Email Template › Cancel": [],
+    # the groups' list and Find a setting (#720): they only show a group,
+    # and send nothing (Users and security holds only the administrator's
+    # sections, so a bookkeeper's list leaves it out)
+    "#settings-find": [],
+    "Company": [],
+    "Sales documents": [],
+    "Email": [],
+    "Payroll and checks": [],
+    "Lists": [],
+    "Connections": [],
+    "Preferences": [],
+    "Backups": [],
     "Classes › Add Class": [("POST", "/api/classes", {"name": "Wholesale"}, 201)],
     "Classes › Rename": [("PUT", "/api/classes/{klass}", {"name": "Counter"}, 200)],
     "Classes › Archive": [("PUT", "/api/classes/{klass}", {"is_archived": True}, 200)],
@@ -141,6 +153,9 @@ SETTINGS_KEPT = {
     "My Preferences › #pref-report-refresh": [
         ("PUT", "/api/preferences/reports", {"value": {"auto_refresh": False}}, 200)
     ],
+    # Text size (#717) is kept on the computer, not with the sign-in: it
+    # sends nothing, and every role sets it.
+    "My Preferences › #pref-text-size": [],
 }
 # The page's own reads: what it shows loads for a bookkeeper
 SETTINGS_READS = [
@@ -149,6 +164,8 @@ SETTINGS_READS = [
     "/api/backups",
     "/api/email-templates",
     "/api/invoice-messages",
+    "/api/payment-terms",
+    "/api/payment-terms?include_inactive=true",
     "/api/analytics/ai-config",
     "/api/classes?include_archived=true",
     "/api/cost-codes?include_inactive=true",
@@ -254,6 +271,12 @@ SETTINGS_TAKEN = {
         {"is_default": True},
     ),
     "Invoice Messages › Delete": ("DELETE", "/api/invoice-messages/{message}", None),
+    # the terms list (#664) is company setup, kept under Settings
+    "Payment Terms › + Add Term": (
+        "POST",
+        "/api/payment-terms",
+        {"name": "Net 20", "net_days": 20},
+    ),
 }
 # Users and API tokens refuse every API token whatever its role, so these are
 # asked with a bookkeeper's own sign-in. Settings shows the two sections to
@@ -294,6 +317,8 @@ SETTINGS_TAKEN_PARTS = {
 
 COMPANIES_TAKEN = {
     "+ New Company": ("POST", "/api/companies", {"name": "Harbor Light Catering"}),
+    # the sample company is a new company file too (#684)
+    "Try a sample company": ("POST", "/api/companies/sample", None),
     # applying an accountant's changes posts to the books (#346): an administrator's
     "Apply accountant's changes…": (
         "POST",

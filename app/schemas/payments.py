@@ -2,13 +2,17 @@ from datetime import date as dt_date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, Field
-from app.schemas.common import StrictModel
+from pydantic import BaseModel, Field, StrictBool
+from app.schemas.common import Discount, StrictId, StrictModel
 
 
 class PaymentAllocationCreate(StrictModel):
     invoice_id: int
     amount: Decimal
+    # An early-payment discount the customer took on this invoice (#664),
+    # on top of `amount`: posted to the payment's discount_account_id.
+    # Taken when the payment is received, not when a remainder is applied.
+    discount: Discount = Decimal("0")
 
 
 class PaymentAllocationResponse(BaseModel):
@@ -17,6 +21,12 @@ class PaymentAllocationResponse(BaseModel):
     amount: Decimal
     # The invoice's own number, for a person to read ("1001", not the id)
     invoice_number: Optional[str] = None
+    # Whether the payment view may offer "Take discount" on this allocation
+    # (#665): only when the invoice's terms offer one, none was taken, the
+    # money was not applied later from a remainder, and neither the payment
+    # nor the invoice is void or foreign-currency. The JS hides the button
+    # on false, so it is never offered where the click would be refused.
+    can_take_discount: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -33,6 +43,16 @@ class PaymentCreate(StrictModel):
     currency: Optional[str] = None
     exchange_rate: Optional[Decimal] = None
     allocations: list[PaymentAllocationCreate] = []
+    # Where the allocations' discounts post (#664): required when one takes
+    # a discount, refused when none does.
+    discount_account_id: Optional[StrictId] = None
+    # Take a discount the invoice's terms don't offer: none at all, after
+    # its date, more than its percent, or a second one (#664). Each refusal
+    # names this field.
+    allow_discount_override: StrictBool = False
+    # The class the payment's own lines carry (#686): the bank, A/R and the
+    # discounts taken with it. Unknown is 404, archived 400, as a transfer.
+    class_id: Optional[int] = None
 
 
 class PaymentApply(StrictModel):
@@ -40,6 +60,20 @@ class PaymentApply(StrictModel):
     the same customer."""
 
     allocations: list[PaymentAllocationCreate] = Field(min_length=1)
+
+
+class PaymentDiscountResponse(BaseModel):
+    """A discount the customer took with this payment: the credit memo
+    applied to the invoice (#664)."""
+
+    invoice_id: int
+    invoice_number: Optional[str] = None
+    amount: Decimal
+    credit_memo_id: int
+    memo_number: str
+    account_id: Optional[int] = None
+    # taken against the terms, with allow_discount_override (#665)
+    override: bool = False
 
 
 class PaymentResponse(BaseModel):
@@ -65,8 +99,34 @@ class PaymentResponse(BaseModel):
     # On a void: a caution the screen shows, e.g. the payment was already
     # paid out by its provider (#584). The void still went through.
     warning: Optional[str] = None
+    # On a void: where the balance went, as a sentence (a payment the
+    # QuickBooks Online import carried over, #704).
+    notice: Optional[str] = None
     # On the single-payment read: an online payment whose processing fee is
     # booked, so the Void confirm can ask whether the provider refunded it.
     has_provider_fee: bool = False
+    # The early-payment discounts taken with it (#664); empty when none.
+    discounts: list[PaymentDiscountResponse] = []
+    # A discount taken against the terms (#665): who, on what, and why.
+    discount_override: bool = False
+    discount_override_note: Optional[str] = None
+    # its class (#686), and the class's name for the view
+    class_id: Optional[int] = None
+    class_name: Optional[str] = None
+    # Void-and-replace (#689): the payment this one replaced, and the one that
+    # replaced it (this one is then void).
+    replaces_id: Optional[int] = None
+    replaced_by_id: Optional[int] = None
 
     model_config = {"from_attributes": True}
+
+
+class PaymentDiscountAdd(StrictModel):
+    """An early-payment discount taken after the payment that paid the rest
+    (#665): the customer paid 98 of 100 within the window, and the 2 is
+    recorded against that payment, dated as it is."""
+
+    invoice_id: StrictId
+    discount: Discount
+    discount_account_id: StrictId
+    allow_discount_override: StrictBool = False
