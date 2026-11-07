@@ -125,7 +125,8 @@
                 <button type="button" class="btn btn-secondary" onclick="DepositsPage.qbSave(this, 'close')">Save &amp; Close</button>
                 <button type="button" class="btn btn-primary" onclick="DepositsPage.qbSave(this, 'new')">Save &amp; New</button>
                 <button type="button" class="btn btn-secondary" onclick="DepositsPage.qbClear(this)">${d ? 'Revert' : 'Clear'}</button>
-                ${d ? '<button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>' : ''}
+                ${d ? '<button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>'
+                    : '<button type="button" class="btn btn-secondary" onclick="DepositsPage.qbClose(this)">Close</button>'}
             </div>
         </form>`;
     }
@@ -339,9 +340,27 @@
                     other_lines: lines,
                 });
                 toastPosted(`Deposited ${formatCurrency(result.amount)}`);
-                App.navigate('#/deposits');
+                if (mode === 'close') leave(); else App.navigate('#/deposits');
             }
         } catch (err) { toast(err.message, 'error'); }
+    };
+
+    // Save & Close and Close leave the screen, as QuickBooks closes its
+    // window: back to the page it was opened from, or Home
+    function leave() {
+        App.navigate(DepositsPage._cameFrom || '#/');
+    }
+
+    function started(c) {
+        return c.picked.size > 0 || qa(c, '.qbd-lines tr.qbd-other').some(tr =>
+            netOf(tr) || tr.querySelector('.qbd-acct').value || tr.querySelector('.qbd-from').value.trim())
+            || !!(parseFloat(q(c, '.qbd-cb-amt').value) || 0);
+    }
+
+    DepositsPage.qbClose = function (el) {
+        const c = ctx(el);
+        if (c && started(c) && !confirm('Close Make Deposits without saving this deposit?')) return;
+        leave();
     };
 
     DepositsPage.qbClear = function (el) {
@@ -389,6 +408,11 @@
     // ── the page and the edit ─────────────────────────────────────────────
     const baseRecent = DepositsPage._recentHtml;
     DepositsPage.render = async function () {
+        // the page Make Deposits was opened from (not itself, after a
+        // Save & New), for Save & Close and Close to go back to
+        const from = history.state && history.state.from;
+        if (from && !String(from).startsWith('#/deposits')) DepositsPage._cameFrom = from;
+        else if (!from) DepositsPage._cameFrom = null;
         const c = await load(null);
         const recent = await API.get('/deposits?limit=20').catch(() => []);
         c.lastBank = (recent.find(r => !r.voided) || {}).account_id;
