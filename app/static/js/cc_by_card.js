@@ -121,3 +121,24 @@
         App.refresh();
     };
 })();
+
+// Banking lists the bank accounts only (John's build): the credit cards
+// have their own page, Credit Card Charges, one card at a time. A card's
+// Banking register is still there for entering, importing and reconciling
+// (its link on Credit Card Charges).
+(function () {
+    if (typeof BankingPage === 'undefined' || typeof BankingPage.render !== 'function') return;
+    const baseRender = BankingPage.render;
+    BankingPage.render = async function () {
+        const html = await baseRender.apply(this, arguments);
+        const t = document.createElement('template');
+        t.innerHTML = html;
+        const cards = Array.from(t.content.querySelectorAll('.card-grid > a.card-link'))
+            .filter(a => (a.querySelector('.card-header span') || {}).textContent?.includes(BankingPage._kindLabel('credit_card')));
+        if (!cards.length) return html;
+        cards.forEach(a => a.remove());
+        const grid = t.content.querySelector('.card-grid');
+        if (grid) grid.insertAdjacentHTML('afterend', `<p class="cc-card-note">Credit cards are under <a href="#/cc-charges">Credit Card Charges</a>.</p>`);
+        return t.innerHTML;
+    };
+})();
