@@ -3910,7 +3910,7 @@ tbody tr.row--dim > td.amount { color: var(--text-muted); }
    The Enter Expense form as QuickBooks Desktop 2020 lays it out: the bank
    account and its balance on top, the cheque itself on a pale green face,
    the Expenses grid below with its total on a tab. */
-:root { --cheque-bg: #eef7e8; --cheque-border: #9cc48a; --cheque-card-bg: #fbeee2; --cheque-card-border: #e2b48c; --deposit-bg: #eef3fa; --deposit-border: #9fb6d6; }
+:root { --cheque-bg: #eef7e8; --cheque-border: #9cc48a; --cheque-card-bg: #fbeee2; --cheque-card-border: #e2b48c; --deposit-bg: #eef3fa; --deposit-border: #9fb6d6; --bill-bg: #e9eef8; --bill-border: #a9b9d9; }
 .qb-write-cheques .qb-toolbar {
     display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
     padding: 6px 8px; margin-bottom: 8px;
@@ -4004,3 +4004,23 @@ tbody tr.row--dim > td.amount { color: var(--text-muted); }
 .qbd-cashback-row .qbd-cb-amt { width: 120px; text-align: right; }
 .qbd-total { border-top: 1px solid var(--deposit-border); padding-top: 4px; font-size: 15px; }
 .qb-deposit .qb-actions { justify-content: flex-end; }
+
+/* Enter Bills, QuickBooks' layout (enter_bills.js) */
+.qb-bill .qbb-kind { gap: 16px; }
+.qb-bill .qbb-panel { background: var(--bill-bg); border-color: var(--bill-border); }
+.qb-bill .qbb-title { font-size: 30px; font-weight: 300; color: var(--text-primary, #222); margin: -4px 0 4px; }
+.qb-bill .qbb-cols { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 8px 24px; }
+.qb-bill .qbb-field { display: grid; grid-template-columns: 90px minmax(0, 1fr); align-items: center; gap: 8px; margin-bottom: 6px; }
+.qb-bill .qbb-field label { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted, #555); }
+.qb-bill .qbb-field textarea { resize: none; }
+.qb-bill .qbb-memo { margin-top: 2px; }
+.qb-bill .qbb-right .hint { margin-left: 98px; }
+.qb-bill .qbb-tabs { display: flex; gap: 2px; }
+.qb-bill .qbb-tabs .qb-tab { border: 1px solid var(--panel-border); border-bottom: none; background: var(--panel-bg); cursor: pointer; font: inherit; color: inherit; opacity: .75; }
+.qb-bill .qbb-tabs .qb-tab--on { opacity: 1; font-weight: 600; background: var(--bill-bg); }
+@media (max-width: 760px) {
+    .qb-bill .qbb-cols { grid-template-columns: 1fr; }
+}
+.qb-bill .bill-lines-table .qbb-tax { min-width: 56px; }
+.qb-bill .bill-lines-table td:first-child { width: 34%; }
+.qb-bill .bill-lines-table .line-amt { min-width: 90px; }

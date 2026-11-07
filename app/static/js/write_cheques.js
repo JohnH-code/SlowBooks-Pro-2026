@@ -326,15 +326,19 @@
         const lines = (x.lines || []).filter(l => !isTax(l));
         const tax = r2((x.lines || []).filter(isTax).reduce((t, l) => t + Number(l.amount), 0));
         $('#expense-lines').innerHTML = '';
-        for (const l of (lines.length ? lines : [{}])) {
-            ExpensesPage.addLine({ ...l, amount: l.amount != null ? r2(l.amount) : '', tax_code: tax ? 'H' : 'E' });
-        }
+        // each line H or E as it was saved, where the tax tells
+        const codes = tax && typeof qbGuessTaxCodes === 'function'
+            ? qbGuessTaxCodes(lines.map(l => Number(l.amount) || 0), tax, rate()) : null;
+        (lines.length ? lines : [{}]).forEach((l, i) => {
+            ExpensesPage.addLine({ ...l, amount: l.amount != null ? r2(l.amount) : '', tax_code: tax && (!codes || codes[i]) ? 'H' : 'E' });
+        });
         const rows = ExpensesPage.rows();
         rows.forEach(setLineTaxFromNet);
         if (tax) {
             const shown = r2(rows.reduce((t, r) => t + taxOf(r), 0));
-            if (shown !== tax && rows.length) {
-                const big = rows.reduce((a, b) => (netOf(b) > netOf(a) ? b : a));
+            const taxedRows = rows.filter(r => taxOf(r) > 0 || taxed(r));
+            if (shown !== tax && taxedRows.length) {
+                const big = taxedRows.reduce((a, b) => (netOf(b) > netOf(a) ? b : a));
                 big.dataset.tax = r2(taxOf(big) + tax - shown).toFixed(2);
             }
         }

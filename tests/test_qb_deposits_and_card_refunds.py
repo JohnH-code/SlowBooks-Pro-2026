@@ -170,3 +170,34 @@ def test_a_card_refund_reverses_the_charge_and_its_itc(
     assert sorted((ln["account_id"], ln["amount"]) for ln in again["lines"]) == sorted(
         [(supplies, 50.0), (hst, 6.5)]
     )
+
+
+def test_a_bill_with_its_hst_on_a_line_is_an_input_tax_credit(client, seed_accounts):
+    """Enter Bills sends the GST/HST as a line to the GST/HST account, as
+    the bills imported from QuickBooks carry it: the return claims it."""
+    _canada(client, seed_accounts)
+    vendor = client.post("/api/vendors", json={"name": "Office Depot"}).json()
+    r = client.post(
+        "/api/bills",
+        json={
+            "vendor_id": vendor["id"],
+            "bill_number": "OD-1",
+            "date": "2026-08-15",
+            "terms": "Net 30",
+            "lines": [
+                {"account_id": seed_accounts["6000"].id, "amount": 100},
+                {
+                    "account_id": seed_accounts["2200"].id,
+                    "amount": 13,
+                    "description": "GST/HST",
+                },
+            ],
+        },
+    )
+    assert r.status_code == 201, r.text
+    assert float(r.json()["total"]) == 113.0
+    ret = client.get(
+        "/api/reports/gst-hst-return",
+        params={"start_date": "2026-07-01", "end_date": "2026-09-30"},
+    ).json()
+    assert ret["line_106"] == 13.0
