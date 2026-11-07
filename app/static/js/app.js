@@ -104,7 +104,7 @@ const App = {
         '/check-register': { page: 'banking',         label: 'Banking',            render: () => { history.replaceState(history.state, '', '#/banking'); App.navigate('#/banking'); return ''; } },
         '/cc-charges':    { page: 'cc-charges',      label: 'CC Charges',         render: () => CCChargesPage.render() },
         '/cc-charges/:id':    { page: 'cc-charges', label: 'CC Charge',     document: true, render: (id) => App.withDocument(() => CCChargesPage.render(), () => JournalPage.view(id)) },
-        '/expenses':      { page: 'expenses',        label: 'Enter Expenses',     render: () => ExpensesPage.render() },
+        '/expenses':      { page: 'expenses',        label: 'Enter Cheques',      render: () => ExpensesPage.render() },
         '/expenses/:id':      { page: 'expenses',   label: 'Expense',       document: true, render: (id) => App.withDocument(() => ExpensesPage.render(), () => ExpensesPage.showDetail(id)) },
         // Phase 10: Quick Wins + Medium Effort Features
         '/budgets':       { page: 'budgets',         label: 'Budget vs Actual',   render: () => BudgetsPage.render() },

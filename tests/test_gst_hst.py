@@ -336,3 +336,74 @@ def test_card_expenses_show_on_credit_card_charges(client, seed_accounts):
         (x["kind"], x["description"], x["amount"], x["account_name"]) for x in rows
     ] == [("expense", "Esso", 45.2, "Split (2 accounts)")]
     assert all(x["id"] != bank["id"] for x in rows)
+
+
+def test_write_cheques_sends_the_net_and_its_hst(client, db_session, seed_accounts):
+    """Write Cheques (write_cheques.js): each H line is the net, with the
+    GST/HST the form showed beside it; the cheque is their total."""
+    _canada(client, seed_accounts)
+    r = client.post(
+        "/api/expenses",
+        json={
+            "date": "2026-11-07",
+            "payee": "Rogers",
+            "paid_from_account_id": seed_accounts["1000"].id,
+            "amount": "1.00",
+            "lines": [
+                {
+                    "account_id": seed_accounts["6000"].id,
+                    "amount": "0.88",
+                    "tax_code": "H",
+                    "tax_amount": "0.12",
+                }
+            ],
+        },
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["amount"] == 1.0
+    lines = _lines(db_session, r.json()["id"])
+    assert (seed_accounts["6000"].id, 0.88, 0.0) in lines
+    assert (seed_accounts["2200"].id, 0.12, 0.0) in lines
+    # an exempt line beside it carries no tax
+    r = client.post(
+        "/api/expenses",
+        json={
+            "date": "2026-11-07",
+            "payee": "Rogers",
+            "paid_from_account_id": seed_accounts["1000"].id,
+            "amount": "123.00",
+            "lines": [
+                {
+                    "account_id": seed_accounts["6000"].id,
+                    "amount": "100",
+                    "tax_code": "H",
+                    "tax_amount": "13",
+                },
+                {
+                    "account_id": seed_accounts["6100"].id,
+                    "amount": "10",
+                    "tax_code": "E",
+                },
+            ],
+        },
+    )
+    assert r.status_code == 201, r.text
+    # the total must match
+    r = client.post(
+        "/api/expenses",
+        json={
+            "date": "2026-11-07",
+            "payee": "Rogers",
+            "paid_from_account_id": seed_accounts["1000"].id,
+            "amount": "114.00",
+            "lines": [
+                {
+                    "account_id": seed_accounts["6000"].id,
+                    "amount": "100",
+                    "tax_code": "H",
+                    "tax_amount": "13",
+                }
+            ],
+        },
+    )
+    assert r.status_code == 422

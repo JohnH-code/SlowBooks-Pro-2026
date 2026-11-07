@@ -378,6 +378,10 @@ const ExpensesPage = {
                 ...Nonprofit.linePayload(row, 'line-function'),
                 is_billable: !!row.querySelector('.line-billable')?.checked,
                 ...(row.querySelector('.line-tax')?.value === 'H' ? { tax_code: 'H' } : {}),
+                // Write Cheques (write_cheques.js): the line is the net and
+                // its GST/HST is the one the form shows
+                ...(ExpensesPage._qbForm && row.querySelector('.line-tax')?.value === 'H'
+                    ? { tax_amount: parseFloat(row.dataset.tax || '0') || 0 } : {}),
             });
         });
         if (missing) {
@@ -406,7 +410,7 @@ const ExpensesPage = {
                 vendor_id: vendorId,
                 ...(otherPayee ? { payee: otherPayee } : {}),
                 // a line's GST/HST is inside its amount, as on the receipt
-                ...(ExpensesPage._canada ? { amounts_include_tax: true } : {}),
+                ...(ExpensesPage._canada && !ExpensesPage._qbForm ? { amounts_include_tax: true } : {}),
                 paid_from_account_id: paidFrom,
                 amount: parseFloat(form.amount.value),
                 lines,

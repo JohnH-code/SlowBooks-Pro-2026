@@ -44,6 +44,16 @@
     }
     ExpensesPage.amountInWords = amountInWords;
 
+    // The list page under its QuickBooks name: Enter Cheques, with a
+    // Write Cheque button.
+    const baseRender = ExpensesPage.render;
+    ExpensesPage.render = async function () {
+        const html = await baseRender.apply(this, arguments);
+        return html
+            .replace('<h2>Expenses</h2>', '<h2>Enter Cheques</h2>')
+            .replace('>+ Enter Expense</button>', '>+ Write Cheque</button>');
+    };
+
     function vendorAddress(v) {
         if (!v) return '';
         const cityLine = [v.city, [v.state, v.zip].filter(Boolean).join('  ')].filter(Boolean).join(', ');
@@ -73,33 +83,111 @@
         ExpensesPage.nextNumber();
     };
 
-    // The words line and the Expenses tab total follow the amount.
+    // ── Amounts, as QuickBooks Canada keeps them ───────────────────────────
+    // A line's Amount is the net expense; a line coded H carries its GST/HST
+    // (row.dataset.tax), shown under the grid; the cheque is the nets plus
+    // the tax. A cheque amount typed with one line is split back into the
+    // net and the tax.
+    const r2 = x => Math.round((Number(x) || 0) * 100) / 100;
+    const rate = () => (parseFloat(ExpensesPage._hstRate) || 0) / 100;
+    const taxed = row => ExpensesPage._canada && row.querySelector('.line-tax') && row.querySelector('.line-tax').value === 'H';
+    const netOf = row => parseFloat(row.querySelector('.line-amt').value) || 0;
+    const taxOf = row => (taxed(row) ? (parseFloat(row.dataset.tax || '0') || 0) : 0);
+
+    function setLineTaxFromNet(row) {
+        row.dataset.tax = taxed(row) ? r2(netOf(row) * rate()).toFixed(2) : '0';
+    }
+
+    // The words line, the Expenses tab, and the totals under the grid.
     ExpensesPage.qbAmountShown = function () {
         const form = $('#expense-form');
         if (!form) return;
         const amount = parseFloat(form.amount.value) || 0;
         const words = $('#qb-amount-words');
         if (words) words.textContent = amount ? amountInWords(amount) : '';
-        const lines = ExpensesPage.rows().reduce((t, r) => t + (parseFloat(r.querySelector('.line-amt').value) || 0), 0);
+        const rows = ExpensesPage.rows();
+        const net = r2(rows.reduce((t, r) => t + netOf(r), 0));
+        const tax = r2(rows.reduce((t, r) => t + taxOf(r), 0));
         const tab = $('#qb-expenses-total');
-        if (tab) tab.textContent = formatCurrency(lines);
+        if (tab) tab.textContent = formatCurrency(net);
+        const t = $('#qb-tax-total');
+        if (t) t.textContent = formatCurrency(tax);
+        const g = $('#qb-grand-total');
+        if (g) g.textContent = formatCurrency(r2(net + tax));
     };
 
-    // QuickBooks keeps the cheque's amount at the total of the splits: a
-    // change on a line changes the $ box.
-    ExpensesPage.qbLineChanged = function () {
+    // A line's amount or tax code changed: its tax follows, and the cheque
+    // amount becomes the total, as QuickBooks keeps it.
+    ExpensesPage.qbLineChanged = function (row) {
         const form = $('#expense-form');
         if (!form) return;
-        const total = ExpensesPage.rows().reduce((t, r) => t + (parseFloat(r.querySelector('.line-amt').value) || 0), 0);
-        form.amount.value = total ? (Math.round(total * 100) / 100).toFixed(2) : '';
+        if (row) setLineTaxFromNet(row);
+        const total = r2(ExpensesPage.rows().reduce((t, r) => t + netOf(r) + taxOf(r), 0));
+        form.amount.value = total ? total.toFixed(2) : '';
         ExpensesPage.recalc();
     };
 
-    const baseRecalc = ExpensesPage.recalc;
+    // H / E on a line. With one line the cheque amount stays and the line
+    // is split again; with several, the line's tax changes the total.
+    ExpensesPage.qbTaxChanged = function (sel) {
+        const row = sel.closest('tr');
+        if (ExpensesPage.rows().length === 1 && ($('#expense-form').amount.value || '') !== '') {
+            ExpensesPage.amountChanged();
+        } else {
+            ExpensesPage.qbLineChanged(row);
+        }
+    };
+
+    // The cheque amount typed: with one line, its net and tax are what is
+    // left of it after the GST/HST.
+    ExpensesPage.amountChanged = function () {
+        const form = $('#expense-form');
+        if (!form) return;
+        const rows = ExpensesPage.rows();
+        if (rows.length === 1) {
+            const row = rows[0];
+            const gross = r2(parseFloat(form.amount.value) || 0);
+            const tax = taxed(row) ? r2(gross * rate() / (1 + rate())) : 0;
+            row.querySelector('.line-amt').value = gross ? r2(gross - tax).toFixed(2) : '';
+            row.dataset.tax = tax.toFixed(2);
+        }
+        ExpensesPage.recalc();
+    };
+
+    // What is left between the cheque amount and the lines with their tax.
     ExpensesPage.recalc = function () {
-        const left = baseRecalc.apply(this, arguments);
+        const form = $('#expense-form');
+        const rows = ExpensesPage.rows();
+        const paid = r2(parseFloat(form && form.amount.value) || 0);
+        const total = r2(rows.reduce((t, r) => t + netOf(r) + taxOf(r), 0));
+        const left = r2(paid - total);
+        const set = (sel, v) => { const el = $(sel); if (el) el.textContent = formatCurrency(v); };
+        set('#expense-lines-total', total);
+        set('#expense-paid-total', paid);
+        set('#expense-left', left);
+        const leftRow = $('#qb-left-row');
+        if (leftRow) leftRow.style.display = left === 0 ? 'none' : '';
+        document.querySelectorAll('#expense-lines .line-remove').forEach(b => { b.disabled = rows.length < 2; });
         ExpensesPage.qbAmountShown();
         return left;
+    };
+
+    // QuickFill: the last cheque's lines as nets, coded H when it had tax.
+    ExpensesPage.applyQuickFill = function (last) {
+        const form = $('#expense-form');
+        if (!form || !last || !last.lines || !last.lines.length) return;
+        if ((form.amount && form.amount.value) || ExpensesPage.rows().some(r => r.querySelector('.line-amt').value)) return;
+        const isTax = l => ExpensesPage._canada && l.account_id === ExpensesPage._hstAccount;
+        const lines = last.lines.filter(l => !isTax(l));
+        const hadTax = lines.length < last.lines.length;
+        $('#expense-lines').innerHTML = '';
+        for (const l of lines) {
+            ExpensesPage.addLine({ ...l, amount: r2(l.amount), tax_code: hadTax ? 'H' : 'E' });
+        }
+        ExpensesPage.rows().forEach(setLineTaxFromNet);
+        ExpensesPage.qbLineChanged();
+        const status = $('#expense-quickfill-note');
+        if (status) status.textContent = `Filled in from the last one, ${formatDate(last.date)}: change anything that differs.`;
     };
 
     const baseVendorSelected = ExpensesPage.vendorSelected;
@@ -162,8 +250,9 @@
         const lines = ExpensesPage.rows().map(r => ({
             account_id: parseInt(r.querySelector('.line-account').value, 10) || null,
             description: r.querySelector('.line-desc').value || '',
-            amount: parseFloat(r.querySelector('.line-amt').value) || 0,
-            tax_code: r.querySelector('.line-tax') ? r.querySelector('.line-tax').value : '',
+            // a memorized cheque keeps an H line's amount with its tax in it
+            amount: r2(netOf(r) + taxOf(r)),
+            tax_code: taxed(r) ? 'H' : '',
         })).filter(l => l.account_id && l.amount > 0);
         if (!lines.length) { toast('Fill in a line first: an account and an amount', 'error'); return; }
         const vendor = picked && !picked.startsWith('payee:') ? (ExpensesPage._vendors || []).find(v => v.id == picked) : null;
@@ -183,6 +272,7 @@
     ExpensesPage.showForm = async function () {
         const opts = arguments[0] || {};
         ExpensesPage._qbAgain = ExpensesPage._qbSaved = ExpensesPage._qbPrint = null;
+        ExpensesPage._qbForm = true;
         const [vendors, accounts, payees, settings] = await Promise.all([
             API.get('/vendors?active_only=true'),
             API.get('/accounts'),
@@ -251,7 +341,7 @@
                 <div class="table-container table-container--scroll"><table class="line-items-table expense-lines-table qb-lines">
                     <thead><tr>
                         <th scope="col" title="Where the line is recorded">Account</th>
-                        ${canada ? `<th scope="col" title="H: the amount includes GST/HST at ${escapeHtml(ExpensesPage._hstRate)}%, claimed as an input tax credit">Tax</th>` : ''}
+                        ${canada ? `<th scope="col" title="H: GST/HST applies at ${escapeHtml(ExpensesPage._hstRate)}% on the amount, claimed as an input tax credit · E: exempt">Tax</th>` : ''}
                         <th scope="col" class="col-amount">Amount</th>
                         <th scope="col">Memo</th>
                         ${ExpensesPage.jobHeadHtml().replace(`>${T('Job')}<`, `>Customer:${T('Job')}<`)}
@@ -263,9 +353,9 @@
                 </table></div>
                 <button type="button" class="btn btn-sm btn-secondary" style="margin-top:6px;" onclick="ExpensesPage.addLine()">+ Add Line</button>
                 <div class="qb-totals" aria-live="polite">
-                    <span>Lines <strong id="expense-lines-total">$0.00</strong></span>
-                    <span>Cheque <strong id="expense-paid-total">$0.00</strong></span>
-                    <span>Left to assign <strong id="expense-left">$0.00</strong></span>
+                    ${canada ? `<div class="qb-total-row"><span>GST/HST (${escapeHtml(ExpensesPage._hstRate)}%)</span><strong id="qb-tax-total">$0.00</strong></div>` : ''}
+                    <div class="qb-total-row qb-total-row--grand"><span>Total</span><strong id="qb-grand-total">$0.00</strong></div>
+                    <div class="qb-total-row" id="qb-left-row" style="display:none;"><span>Left to assign (cheque <span id="expense-paid-total">$0.00</span>, lines <span id="expense-lines-total">$0.00</span>)</span><strong id="expense-left">$0.00</strong></div>
                 </div>
                 <div class="form-actions qb-actions">
                     <button type="button" class="btn btn-secondary" onclick="ExpensesPage.qbSubmit('close')">Save &amp; Close</button>
@@ -282,7 +372,7 @@
         }
         // a change on any line keeps the cheque's amount at their total
         $('#expense-lines').addEventListener('input', e => {
-            if (e.target.classList.contains('line-amt')) ExpensesPage.qbLineChanged();
+            if (e.target.classList.contains('line-amt')) ExpensesPage.qbLineChanged(e.target.closest('tr'));
         });
         ExpensesPage.qbAccountChanged();
         ExpensesPage.recalc();
@@ -299,13 +389,14 @@
         const jobCell = jobs.length
             ? `<td><select class="line-job"><option value="">Same as header</option>${jobs.map(j => `<option value="${j.id}"${l.job_id === j.id ? ' selected' : ''}>${escapeHtml(j.full_name || j.name)}</option>`).join('')}</select></td>`
             : '';
+        const exempt = l.tax_code === '' || l.tax_code === 'E';
         const taxCell = ExpensesPage._canada
-            ? `<td><select class="line-tax" aria-label="GST/HST"><option value="H"${l.tax_code === '' ? '' : ' selected'}>H</option><option value=""${l.tax_code === '' ? ' selected' : ''}>—</option></select></td>`
+            ? `<td><select class="line-tax" aria-label="GST/HST" title="H: GST/HST applies · E: exempt" onchange="ExpensesPage.qbTaxChanged(this)"><option value="H"${exempt ? '' : ' selected'}>H</option><option value="E"${exempt ? ' selected' : ''}>E</option></select></td>`
             : '';
-        return `<tr>
+        return `<tr data-tax="0">
                 <td>${AccountQuickAdd.picker(`<select class="line-account" required><option value="">Choose...</option>${acctOpts}</select>`, 'expense')}</td>
                 ${taxCell}
-                <td class="col-amount"><input class="line-amt money" type="number" step="0.01" min="0.01" value="${l.amount ? Number(l.amount).toFixed(2) : ''}" oninput="ExpensesPage.recalc()"></td>
+                <td class="col-amount"><input class="line-amt money" type="number" step="0.01" min="0.01" value="${l.amount ? Number(l.amount).toFixed(2) : ''}"></td>
                 <td><input class="line-desc" value="${escapeHtml(l.description || '')}"></td>
                 ${jobCell}
                 <td style="text-align:center;"><input type="checkbox" class="line-billable" title="Billable"${l.is_billable ? ' checked' : ''}></td>

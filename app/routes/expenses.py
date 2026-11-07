@@ -348,6 +348,7 @@ def _line_specs(data: ExpenseCreate) -> list[dict]:
                 "function": data.function,
                 "set_function": "function" in data.model_fields_set,
                 "tax_code": data.tax_code,
+                "tax_amount": None,
             }
         ]
     if not data.lines:
@@ -379,6 +380,7 @@ def _line_specs(data: ExpenseCreate) -> list[dict]:
                 "function": ln.function,
                 "set_function": "function" in ln.model_fields_set,
                 "tax_code": ln.tax_code,
+                "tax_amount": ln.tax_amount,
             }
         )
     total = sum((sp["amount"] for sp in specs), Decimal("0"))
@@ -428,6 +430,10 @@ def _gst_hst(db: Session, data: ExpenseCreate, specs: list[dict]):
             continue
         if data.amounts_include_tax:
             sp["amount"], tax = hst.split_inclusive(sp["amount"], tax_rate)
+        elif sp.get("tax_amount") is not None:
+            # the tax the form showed beside the net, as QuickBooks lets it
+            # be adjusted
+            tax = Decimal(str(sp["tax_amount"])).quantize(Decimal("0.01"))
         else:
             tax = (sp["amount"] * tax_rate).quantize(Decimal("0.01"), ROUND_HALF_UP)
         tax_total += tax

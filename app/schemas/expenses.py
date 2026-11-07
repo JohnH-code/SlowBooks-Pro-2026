@@ -23,6 +23,9 @@ class ExpenseLineIn(StrictModel):
     # Canadian GST/HST: "H" = taxable, the tax is an input tax credit posted
     # to the GST/HST account; "E" or none = no tax on the line.
     tax_code: Optional[str] = Field(None, pattern="^(H|E)?$")
+    # the GST/HST on an H line as the form shows it (Write Cheques: the
+    # line's amount is then the net); left out, it is figured from the rate
+    tax_amount: Optional[Decimal] = Field(None, ge=0)
 
     _cost_type = field_validator("cost_type")(clean_line_cost_type)
 

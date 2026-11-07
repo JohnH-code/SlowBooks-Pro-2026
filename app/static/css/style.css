@@ -3303,7 +3303,10 @@ tbody tr.row--dim > td.amount { color: var(--text-muted); }
 }
 .qb-write-cheques .qb-tab strong { margin-left: 18px; }
 .qb-write-cheques .qb-lines thead th { font-size: 11px; text-transform: uppercase; }
-.qb-write-cheques .qb-totals { display: flex; justify-content: flex-end; gap: 18px; font-size: 12px; margin-top: 6px; }
+.qb-write-cheques .qb-totals { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size: 13px; margin-top: 6px; }
+.qb-write-cheques .qb-total-row { display: flex; gap: 12px; min-width: 260px; justify-content: space-between; }
+.qb-write-cheques .qb-total-row strong { min-width: 100px; text-align: right; }
+.qb-write-cheques .qb-total-row--grand { border-top: 1px solid var(--panel-border); padding-top: 2px; }
 .qb-write-cheques .qb-actions { justify-content: flex-end; }
 .qb-write-cheques .qb-extra { max-width: 760px; margin-bottom: 4px; }
 .qb-write-cheques #scan-row { margin-bottom: 8px !important; padding: 6px 10px !important; }

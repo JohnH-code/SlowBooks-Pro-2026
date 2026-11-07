@@ -430,7 +430,7 @@ const MemorizedPage = {
         $('#mem-cheque-lines').insertAdjacentHTML('beforeend', `<tr>
             <td><select class="line-account" required><option value="">Choose...</option>${PurchaseAccounts.options(MemorizedPage._chequeAccounts, l.account_id)}</select></td>
             <td><input class="line-desc" maxlength="300" value="${escapeHtml(l.description || '')}"></td>
-            ${MemorizedPage._chequeCanada ? `<td><select class="line-tax" aria-label="GST/HST"><option value="H" ${tax === 'H' ? 'selected' : ''}>H</option><option value="" ${tax === 'H' ? '' : 'selected'}>—</option></select></td>` : ''}
+            ${MemorizedPage._chequeCanada ? `<td><select class="line-tax" aria-label="GST/HST"><option value="H" ${tax === 'H' ? 'selected' : ''}>H</option><option value="" ${tax === 'H' ? '' : 'selected'}>E</option></select></td>` : ''}
             <td class="col-amount"><input class="line-amt money" type="number" step="0.01" min="0.01" value="${amount ? Number(amount).toFixed(2) : ''}" oninput="MemorizedPage.chequeTotal()"></td>
             <td><button type="button" class="btn btn-sm btn-secondary" aria-label="Remove line" onclick="if (document.querySelectorAll('#mem-cheque-lines tr').length > 1) { this.closest('tr').remove(); MemorizedPage.chequeTotal(); }">&times;</button></td>
         </tr>`);
