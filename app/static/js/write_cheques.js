@@ -65,11 +65,20 @@
             const acct = byId[p.pay_from_account_id] || (!p.pay_from_account_id ? checking : null);
             return acct && acct.bank_kind === 'bank';
         });
-        if (!cheques.length || !out.includes('<tbody>')) return out;
+        if (!out.includes('<tbody>')) return out;
         const doc = new DOMParser().parseFromString(`<table>${out.slice(out.indexOf('<tbody>'), out.indexOf('</tbody>') + 8)}</table>`, 'text/html');
         const rows = Array.from(doc.querySelectorAll('tbody > tr'));
         const expenses = ExpensesPage._list || [];
         rows.forEach((tr, i) => { tr.dataset.date = (expenses && expenses[i] && expenses[i].date) || ''; });
+        // cheques only: a card charge is on Credit Card Charges, as in
+        // QuickBooks, not here
+        const kept = rows.filter((tr, i) => {
+            const x = expenses[i];
+            const acct = x && byId[x.paid_from_account_id];
+            return !(acct && acct.bank_kind === 'credit_card');
+        });
+        rows.length = 0;
+        rows.push(...kept);
         for (const p of cheques) {
             const acct = byId[p.pay_from_account_id] || checking;
             const tr = doc.createElement('tr');
