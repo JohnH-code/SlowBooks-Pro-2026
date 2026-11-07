@@ -4024,3 +4024,27 @@ tbody tr.row--dim > td.amount { color: var(--text-muted); }
 .qb-bill .bill-lines-table .qbb-tax { min-width: 56px; }
 .qb-bill .bill-lines-table td:first-child { width: 34%; }
 .qb-bill .bill-lines-table .line-amt { min-width: 90px; }
+
+/* Pay Bills, QuickBooks' layout (pay_bills.js) */
+.qb-pay-bills .qbp-section { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; margin: 10px 0 6px; color: var(--text-primary, #222); border-bottom: 1px solid var(--panel-border); padding-bottom: 2px; }
+.qb-pay-bills .qbp-section:first-child { margin-top: 0; }
+.qb-pay-bills .qbp-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 8px; font-size: 13px; }
+.qb-pay-bills .qbp-show { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-right: 18px; }
+.qb-pay-bills .qbp-show label { display: inline-flex; align-items: center; gap: 4px; }
+.qb-pay-bills .qbp-grid-wrap { max-height: 46vh; }
+.qb-pay-bills .qbp-grid tbody tr { cursor: default; }
+.qb-pay-bills .qbp-grid tr.qbp-highlight td { background: var(--deposit-bg); }
+.qb-pay-bills .qbp-grid .pay-discount, .qb-pay-bills .qbp-grid .pay-amount { width: 96px; text-align: right; }
+.qb-pay-bills .qbp-totals td { font-weight: 600; border-top: 1px solid var(--panel-border); }
+.qb-pay-bills .qbp-none { color: var(--text-muted); }
+.qb-pay-bills #qbp-select-all { margin-top: 6px; }
+.qb-pay-bills .qbp-info { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 24px; font-size: 13px; max-width: 760px; }
+.qb-pay-bills .qbp-info > div { display: flex; justify-content: space-between; gap: 8px; }
+.qb-pay-bills .qbp-info span { color: var(--text-muted); }
+.qb-pay-bills .qbp-info .qbp-info-buttons { grid-column: 1 / -1; justify-content: flex-start; }
+.qb-pay-bills .qbp-payment { display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: flex-start; }
+.qb-pay-bills .qbp-cheque-opts { display: flex; flex-direction: column; gap: 3px; padding-top: 16px; }
+.qb-pay-bills .qbp-cheque-opts label { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; text-transform: none; }
+.qb-pay-bills .qbp-cheque-opts input[name=check_number] { width: 130px; }
+.qb-pay-bills .qbp-balance { font-size: 11px; color: var(--text-muted); margin-top: 3px; text-align: right; }
+.qb-pay-bills .qb-actions { justify-content: flex-end; }
