@@ -234,9 +234,30 @@
         if (again) setTimeout(() => ExpensesPage.showForm(again), 250);
     };
 
+    // What the form holds, to tell whether a saved cheque was changed.
+    const qbState = form => JSON.stringify(Array.from(form.elements)
+        .filter(e => e.name || e.className)
+        .map(e => (e.type === 'checkbox' || e.type === 'radio' ? e.checked : e.value)));
+
+    // Nothing entered on a new cheque: no payee, amount or line amount.
+    function qbBlank(form) {
+        const amt = parseFloat((form.querySelector('.qb-amount') || {}).value) || 0;
+        const lines = Array.from(form.querySelectorAll('.line-amt')).some(i => parseFloat(i.value));
+        return !amt && !lines;
+    }
+
     ExpensesPage.qbSubmit = function (mode) {
         const form = $('#expense-form');
         if (!form) return;
+        // Save & Close is also the way out, as in QuickBooks: a blank new
+        // cheque or an unchanged saved one just closes
+        if (mode === 'close' && (ExpensesPage._editId
+            ? ExpensesPage._qbSnap && ExpensesPage._qbSnap === qbState(form)
+            : qbBlank(form))) {
+            ScanHelper.discard();
+            closeModal();
+            return;
+        }
         ExpensesPage._qbAgain = mode === 'new' ? { paid_from_account_id: parseInt(form.paid_from_account_id.value, 10) } : null;
         ExpensesPage._qbPrint = !!(form.qb_print && form.qb_print.checked);
         form.requestSubmit();
@@ -263,7 +284,13 @@
         try { x = await API.get(`/expenses/${id}`); } catch (err) { toast(err.message, 'error'); return; }
         if (x.status === 'void') { toast('This cheque is void; enter it again instead.', 'error'); return; }
         closeModal();
+        ExpensesPage._qbSnap = null;
         await ExpensesPage.showForm({ edit: x, paid_from_account_id: x.paid_from_account_id });
+        // once the payee's address and the totals have settled
+        setTimeout(() => {
+            const form = $('#expense-form');
+            if (form && ExpensesPage._editId === x.id) ExpensesPage._qbSnap = qbState(form);
+        }, 800);
     };
 
     // The saved cheque on the form: its account, number, date, payee, memo,
@@ -439,8 +466,7 @@
                 <div class="form-actions qb-actions">
                     <button type="button" class="btn btn-secondary" onclick="ExpensesPage.qbSubmit('close')">Save &amp; Close</button>
                     <button type="button" class="btn btn-primary" onclick="ExpensesPage.qbSubmit('new')">Save &amp; New</button>
-                    <button type="button" class="btn btn-secondary" onclick="ExpensesPage.qbClear()">Clear</button>
-                    <button type="button" class="btn btn-secondary" onclick="ScanHelper.discard(); closeModal()">Cancel</button>
+                    <button type="button" class="btn btn-secondary" onclick="ExpensesPage.qbClear()" title="${ExpensesPage._editId ? 'Put the cheque back as it was saved' : 'Start this cheque over'}">${ExpensesPage._editId ? 'Revert' : 'Clear'}</button>
                 </div>
             </form>`, { wide: true });
 

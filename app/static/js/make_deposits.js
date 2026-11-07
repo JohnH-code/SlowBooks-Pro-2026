@@ -6,7 +6,8 @@
  * payments picked and any other amounts (Received From, From Account, Memo,
  * Chq No., Pmt Meth., Tax, Amount); then Deposit Subtotal, the GST/HST
  * collected on lines coded H, cash back, and the Deposit Total; Save &
- * Close, Save & New and Clear. A saved deposit opens in the same screen to
+ * Close, Save & New and Clear (Revert on a saved one). Save & Close on a blank
+ * or unchanged deposit just closes. A saved deposit opens in the same screen to
  * be changed (the register's Edit, the list's Edit) and is saved in place.
  *
  * The same calls as the page it replaces: POST /api/deposits for a new one
@@ -124,9 +125,7 @@
             <div class="form-actions qb-actions">
                 <button type="button" class="btn btn-secondary" onclick="DepositsPage.qbSave(this, 'close')">Save &amp; Close</button>
                 <button type="button" class="btn btn-primary" onclick="DepositsPage.qbSave(this, 'new')">Save &amp; New</button>
-                <button type="button" class="btn btn-secondary" onclick="DepositsPage.qbClear(this)">${d ? 'Revert' : 'Clear'}</button>
-                ${d ? '<button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>'
-                    : '<button type="button" class="btn btn-secondary" onclick="DepositsPage.qbClose(this)">Close</button>'}
+                <button type="button" class="btn btn-secondary" onclick="DepositsPage.qbClear(this)" title="${d ? 'Put the deposit back as it was saved' : 'Start this deposit over'}">${d ? 'Revert' : 'Clear'}</button>
             </div>
         </form>`;
     }
@@ -302,10 +301,22 @@
         return { lines: out, error: bad };
     }
 
+    // What the form holds, to tell whether a saved deposit was changed.
+    const state = c => JSON.stringify([
+        Array.from(c.picked).sort(),
+        Array.from(c.form.elements).filter(e => e.type !== 'checkbox' && e.type !== 'button').map(e => e.value),
+    ]);
+
     DepositsPage.qbSave = async function (el, mode) {
         const c = ctx(el);
         if (!c) return;
         const form = c.form;
+        // Save & Close is also the way out, as in QuickBooks: a blank new
+        // deposit or an unchanged saved one just closes
+        if (mode === 'close' && (c.deposit ? c.snap === state(c) : !started(c))) {
+            if (c.deposit) closeModal(); else leave();
+            return;
+        }
         const { lines, error } = otherLinesPayload(c);
         if (error) { toast(error, 'error'); return; }
         const payRows = qa(c, '.qbd-lines tr.qbd-payment');
@@ -345,8 +356,8 @@
         } catch (err) { toast(err.message, 'error'); }
     };
 
-    // Save & Close and Close leave the screen, as QuickBooks closes its
-    // window: back to the page it was opened from, or Home
+    // Save & Close leaves the screen, as QuickBooks closes its window:
+    // back to the page it was opened from, or Home
     function leave() {
         App.navigate(DepositsPage._cameFrom || '#/');
     }
@@ -356,12 +367,6 @@
             netOf(tr) || tr.querySelector('.qbd-acct').value || tr.querySelector('.qbd-from').value.trim())
             || !!(parseFloat(q(c, '.qbd-cb-amt').value) || 0);
     }
-
-    DepositsPage.qbClose = function (el) {
-        const c = ctx(el);
-        if (c && started(c) && !confirm('Close Make Deposits without saving this deposit?')) return;
-        leave();
-    };
 
     DepositsPage.qbClear = function (el) {
         const c = ctx(el);
@@ -409,7 +414,7 @@
     const baseRecent = DepositsPage._recentHtml;
     DepositsPage.render = async function () {
         // the page Make Deposits was opened from (not itself, after a
-        // Save & New), for Save & Close and Close to go back to
+        // Save & New), for Save & Close to go back to
         const from = history.state && history.state.from;
         if (from && !String(from).startsWith('#/deposits')) DepositsPage._cameFrom = from;
         else if (!from) DepositsPage._cameFrom = null;
@@ -440,5 +445,6 @@
         fillFrom(c);
         if (!q(c, '.qbd-lines tr.qbd-other')) addLine(c);
         drawPayments(c);
+        c.snap = state(c);
     };
 })();
