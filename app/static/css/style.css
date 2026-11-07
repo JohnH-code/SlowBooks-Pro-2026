@@ -4084,3 +4084,26 @@ tbody tr.row--dim > td.amount { color: var(--text-muted); }
 .qb-invoice .qbi-grid .line-qty { width: 70px; }
 .qb-invoice .qbi-grid .line-rate { width: 100px; }
 @media (max-width: 760px) { .qb-invoice .qbi-head { grid-template-columns: 1fr; } .qb-invoice .qbi-fields { grid-column: 1; grid-row: auto; } }
+
+/* Receive Payments, QuickBooks' layout (receive_payments.js) */
+.qb-receive .qbr-title { font-size: 30px; font-weight: 700; color: var(--text-primary, #333); margin-bottom: 8px; }
+.qb-receive .qbr-head { display: grid; grid-template-columns: 130px minmax(0, 260px) 140px minmax(0, 200px); gap: 6px 12px; align-items: center; max-width: 780px; }
+.qb-receive label { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted, #555); }
+.qb-receive .qbr-balance { text-align: right; }
+.qb-receive .qbr-goes { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 10px 0; }
+.qb-receive .qbr-goes select { min-width: 300px; }
+.qb-receive .qbr-goes .form-group { margin: 0; }
+.qb-receive .qbr-invoices { border: 1px solid var(--panel-border); border-radius: 4px; padding: 6px; min-height: 120px; }
+.qb-receive .qbr-empty { color: var(--text-muted); text-align: center; padding: 40px 0; font-size: 16px; }
+.qb-receive .qbr-grid .alloc-amount, .qb-receive .qbr-grid .alloc-discount { width: 110px !important; text-align: right; }
+.qb-receive .qbr-totals td { font-weight: 600; border-top: 1px solid var(--panel-border); }
+.qb-receive .qbr-muted { color: var(--text-muted); }
+.qb-receive .qbr-lower { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; flex-wrap: wrap; margin-top: 10px; }
+.qb-receive .qbr-left { flex: 1 1 320px; display: flex; flex-direction: column; gap: 8px; }
+.qb-receive .qbr-memo { display: flex; align-items: center; gap: 8px; }
+.qb-receive .qbr-memo input { flex: 1; max-width: 360px; }
+.qb-receive .qbr-selected { border: 1px solid var(--panel-border); border-radius: 4px; padding: 8px 10px; min-width: 280px; font-size: 13px; }
+.qb-receive .qbr-selected > div { display: flex; justify-content: space-between; gap: 12px; }
+.qb-receive .qbr-selected-head { font-size: 11px; font-weight: 700; text-transform: uppercase; margin-bottom: 4px; }
+.qb-receive .qb-actions { justify-content: flex-end; }
+@media (max-width: 760px) { .qb-receive .qbr-head { grid-template-columns: 1fr; } }
