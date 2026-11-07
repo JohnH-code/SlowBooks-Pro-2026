@@ -67,6 +67,7 @@ class DepositDetailResponse(DepositResponse):
     uncleared: list[dict] = []
     note: Optional[str] = None
     other_lines: list[DepositOtherLineOut] = []
+    class_id: Optional[int] = None
 
 
 class DepositOtherLineIn(StrictModel):
@@ -74,6 +75,13 @@ class DepositOtherLineIn(StrictModel):
     amount: Decimal
     received_from: Optional[str] = None
     memo: Optional[str] = None
+    # John's build, as QuickBooks Canada's Make Deposits: the cheque number
+    # on the line, and GST/HST collected on it — tax_code H with the tax the
+    # form shows (tax_amount), the line's amount being the net; E or none,
+    # no tax
+    check_number: Optional[str] = None
+    tax_code: Optional[str] = None
+    tax_amount: Optional[Decimal] = None
 
 
 class DepositCreate(StrictModel):
@@ -104,3 +112,7 @@ class DepositUpdate(StrictModel):
     class_id: Optional[int] = None
     job_id: Optional[int] = None
     line_ids: Optional[list[int]] = None
+    # John's build: the deposit's other lines (and cash back) as a whole —
+    # given, the deposit is reposted from its payments and these; left out,
+    # they stay as they are
+    other_lines: Optional[list[DepositOtherLineIn]] = None

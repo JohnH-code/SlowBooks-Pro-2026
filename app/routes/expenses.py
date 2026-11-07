@@ -69,6 +69,14 @@ def paid_from_line(txn: Transaction):
     banked = [ln for ln in credits if ln.account is not None and ln.account.bank_kind]
     if banked:
         return min(banked, key=lambda ln: ln.id or 0)
+    # a card credit (a refund, John's build): the card's line is the debit
+    refunds = [
+        ln
+        for ln in txn.lines
+        if (ln.debit or 0) > 0 and ln.account is not None and ln.account.bank_kind
+    ]
+    if refunds:
+        return min(refunds, key=lambda ln: ln.id or 0)
     return max(credits, key=lambda ln: ln.credit)
 
 
@@ -87,6 +95,10 @@ def _serialize(
     split = sorted(
         (ln for ln in txn.lines if ln is not credit_line), key=lambda x: x.id or 0
     )
+    # a card credit (refund) carries its lines the other way round; they
+    # read as the charge's would, its amount positive
+    is_credit = credit_line is not None and (credit_line.debit or 0) > 0
+    sign = Decimal("-1") if is_credit else Decimal("1")
     debit_line = split[0] if split else None
     if vendors is not None:
         vendor = vendors.get(txn.source_id) if txn.source_id else None
@@ -115,7 +127,7 @@ def _serialize(
                     (ln.account.account_number or "") if ln.account else ""
                 ),
                 amount=float(
-                    Decimal(str(ln.debit or 0)) - Decimal(str(ln.credit or 0))
+                    sign * (Decimal(str(ln.debit or 0)) - Decimal(str(ln.credit or 0)))
                 ),
                 description=ln.description or "",
                 class_id=ln.class_id,
@@ -137,7 +149,12 @@ def _serialize(
             if credit_line and credit_line.account
             else ""
         ),
-        amount=float(credit_line.credit) if credit_line else 0.0,
+        amount=(
+            float(credit_line.debit if is_credit else credit_line.credit)
+            if credit_line
+            else 0.0
+        ),
+        is_credit=is_credit,
         reference=txn.reference or "",
         # the memo typed on the expense, kept on its own (#648); a split's
         # debit lines carry their own (#599)
@@ -598,6 +615,12 @@ def post_expense(
             "description": line_desc,
         }
     )
+    if data.is_credit:
+        # a credit to the card (a refund, as QuickBooks' Enter Credit Card
+        # Charges takes one): every line the other way round, the GST/HST
+        # claimed on it given back
+        for line in journal_lines:
+            line["debit"], line["credit"] = line["credit"], line["debit"]
 
     if existing is not None:
         from app.services.bank_posting import reconciled_on, replace_journal_lines
@@ -607,7 +630,9 @@ def post_expense(
             data.date != existing.date
             or old_paid is None
             or old_paid.account_id != paid_from.id
-            or Decimal(str(old_paid.credit or 0)).quantize(Decimal("0.01"))
+            or Decimal(str(old_paid.credit or old_paid.debit or 0)).quantize(
+                Decimal("0.01")
+            )
             != amount.quantize(Decimal("0.01"))
         ):
             raise HTTPException(

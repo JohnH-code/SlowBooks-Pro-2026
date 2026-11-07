@@ -454,6 +454,8 @@ const ExpensesPage = {
                 payee,
                 // a line's GST/HST is inside its amount, as on the receipt
                 ...(ExpensesPage._canada && !ExpensesPage._qbForm ? { amounts_include_tax: true } : {}),
+                // a card's Refund/Credit (write_cheques.js)
+                ...(ExpensesPage._qbForm && ExpensesPage._qbCredit ? { is_credit: true } : {}),
                 paid_from_account_id: paidFrom,
                 amount: parseFloat(form.amount.value),
                 lines,

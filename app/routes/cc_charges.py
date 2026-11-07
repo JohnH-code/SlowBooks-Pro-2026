@@ -84,7 +84,8 @@ def _card_expenses(db: Session) -> list[dict]:
         for (tid,) in db.query(TransactionLine.transaction_id)
         .join(Transaction, Transaction.id == TransactionLine.transaction_id)
         .filter(Transaction.source_type == SOURCE_TYPE)
-        .filter(TransactionLine.account_id.in_(cards), TransactionLine.credit > 0)
+        .filter(TransactionLine.account_id.in_(cards))
+        .filter((TransactionLine.credit > 0) | (TransactionLine.debit > 0))
         .distinct()
     ]
     if not ids:
@@ -100,6 +101,9 @@ def _card_expenses(db: Session) -> list[dict]:
             .all()
         )
     voided = _void_ids(db, ids)
+    from app.services import hst
+
+    tax_account = hst.account_id(db)
     vendors = {v.id: v for v in db.query(Vendor).all()}
     out = []
     for txn in txns:
@@ -107,6 +111,8 @@ def _card_expenses(db: Session) -> list[dict]:
         if card is None or card.account_id not in cards:
             continue
         x = _serialize(txn, db, txn.id in voided, vendors)
+        # the GST/HST claimed is not an account the charge was split to
+        spent = [ln for ln in x.lines if ln.account_id != tax_account] or x.lines
         out.append(
             {
                 "id": txn.id,
@@ -114,11 +120,11 @@ def _card_expenses(db: Session) -> list[dict]:
                 "date": txn.date.isoformat(),
                 "description": x.payee,
                 "reference": x.reference,
-                "amount": x.amount,
+                "amount": -x.amount if x.is_credit else x.amount,
                 "account_name": (
-                    f"Split ({len(x.lines)} accounts)"
-                    if len(x.lines) > 1
-                    else x.expense_account_name
+                    f"Split ({len(spent)} accounts)"
+                    if len(spent) > 1
+                    else spent[0].account_name if spent else x.expense_account_name
                 ),
                 "card_account_id": card.account_id,
                 "card_account_name": x.paid_from_account_name,

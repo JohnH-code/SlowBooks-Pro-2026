@@ -56,6 +56,9 @@ class ExpenseCreate(StrictModel):
     tax_code: Optional[str] = Field(None, pattern="^(H|E)?$")
     # the taxable amounts already include the GST/HST (a receipt's total)
     amounts_include_tax: bool = False
+    # a credit to a card (a refund): the lines come off their accounts and
+    # the card's balance goes down (John's build)
+    is_credit: bool = False
 
     _cost_type = field_validator("cost_type")(clean_line_cost_type)
 
@@ -96,6 +99,7 @@ class ExpenseResponse(BaseModel):
     reference: str = ""
     memo: str = ""
     status: str = "recorded"  # "recorded" | "void"
+    is_credit: bool = False
     printable: bool = False  # paid from a bank account and not void: Print Check
     # Void-and-replace (#689): the expense this one replaced, and the one that
     # replaced it (this one is then void).

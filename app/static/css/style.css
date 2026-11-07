@@ -3910,7 +3910,7 @@ tbody tr.row--dim > td.amount { color: var(--text-muted); }
    The Enter Expense form as QuickBooks Desktop 2020 lays it out: the bank
    account and its balance on top, the cheque itself on a pale green face,
    the Expenses grid below with its total on a tab. */
-:root { --cheque-bg: #eef7e8; --cheque-border: #9cc48a; --cheque-card-bg: #f3f1fa; --cheque-card-border: #b2a8d6; }
+:root { --cheque-bg: #eef7e8; --cheque-border: #9cc48a; --cheque-card-bg: #fbeee2; --cheque-card-border: #e2b48c; --deposit-bg: #eef3fa; --deposit-border: #9fb6d6; }
 .qb-write-cheques .qb-toolbar {
     display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
     padding: 6px 8px; margin-bottom: 8px;
@@ -3967,3 +3967,40 @@ tbody tr.row--dim > td.amount { color: var(--text-muted); }
 .qb-write-cheques .qb-actions { justify-content: flex-end; }
 .qb-write-cheques .qb-extra { max-width: 760px; margin-bottom: 4px; }
 .qb-write-cheques #scan-row { margin-bottom: 8px !important; padding: 6px 10px !important; }
+.qb-write-cheques .qb-card-kind { display: inline-flex; gap: 12px; font-size: 12px; }
+.qb-write-cheques .qb-card-kind label { display: inline-flex; align-items: center; gap: 4px; text-transform: none; letter-spacing: 0; color: inherit; font-size: 12px; }
+.qb-write-cheques .qb-card-title { display: none; font-size: 22px; color: var(--text-muted, #555); }
+.qb-write-cheques .qb-cheque--card .qb-card-title { display: block; }
+
+/* Make Deposits, QuickBooks' layout (make_deposits.js) */
+.qbd-window { max-width: 980px; padding: 10px 12px; margin-bottom: 14px;
+    background: var(--deposit-bg); border: 1px solid var(--deposit-border); border-radius: 4px; }
+.qb-deposit .qb-toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 6px 8px; margin-bottom: 8px;
+    background: var(--toolbar-bg); border: 1px solid var(--toolbar-border); border-radius: 4px;
+}
+.qbd-badge { display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 4px; border-radius: 8px;
+    background: var(--qb-navy, #2a4a7f); color: #fff; font-size: 10px; line-height: 16px; text-align: center; }
+.qbd-top { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.qbd-top label, .qbd-cashback-row label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted, #555);
+}
+.qbd-top select[name="bank"] { min-width: 200px; }
+.qbd-top input[name="memo"] { min-width: 200px; }
+.qbd-hint { font-size: 11px; color: var(--text-muted, #555); margin: 4px 0; }
+.qbd-payments { margin: 6px 0 10px; padding: 8px; background: var(--panel-bg); border: 1px solid var(--deposit-border); border-radius: 4px; }
+.qbd-payments-head { font-weight: 700; font-size: 13px; margin-bottom: 4px; }
+.qbd-payments-ok { margin-top: 6px; display: flex; justify-content: flex-end; }
+.qbd-grid thead th { font-size: 11px; text-transform: uppercase; }
+.qbd-grid .qbd-chq { width: 80px; }
+.qbd-grid .qbd-amt { width: 110px; text-align: right; }
+.qbd-grid tr.qbd-payment td { background: var(--panel-bg); }
+.qb-deposit .qbd-add { margin-top: 6px; }
+.qbd-sub { display: flex; justify-content: flex-end; gap: 12px; font-size: 13px; margin-top: 4px; }
+.qbd-sub strong { min-width: 110px; text-align: right; }
+.qbd-cashback { margin-top: 10px; padding-top: 6px; border-top: 1px dashed var(--deposit-border); }
+.qbd-cashback-row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.qbd-cashback-row > div { display: flex; flex-direction: column; gap: 2px; }
+.qbd-cashback-row .qbd-cb-amt { width: 120px; text-align: right; }
+.qbd-total { border-top: 1px solid var(--deposit-border); padding-top: 4px; font-size: 15px; }
+.qb-deposit .qb-actions { justify-content: flex-end; }

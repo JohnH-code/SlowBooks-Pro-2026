@@ -45,8 +45,10 @@
     --estimate-bg:    #1a2520;
     --cheque-bg:      #1c2a1d;   /* Write Cheques' green face (style.css) */
     --cheque-border:  #4b6b45;
-    --cheque-card-bg: #24213a;
-    --cheque-card-border: #5a5384;
+    --cheque-card-bg: #2d241c;
+    --cheque-card-border: #7a5a3e;
+    --deposit-bg: #1c2433;
+    --deposit-border: #46597a;
     --form-bg:        #1a1c24;
 
     --toolbar-bg:     #242830;

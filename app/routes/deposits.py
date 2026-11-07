@@ -255,6 +255,7 @@ def get_deposit(deposit_id: int, db: Session = Depends(get_db)):
         items=len(taken) or None,
         voided=txn.id in dead_transaction_ids(db, [txn]),
         reconciled=reconciled(txn),
+        class_id=txn.class_id,
         payments=[_payment_line(tl, t, details.get(t.id, {})) for tl, t in taken],
         other_lines=[
             DepositOtherLineOut(
@@ -381,29 +382,9 @@ def create_deposit(data: DepositCreate, db: Session = Depends(get_db)):
 
     # Money put straight into the bank from another account, as QuickBooks'
     # Make Deposits takes it beside the payments: each line credits its
-    # account (a negative line — cash back — debits it).
-    others = []
-    for ln in data.other_lines:
-        amount = _q(ln.amount)
-        if amount == 0:
-            raise HTTPException(status_code=400, detail="A deposit line has no amount")
-        acct = db.query(Account).filter(Account.id == ln.account_id).first()
-        if acct is None:
-            raise HTTPException(
-                status_code=404, detail="Deposit line account not found"
-            )
-        if acct.id in (uf_id, bank_account.id):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "A deposit line can't come from Undeposited Funds or the bank "
-                    "it goes into; tick the payment in the list instead"
-                ),
-            )
-        words = " — ".join(
-            w for w in ((ln.received_from or "").strip(), (ln.memo or "").strip()) if w
-        )
-        others.append((acct, amount, words[:300] or f"Deposit to {bank_account.name}"))
+    # account (a negative line — cash back — debits it), and an H line's
+    # GST/HST is credited to the GST/HST account beside it.
+    others = _other_deposit_lines(db, data.other_lines, uf_id, bank_account)
     payments_total = total
     if others:
         total = _q(payments_total + sum((a for _, a, _ in others), Decimal("0")))
@@ -466,6 +447,169 @@ def create_deposit(data: DepositCreate, db: Session = Depends(get_db)):
     }
 
 
+def _other_deposit_lines(db: Session, lines, uf_id, bank_account) -> list:
+    """(account, amount, words) for a deposit's other lines: money put
+    straight in from another account, a negative line being cash back. An H
+    line (John's build) adds its GST/HST, collected, as its own line to the
+    company's GST/HST account."""
+    others = []
+    tax_account = None
+    for ln in lines or []:
+        amount = _q(ln.amount)
+        if amount == 0:
+            raise HTTPException(status_code=400, detail="A deposit line has no amount")
+        acct = db.query(Account).filter(Account.id == ln.account_id).first()
+        if acct is None:
+            raise HTTPException(
+                status_code=404, detail="Deposit line account not found"
+            )
+        if acct.id in (uf_id, bank_account.id):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "A deposit line can't come from Undeposited Funds or the bank "
+                    "it goes into; tick the payment in the list instead"
+                ),
+            )
+        cheque = (ln.check_number or "").strip()
+        words = " — ".join(
+            w
+            for w in (
+                (ln.received_from or "").strip(),
+                (ln.memo or "").strip(),
+                f"Chq {cheque}" if cheque else "",
+            )
+            if w
+        )
+        words = words[:300] or f"Deposit to {bank_account.name}"
+        others.append((acct, amount, words))
+        if (ln.tax_code or "").upper() == "H":
+            if tax_account is None:
+                from app.services import hst
+
+                tax_account = hst.account_id(db)
+                if tax_account is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "A deposit line is marked for GST/HST, but this "
+                            "company does not charge it. Turn on GST/HST in "
+                            "Settings, or leave the tax code off."
+                        ),
+                    )
+            if amount < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cash back carries no GST/HST; leave its tax code off",
+                )
+            if ln.tax_amount is not None:
+                tax = _q(ln.tax_amount)
+            else:
+                from app.services import hst
+
+                tax = _q(amount * hst.rate(db))
+            if tax:
+                others.append((db.get(Account, tax_account), tax, f"GST/HST — {words}"))
+    return others
+
+
+def _repost_deposit(db: Session, txn, data, bank_account, held, uf_id) -> list:
+    """John's build: a deposit edited as a whole from Make Deposits — its
+    payments (`line_ids`, else the ones it holds) and its other lines and
+    cash back, reposted on the same journal entry. Returns (chosen
+    payments, uncleared)."""
+    if data.line_ids is not None:
+        pool = {ln.id: ln for ln in held}
+        for ln, _ in waiting_items(db, uf_id):
+            pool.setdefault(ln.id, ln)
+        chosen = []
+        for line_id in dict.fromkeys(data.line_ids):
+            line = pool.get(line_id)
+            if line is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "One of the payments you ticked is not on this deposit "
+                        "and is no longer waiting. Reload and tick them again."
+                    ),
+                )
+            chosen.append(line)
+        _lock_taken(db, chosen, allow_deposit_id=txn.id)
+    else:
+        chosen = held
+    payments_total = _q(sum((Decimal(str(ln.debit)) for ln in chosen), Decimal("0")))
+    others = _other_deposit_lines(db, data.other_lines, uf_id, bank_account)
+    total = _q(payments_total + sum((a for _, a, _ in others), Decimal("0")))
+    if total <= 0:
+        raise HTTPException(status_code=400, detail="Deposit amount must be positive")
+    old_bank = next((ln for ln in txn.lines if ln.debit > 0), None)
+    old_total = _q(old_bank.debit) if old_bank else Decimal("0")
+    new_date = data.date if data.date is not None else txn.date
+    recon = reconciled_on(db, txn)
+    if recon is not None and (new_date != txn.date or total != old_total):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"This deposit was reconciled on the "
+                f"{date_text(recon.statement_date)} statement, so its amount "
+                "and date cannot be changed, just as it cannot be voided. "
+                "Correct the difference with a new deposit."
+            ),
+        )
+    check_closing_date(db, txn.date)
+    check_closing_date(db, new_date)
+    label = f"Deposit to {bank_account.name}"
+    lines = [
+        {
+            "account_id": bank_account.id,
+            "debit": total,
+            "credit": Decimal("0"),
+            "description": label,
+        }
+    ]
+    if payments_total > 0:
+        lines.append(
+            {
+                "account_id": uf_id,
+                "debit": Decimal("0"),
+                "credit": payments_total,
+                "description": label,
+            }
+        )
+    for acct, amount, words in others:
+        lines.append(
+            {
+                "account_id": acct.id,
+                "debit": -amount if amount < 0 else Decimal("0"),
+                "credit": amount if amount > 0 else Decimal("0"),
+                "description": words,
+            }
+        )
+    uncleared = replace_journal_lines(
+        db,
+        txn,
+        new_date,
+        label,
+        lines,
+        source_type="deposit",
+        reference=(
+            data.reference
+            if "reference" in data.model_fields_set
+            else (txn.reference or "")
+        )
+        or "",
+        class_id=data.class_id if "class_id" in data.model_fields_set else txn.class_id,
+        job_id=data.job_id if "job_id" in data.model_fields_set else txn.job_id,
+    )
+    chosen_ids = {ln.id for ln in chosen}
+    for ln in held:
+        if ln.id not in chosen_ids:
+            ln.deposit_transaction_id = None
+    for ln in chosen:
+        ln.deposit_transaction_id = txn.id
+    return uncleared
+
+
 @router.put("/{deposit_id}", response_model=DepositDetailResponse)
 def update_deposit(deposit_id: int, data: DepositUpdate, db: Session = Depends(get_db)):
     """Edit a deposit in place from the register (#388), the way the
@@ -503,6 +647,15 @@ def update_deposit(deposit_id: int, data: DepositUpdate, db: Session = Depends(g
         .filter(TransactionLine.deposit_transaction_id == txn.id)
         .all()
     )
+    # John's build: Make Deposits sends the whole deposit — its payments and
+    # its other lines — and it is reposted from them
+    if data.other_lines is not None:
+        uncleared = _repost_deposit(db, txn, data, bank_account, held, uf_id)
+        db.commit()
+        out = get_deposit(txn.id, db)
+        out.uncleared = uncleared_rows(uncleared)
+        out.note = uncleared_note(uncleared)
+        return out
     # A deposit Make Deposits posted is exactly DR bank / CR Undeposited
     # Funds, and only that shape is reposted from the payments it takes. An
     # IIF or QuickBooks-report import posts deposits with their own splits —

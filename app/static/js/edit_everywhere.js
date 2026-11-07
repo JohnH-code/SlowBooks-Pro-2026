@@ -25,6 +25,7 @@ const EditEverywhere = {
         [/^PaymentsPage\.void\((\d+)/, 'payment'],
         [/^BillsPage\.voidBillPayment\((\d+)/, 'bill_payment'],
         [/^BankingPage\.voidTransfer\((\d+)\)/, 'transfer'],
+        [/^DepositsPage\.voidDeposit\((\d+)\)/, 'deposit'],
     ],
 
     open(kind, id) {
@@ -35,7 +36,7 @@ const EditEverywhere = {
 
     buttonHtml(kind, id, cls) {
         const word = (typeof TxnEdit !== 'undefined' && TxnEdit.WORDS[kind]) || 'transaction';
-        const replace = kind !== 'expense';
+        const replace = kind !== 'expense' && kind !== 'deposit';
         const title = replace
             ? `Edit this ${word}: saving voids it and posts the corrected one in its place`
             : `Edit this ${word}`;

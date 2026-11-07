@@ -81,6 +81,13 @@
         label('#qb-acct-label', card ? 'Credit Card' : 'Bank Account');
         label('#qb-no-label', card ? 'Ref No.' : 'No.');
         label('#qb-payee-label', card ? 'Purchased From' : 'Pay to the Order of');
+        // a card: Purchase/Charge or Refund/Credit, as QuickBooks asks
+        const kind = $('#qb-card-kind');
+        if (kind) kind.style.display = card ? '' : 'none';
+        const credit = card && !!form.querySelector('input[name="qb_card_kind"][value="credit"]:checked');
+        ExpensesPage._qbCredit = credit;
+        label('#qb-card-title', credit ? 'Credit Card Refund/Credit' : 'Credit Card Purchase/Charge');
+        if (face) face.classList.toggle('qb-cheque--refund', credit);
         ExpensesPage.nextNumber();
     };
 
@@ -267,6 +274,8 @@
         const form = $('#expense-form');
         if (!form) return;
         if (x.paid_from_account_id) form.paid_from_account_id.value = x.paid_from_account_id;
+        const kindRadio = form.querySelector(`input[name="qb_card_kind"][value="${x.is_credit ? 'credit' : 'charge'}"]`);
+        if (kindRadio) kindRadio.checked = true;
         form.date.value = x.date;
         form.reference.value = x.reference || '';
         form.reference.dataset.auto = '';
@@ -377,9 +386,14 @@
                 <div class="qb-account-row">
                     <label id="qb-acct-label" for="qb-paid-from">Bank Account</label>
                     <select id="qb-paid-from" name="paid_from_account_id" required onchange="ExpensesPage.qbAccountChanged()">${paidFrom.map(acctOpt).join('')}</select>
+                    <span class="qb-card-kind" id="qb-card-kind">
+                        <label><input type="radio" name="qb_card_kind" value="charge" checked onchange="ExpensesPage.qbAccountChanged()"> Purchase/Charge</label>
+                        <label><input type="radio" name="qb_card_kind" value="credit" onchange="ExpensesPage.qbAccountChanged()"> Refund/Credit</label>
+                    </span>
                     <span class="qb-balance"><span id="qb-balance-label">Ending Balance</span> <strong id="qb-ending-balance"></strong></span>
                 </div>
                 <div id="qb-cheque" class="qb-cheque">
+                    <div class="qb-card-title" id="qb-card-title">Credit Card Purchase/Charge</div>
                     <div class="qb-cheque-top">
                         <div class="qb-field"><label id="qb-no-label" for="qb-no">No.</label>
                             <input id="qb-no" name="reference" oninput="this.dataset.auto=''"></div>

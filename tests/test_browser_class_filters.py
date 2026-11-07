@@ -705,7 +705,7 @@ def test_the_warn_setting_starts_the_deposit_picker_blank_and_asks(
                 "el => el.options[0].textContent"
             )
             # named: the label's `for` moves to the type-ahead box (2.19)
-            named = page.get_by_label("Class:")
+            named = page.get_by_label("Class", exact=True)
             assert named.count() == 1
             assert named.evaluate("el => el.id") in (
                 "deposit-class",
@@ -714,13 +714,13 @@ def test_the_warn_setting_starts_the_deposit_picker_blank_and_asks(
             page.check(box)
             deposited_before = len(_ok(company.get("/api/deposits?limit=50")))
             # Cancel: nothing is deposited and the page stays
-            page.get_by_role("button", name="Make Deposit", exact=True).click()
+            page.get_by_role("button", name="Save & New", exact=True).click()
             settle(page, handled)
             assert len(dialogs) == 1 and "reported under Uncategorized" in dialogs[0]
             assert len(_ok(company.get("/api/deposits?limit=50"))) == deposited_before
             assert page.is_checked(box)
             # OK: deposited, under Uncategorized
-            page.get_by_role("button", name="Make Deposit", exact=True).click()
+            page.get_by_role("button", name="Save & New", exact=True).click()
             settle(page, handled)
             page.wait_for_function(
                 f'() => !document.querySelector("{box}")', timeout=5000
