@@ -4107,3 +4107,10 @@ tbody tr.row--dim > td.amount { color: var(--text-muted); }
 .qb-receive .qbr-selected-head { font-size: 11px; font-weight: 700; text-transform: uppercase; margin-bottom: 4px; }
 .qb-receive .qb-actions { justify-content: flex-end; }
 @media (max-width: 760px) { .qb-receive .qbr-head { grid-template-columns: 1fr; } }
+
+/* Credit Card Charges one card at a time (cc_by_card.js) */
+.cc-card-tabs { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: 8px; border-bottom: 1px solid var(--panel-border); }
+.cc-card-tabs .qb-tab { border: 1px solid var(--panel-border); border-bottom: none; background: var(--panel-bg); padding: 6px 12px; cursor: pointer; font: inherit; color: inherit; opacity: .75; border-radius: 4px 4px 0 0; }
+.cc-card-tabs .qb-tab--on { opacity: 1; font-weight: 600; background: var(--cheque-card-bg); }
+.cc-card-tabs .cc-owed { margin-left: 8px; font-weight: 400; color: var(--text-muted); }
+.cc-card-note { font-size: 13px; color: var(--text-muted); margin: 0 0 8px; }
