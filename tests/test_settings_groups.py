@@ -30,6 +30,8 @@ EXPECTED = {
         "settings-h-invoice-messages",
         "settings-h-late-fees",
         "settings-h-giving-statement",
+        # John's build: Sales Tax (GST/HST)
+        "settings-h-sales-tax",
     ],
     "email": [
         "settings-h-email-smtp",
@@ -98,7 +100,9 @@ def test_the_groups_are_the_nine_in_order_with_their_names():
 def test_every_section_carries_a_known_group():
     known = {key for key, _ in _groups()}
     tags = _section_tags()
-    assert len(tags) == 32  # every section of the page, the conditional ones too
+    # every section of the page, the conditional ones too; 33 in John's
+    # build, with its GST/HST section (Sales Tax)
+    assert len(tags) == 33
     missing = [t for t in tags if 'data-group="' not in t]
     assert missing == [], "a section with no data-group: " + "; ".join(missing)
     unknown = [

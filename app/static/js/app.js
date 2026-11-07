@@ -1559,7 +1559,7 @@ const App = {
         openModal('Clean Up Unused Accounts', anything ? `
             ${data.delete.length ? `<p style="font-size:12px;">These ${data.delete.length} accounts have never been used — nothing posted to them, and no item, vendor, budget or sub-account points to them. Untick any you want to keep.</p>
             <p style="font-size:11px;"><a href="#" onclick="document.querySelectorAll('[data-unused]').forEach(c => c.checked = !c.checked); return false;">Invert selection</a></p>
-            <div class="table-container" style="max-height:50vh; overflow:auto;"><table>
+            <div class="table-container" style="max-height:calc(50vh / var(--ui-scale, 1)); overflow:auto;"><table>
                 <thead><tr><th scope="col"></th><th scope="col">Number</th><th scope="col">Name</th><th scope="col">Type</th></tr></thead>
                 <tbody>${data.delete.map(row).join('')}</tbody></table></div>` : ''}
             ${swaps}

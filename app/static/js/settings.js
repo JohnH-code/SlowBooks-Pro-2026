@@ -557,7 +557,7 @@ const SettingsPage = {
                     </div>
                 </div>
 
-                <div class="settings-section" role="group" aria-labelledby="settings-h-sales-tax">
+                <div class="settings-section" data-group="sales" role="group" aria-labelledby="settings-h-sales-tax">
                     <h3 id="settings-h-sales-tax">Currency &amp; Sales Tax</h3>
                     <div class="form-grid">
                         <div class="form-group"><label for="settings-home-currency">Home currency</label>

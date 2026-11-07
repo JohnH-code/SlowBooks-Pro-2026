@@ -770,6 +770,10 @@ def test_a_data_problem_inside_the_import_is_a_422_with_its_words(
         monkeypatch.setattr(module, "dry_run", refuse)
         monkeypatch.setattr(module, "run_import", refuse)
     for source in migration.SOURCES:
+        if source == "qbd":
+            # John's build: QuickBooks Desktop reads its own files (lists.iif,
+            # the Journal report), not a chart and a general ledger
+            continue
         resp = client.post(
             f"/api/migration/{source}/{step}",
             files=_files(**{"chart.csv": SAGE_COA, "generalledger.csv": SAGE_GL}),
