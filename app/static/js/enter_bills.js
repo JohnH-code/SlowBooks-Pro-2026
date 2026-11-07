@@ -244,7 +244,7 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
         const foreign = bill && Number(bill.exchange_rate || 1) !== 1;
         const currency = foreign
             ? currencyFormGroupsHtml(bill.currency, bill.exchange_rate)
-            : `<input type="hidden" name="currency" value="${escapeHtml((bill && bill.currency) || 'USD')}"><input type="hidden" name="exchange_rate" value="${escapeHtml(String((bill && bill.exchange_rate) || 1))}">`;
+            : `<input type="hidden" name="currency" value="${escapeHtml((settings.home_currency || 'USD').toUpperCase())}"><input type="hidden" name="exchange_rate" value="${escapeHtml(String((bill && bill.exchange_rate) || 1))}">`;
         const extra = (classGroup || jobGroup || foreign)
             ? `<div class="form-grid qb-extra">${classGroup}${jobGroup}${foreign ? currency : ''}</div>${foreign ? '' : currency}` : currency;
         const canada = B.canada;
