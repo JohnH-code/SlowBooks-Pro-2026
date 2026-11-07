@@ -37,6 +37,7 @@ const ExpensesPage = {
                     <td class="amount">${formatCurrency(x.amount)}</td>
                     <td class="actions" style="text-decoration:none;">
                         <button class="btn btn-sm btn-secondary" onclick="ExpensesPage.showDetail(${x.id})">View</button>
+                        ${isVoid || typeof ExpensesPage.edit !== 'function' ? '' : `<button data-write class="btn btn-sm btn-secondary" onclick="ExpensesPage.edit(${x.id})">Edit</button>`}
                         ${isVoid ? '' : `<button data-destructive class="btn btn-sm btn-danger" onclick="ExpensesPage.void(${x.id})">Void</button>`}
                     </td>
                 </tr>`;
@@ -420,12 +421,17 @@ const ExpensesPage = {
                 job_id: jobIdFromForm(form),
             };
             // a check number the bank account already has (#481)
+            // an expense opened for editing (write_cheques.js) is saved in place
+            const editId = ExpensesPage._editId;
             const result = await CheckNumberWarn.send(
-                q => API.post('/expenses', body, q ? { query: q } : undefined), form.reference);
+                q => (editId
+                    ? API.put(`/expenses/${editId}`, body, q ? { query: q } : undefined)
+                    : API.post('/expenses', body, q ? { query: q } : undefined)), form.reference);
             if (!result) return;
             ExpensesPage._qbSaved = result;  // write_cheques.js: print when saved
             await ScanHelper.attachAfterSave('expense', result.id);
-            toastPosted('Expense recorded');
+            if (editId) toastPosted('Cheque saved');
+            else toastPosted('Expense recorded');
             closeModal();
             ExpensesPage._backTo();
         } catch (err) { toast(err.message, 'error'); }
@@ -467,6 +473,7 @@ const ExpensesPage = {
                 </div>
             </div>
             <div class="form-actions">
+                ${isVoid || typeof ExpensesPage.edit !== 'function' ? '' : `<button type="button" class="btn btn-primary" data-write onclick="ExpensesPage.edit(${x.id})">Edit</button>`}
                 ${x.printable ? `<button type="button" class="btn btn-secondary" onclick="window.open('/api/checks/print?transaction_id=${x.id}','_blank')">Print Check</button>` : ''}
                 ${isVoid ? '' : `<button type="button" class="btn btn-secondary" data-write title="Keep this cheque as a memorized transaction, to enter again on a schedule" onclick="MemorizedPage.memorizeExpense(${x.id})">Memorize</button>`}
                 ${isVoid ? '' : `<button data-destructive type="button" class="btn btn-danger" onclick="ExpensesPage.void(${x.id})">Void</button>`}

@@ -67,7 +67,8 @@
         const acct = (ExpensesPage._accounts || []).find(a => a.id === parseInt(form.paid_from_account_id.value, 10));
         const card = !!acct && acct.bank_kind === 'credit_card';
         const name = acct ? acct.name : '';
-        $('#modal-title').textContent = card ? `Enter Credit Card Charges - ${name}` : `Write Cheques - ${name}`;
+        $('#modal-title').textContent = (card ? `Enter Credit Card Charges - ${name}` : `Write Cheques - ${name}`)
+            + (ExpensesPage._editId ? ' (editing)' : '');
         const bal = $('#qb-ending-balance');
         if (bal) bal.textContent = acct ? formatCurrency(Number(acct.balance || 0)) : '';
         const balLabel = $('#qb-balance-label');
@@ -238,7 +239,65 @@
         const form = $('#expense-form');
         const keep = form ? parseInt(form.paid_from_account_id.value, 10) : null;
         ScanHelper.discard();
+        // a cheque being edited goes back to what was saved
+        if (ExpensesPage._editId) return ExpensesPage.edit(ExpensesPage._editId);
         ExpensesPage.showForm({ paid_from_account_id: keep });
+    };
+
+    // Open a saved cheque or card charge in the form, as QuickBooks opens
+    // one from the register, to change and save in place.
+    ExpensesPage.edit = async function (id) {
+        let x;
+        try { x = await API.get(`/expenses/${id}`); } catch (err) { toast(err.message, 'error'); return; }
+        if (x.status === 'void') { toast('This cheque is void; enter it again instead.', 'error'); return; }
+        closeModal();
+        await ExpensesPage.showForm({ edit: x, paid_from_account_id: x.paid_from_account_id });
+    };
+
+    // The saved cheque on the form: its account, number, date, payee, memo,
+    // and its lines as nets with their GST/HST. A GST/HST line in it is
+    // spread back over the lines (H), the cents left on the largest, so the
+    // form shows exactly what was saved.
+    ExpensesPage.qbFillFrom = function (x) {
+        const form = $('#expense-form');
+        if (!form) return;
+        if (x.paid_from_account_id) form.paid_from_account_id.value = x.paid_from_account_id;
+        form.date.value = x.date;
+        form.reference.value = x.reference || '';
+        form.reference.dataset.auto = '';
+        form.memo.value = x.memo || '';
+        const vsel = $('#expense-vendor');
+        if (vsel) {
+            if (x.vendor_id) {
+                vsel.value = String(x.vendor_id);
+            } else if (x.payee) {
+                const v = `payee:${x.payee}`;
+                if (!Array.from(vsel.options).some(o => o.value === v)) {
+                    vsel.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(v)}">${escapeHtml(x.payee)}</option>`);
+                }
+                vsel.value = v;
+            }
+            const addr = $('#qb-address');
+            const vendor = (ExpensesPage._vendors || []).find(v => v.id === x.vendor_id);
+            if (addr) addr.value = vendor ? vendorAddress(vendor) : (x.payee || '');
+        }
+        const isTax = l => ExpensesPage._canada && l.account_id === ExpensesPage._hstAccount;
+        const lines = (x.lines || []).filter(l => !isTax(l));
+        const tax = r2((x.lines || []).filter(isTax).reduce((t, l) => t + Number(l.amount), 0));
+        $('#expense-lines').innerHTML = '';
+        for (const l of (lines.length ? lines : [{}])) {
+            ExpensesPage.addLine({ ...l, amount: l.amount != null ? r2(l.amount) : '', tax_code: tax ? 'H' : 'E' });
+        }
+        const rows = ExpensesPage.rows();
+        rows.forEach(setLineTaxFromNet);
+        if (tax) {
+            const shown = r2(rows.reduce((t, r) => t + taxOf(r), 0));
+            if (shown !== tax && rows.length) {
+                const big = rows.reduce((a, b) => (netOf(b) > netOf(a) ? b : a));
+                big.dataset.tax = r2(taxOf(big) + tax - shown).toFixed(2);
+            }
+        }
+        form.amount.value = Number(x.amount).toFixed(2);
     };
 
     // Memorize the cheque on the form, as QuickBooks' Memorize does: the
@@ -273,6 +332,7 @@
         const opts = arguments[0] || {};
         ExpensesPage._qbAgain = ExpensesPage._qbSaved = ExpensesPage._qbPrint = null;
         ExpensesPage._qbForm = true;
+        ExpensesPage._editId = opts.edit ? opts.edit.id : null;
         const [vendors, accounts, payees, settings] = await Promise.all([
             API.get('/vendors?active_only=true'),
             API.get('/accounts'),
@@ -374,6 +434,7 @@
         $('#expense-lines').addEventListener('input', e => {
             if (e.target.classList.contains('line-amt')) ExpensesPage.qbLineChanged(e.target.closest('tr'));
         });
+        if (opts.edit) ExpensesPage.qbFillFrom(opts.edit);
         ExpensesPage.qbAccountChanged();
         ExpensesPage.recalc();
         ScanHelper.wire(ExpensesPage._applyScan, ExpensesPage._applyScanField, ExpensesPage._scanFieldTarget);

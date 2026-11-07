@@ -407,3 +407,66 @@ def test_write_cheques_sends_the_net_and_its_hst(client, db_session, seed_accoun
         },
     )
     assert r.status_code == 422
+
+
+def test_a_saved_cheque_is_edited_in_place(client, db_session, seed_accounts):
+    """Write Cheques opens a saved cheque and saves it back on the same
+    transaction (PUT /api/expenses/{id}); a void one is refused."""
+    _canada(client, seed_accounts)
+    bank = seed_accounts["1000"].id
+    body = {
+        "date": "2026-11-07",
+        "payee": "Rogers",
+        "paid_from_account_id": bank,
+        "amount": "113.00",
+        "reference": "501",
+        "lines": [
+            {
+                "account_id": seed_accounts["6000"].id,
+                "amount": "100",
+                "tax_code": "H",
+                "tax_amount": "13",
+            }
+        ],
+    }
+    x = client.post("/api/expenses", json=body).json()
+    body.update(
+        amount="135.60",
+        memo="two lines now",
+        lines=[
+            {
+                "account_id": seed_accounts["6000"].id,
+                "amount": "100",
+                "tax_code": "H",
+                "tax_amount": "13",
+            },
+            {
+                "account_id": seed_accounts["6100"].id,
+                "amount": "20",
+                "tax_code": "H",
+                "tax_amount": "2.60",
+            },
+        ],
+    )
+    r = client.put(f"/api/expenses/{x['id']}", json=body)
+    assert r.status_code == 200, r.text
+    y = r.json()
+    assert y["id"] == x["id"] and y["amount"] == 135.6 and y["memo"] == "two lines now"
+    assert sorted((ln["account_id"], ln["amount"]) for ln in y["lines"]) == sorted(
+        [
+            (seed_accounts["6000"].id, 100.0),
+            (seed_accounts["6100"].id, 20.0),
+            (seed_accounts["2200"].id, 15.6),
+        ]
+    )
+    # one transaction, still: the edit did not post a second cheque
+    assert (
+        db_session.query(Transaction)
+        .filter_by(source_type="expense", reference="501")
+        .count()
+        == 1
+    )
+    # keeping its own number is not a duplicate of itself
+    assert client.put(f"/api/expenses/{x['id']}", json=body).status_code == 200
+    assert client.post(f"/api/expenses/{x['id']}/void").status_code == 200
+    assert client.put(f"/api/expenses/{x['id']}", json=body).status_code == 400

@@ -452,13 +452,50 @@ def create_expense(
     return _serialize(txn, db)
 
 
+@router.put("/{expense_id}", response_model=ExpenseResponse)
+def update_expense(
+    expense_id: int,
+    data: ExpenseCreate,
+    db: Session = Depends(get_db),
+    allow_duplicate_check_number: bool = Query(False),
+):
+    """Edit a saved cheque or card charge in place, as QuickBooks opens one
+    from the register (John's build): the same transaction keeps its id,
+    attachments and audit trail, and its lines are rewritten the way a
+    register entry's are (replace_journal_lines). A void one is not edited;
+    one a completed reconciliation holds keeps its amount, date and
+    account."""
+    txn = (
+        db.query(Transaction)
+        .filter(Transaction.id == expense_id, Transaction.source_type == SOURCE_TYPE)
+        .first()
+    )
+    if txn is None:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    if txn.id in _void_ids(db, [txn.id]):
+        raise HTTPException(
+            status_code=400,
+            detail="This cheque is void; a void cheque is not edited. Enter it again.",
+        )
+    post_expense(db, data, allow_duplicate_check_number, existing=txn)
+    db.commit()
+    db.refresh(txn)
+    return _serialize(txn, db)
+
+
 def post_expense(
-    db: Session, data: ExpenseCreate, allow_duplicate_check_number: bool = False
+    db: Session,
+    data: ExpenseCreate,
+    allow_duplicate_check_number: bool = False,
+    existing: Transaction | None = None,
 ) -> Transaction:
     """Check and post an expense, without committing: the route commits,
     and a memorized cheque entered by the schedule posts through here in
-    the schedule's own transaction."""
+    the schedule's own transaction. With `existing`, the saved expense is
+    rewritten in place instead (update_expense)."""
     check_closing_date(db, data.date)
+    if existing is not None:
+        check_closing_date(db, existing.date)
 
     specs = _line_specs(data)
     itc_account, tax_total = _gst_hst(db, data, specs)
@@ -497,9 +534,19 @@ def post_expense(
 
     # a check whose number the bank account already has (#481): the 409
     # the person answers, keep the number or edit it
-    refuse_duplicate(
-        db, paid_from.id, data.reference, allow=allow_duplicate_check_number
-    )
+    old_paid = paid_from_line(existing) if existing is not None else None
+    if (
+        existing is None
+        or (data.reference or "").strip() != (existing.reference or "").strip()
+        or (old_paid is not None and old_paid.account_id != paid_from.id)
+    ):
+        refuse_duplicate(
+            db,
+            paid_from.id,
+            data.reference,
+            allow=allow_duplicate_check_number,
+            exclude_txn_id=existing.id if existing is not None else None,
+        )
 
     vendor = None
     if data.vendor_id is not None:
@@ -547,6 +594,41 @@ def post_expense(
             "description": line_desc,
         }
     )
+
+    if existing is not None:
+        from app.services.bank_posting import reconciled_on, replace_journal_lines
+
+        recon = reconciled_on(db, existing)
+        if recon is not None and (
+            data.date != existing.date
+            or old_paid is None
+            or old_paid.account_id != paid_from.id
+            or Decimal(str(old_paid.credit or 0)).quantize(Decimal("0.01"))
+            != amount.quantize(Decimal("0.01"))
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"This cheque was reconciled on the {recon.statement_date} "
+                    "statement, so its amount, date and account stay as they "
+                    "are. Its payee, memo and accounts can still be corrected."
+                ),
+            )
+        replace_journal_lines(
+            db,
+            existing,
+            data.date,
+            f"Expense: {payee}" if payee else "Expense",
+            journal_lines,
+            source_type=SOURCE_TYPE,
+            reference=data.reference or "",
+            class_id=data.class_id,
+            job_id=data.job_id,
+        )
+        existing.source_id = vendor.id if vendor else None
+        existing.memo = memo
+        db.flush()
+        return existing
 
     txn = create_journal_entry(
         db,
