@@ -397,12 +397,27 @@
         await Nonprofit.loadFunds();
         const expenseAccts = PurchaseAccounts.filter(accounts);
         ExpensesPage._expenseAccounts = expenseAccts.concat(accounts.filter(a => !expenseAccts.includes(a) && a.is_active !== false));
-        const paidFrom = ExpensesPage.paidFromAccounts(accounts).filter(a => a.is_active !== false);
-        const start = (opts.paid_from_account_id && paidFrom.find(a => a.id === opts.paid_from_account_id))
-            || (opts.card
-                ? (paidFrom.find(a => a.bank_kind === 'credit_card' && a.account_number === '2100') || paidFrom.find(a => a.bank_kind === 'credit_card'))
+        // Write Cheques lists the bank accounts and Enter Credit Card Charges
+        // the credit cards, as QuickBooks' two windows do: the kind is the
+        // card's when asked for one, else the account given's, else a bank.
+        const given = opts.paid_from_account_id && accounts.find(a => a.id === opts.paid_from_account_id);
+        const kind = opts.card ? 'credit_card' : ((given && given.bank_kind) || 'bank');
+        const paidFrom = ExpensesPage.paidFromAccounts(accounts)
+            .filter(a => a.bank_kind === kind && (a.is_active !== false || (given && a.id === given.id)));
+        // the one last used of that kind, as QuickBooks remembers it
+        const recent = given ? [] : await API.get('/expenses?limit=25').catch(() => []);
+        const lastId = ((Array.isArray(recent) ? recent : (recent && recent.items) || [])
+            .find(x => paidFrom.some(a => a.id === x.paid_from_account_id)) || {}).paid_from_account_id;
+        const start = (given && paidFrom.find(a => a.id === given.id))
+            || paidFrom.find(a => a.id === lastId)
+            || (kind === 'credit_card'
+                ? paidFrom.find(a => a.account_number !== '2100')
                 : (paidFrom.find(a => a.account_number === '1000') || paidFrom.find(a => a.bank_kind === 'bank')))
             || paidFrom[0];
+        if (!paidFrom.length) {
+            toast(kind === 'credit_card' ? 'There is no credit card account yet: add one in the Chart of Accounts.' : 'There is no bank account yet: add one in the Chart of Accounts.', 'error');
+            return;
+        }
         const acctOpt = a => `<option value="${a.id}"${start && a.id === start.id ? ' selected' : ''}>${escapeHtml(a.name)}</option>`;
         const canada = ExpensesPage._canada;
         const extraGroups = (classGroup || jobGroup) ? `<div class="form-grid qb-extra">${classGroup}${jobGroup}</div>` : '';
