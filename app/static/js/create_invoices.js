@@ -177,7 +177,7 @@
                         <div class="qbi-fields">
                             <div><label for="qbi-date">Date</label>
                                 <input id="qbi-date" name="date" type="date" required value="${inv.date}" onchange="InvoicesPage._recomputeDueDate()"></div>
-                            <div><label>Invoice #</label>
+                            <div><label>${T('Invoice')} #</label>
                                 <input value="${escapeHtml(id ? (inv.invoice_number || '') : '')}" placeholder="next number" readonly tabindex="-1" title="Numbered when it is saved"></div>
                             <div><label for="invoice-terms">Terms</label>
                                 <select name="terms" id="invoice-terms" onchange="InvoicesPage._recomputeDueDate()">

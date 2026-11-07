@@ -4031,7 +4031,7 @@ tbody tr.row--dim > td.amount { color: var(--text-muted); }
 .qb-pay-bills .qbp-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 8px; font-size: 13px; }
 .qb-pay-bills .qbp-show { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-right: 18px; }
 .qb-pay-bills .qbp-show label { display: inline-flex; align-items: center; gap: 4px; }
-.qb-pay-bills .qbp-grid-wrap { max-height: 46vh; }
+.qb-pay-bills .qbp-grid-wrap { max-height: calc(46vh / var(--ui-scale, 1)); }
 .qb-pay-bills .qbp-grid tbody tr { cursor: default; }
 .qb-pay-bills .qbp-grid tr.qbp-highlight td { background: var(--deposit-bg); }
 .qb-pay-bills .qbp-grid .pay-discount, .qb-pay-bills .qbp-grid .pay-amount { width: 96px; text-align: right; }
