@@ -46,12 +46,50 @@
 
     // The list page under its QuickBooks name: Enter Cheques, with a
     // Write Cheque button.
+    // The list also has the cheques Pay Bills wrote, as QuickBooks' cheque
+    // list and register have them: a bill payment from a bank account, with
+    // its View, Edit (Void and Replace) and Void.
     const baseRender = ExpensesPage.render;
     ExpensesPage.render = async function () {
-        const html = await baseRender.apply(this, arguments);
-        return html
+        const [html, payments, accounts] = await Promise.all([
+            baseRender.apply(this, arguments),
+            API.get('/bill-payments').catch(() => []),
+            API.get('/accounts').catch(() => []),
+        ]);
+        let out = html
             .replace('<h2>Expenses</h2>', '<h2>Enter Cheques</h2>')
             .replace('>+ Enter Expense</button>', '>+ Write Cheque</button>');
+        const byId = Object.fromEntries(accounts.map(a => [a.id, a]));
+        const checking = accounts.find(a => a.account_number === '1000');
+        const cheques = (payments || []).filter(p => {
+            const acct = byId[p.pay_from_account_id] || (!p.pay_from_account_id ? checking : null);
+            return acct && acct.bank_kind === 'bank';
+        });
+        if (!cheques.length || !out.includes('<tbody>')) return out;
+        const doc = new DOMParser().parseFromString(`<table>${out.slice(out.indexOf('<tbody>'), out.indexOf('</tbody>') + 8)}</table>`, 'text/html');
+        const rows = Array.from(doc.querySelectorAll('tbody > tr'));
+        const expenses = ExpensesPage._list || [];
+        rows.forEach((tr, i) => { tr.dataset.date = (expenses && expenses[i] && expenses[i].date) || ''; });
+        for (const p of cheques) {
+            const acct = byId[p.pay_from_account_id] || checking;
+            const tr = doc.createElement('tr');
+            tr.dataset.date = p.date;
+            tr.dataset.status = p.is_voided ? 'void' : 'recorded';
+            if (p.is_voided) { tr.className = 'row--dim'; tr.style.textDecoration = 'line-through'; }
+            tr.innerHTML = `<td>${formatDate(p.date)}</td><td>${escapeHtml(p.vendor_name || '')}</td>
+                <td>Bill Payment</td><td>${escapeHtml(acct ? acct.name : '')}</td>
+                <td>${escapeHtml(p.check_number || (p.method === 'check' ? 'To print' : ''))}</td>
+                <td style="text-decoration:none;">${statusBadge(p.is_voided ? 'void' : 'recorded')}</td>
+                <td class="amount">${formatCurrency(p.amount)}</td>
+                <td class="actions" style="text-decoration:none;">
+                    <button class="btn btn-sm btn-secondary" onclick="BillsPage.viewPayment(${p.id})">View</button>
+                    ${p.is_voided ? '' : `<button data-destructive class="btn btn-sm btn-danger" onclick="BillsPage.voidBillPayment(${p.id})">Void</button>`}
+                </td>`;
+            rows.push(tr);
+        }
+        rows.sort((a, b) => (a.dataset.date < b.dataset.date ? 1 : a.dataset.date > b.dataset.date ? -1 : 0));
+        const body = rows.map(r => r.outerHTML).join('');
+        return out.slice(0, out.indexOf('<tbody>')) + `<tbody>${body}</tbody>` + out.slice(out.indexOf('</tbody>') + 8);
     };
 
     function vendorAddress(v) {

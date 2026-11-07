@@ -14,6 +14,7 @@ const ExpensesPage = {
 
     async render() {
         const expenses = await API.get('/expenses');
+        ExpensesPage._list = expenses;  // the rows drawn, for Enter Cheques' merge
         let html = `
             <div class="page-header">
                 <h2>Expenses</h2>
