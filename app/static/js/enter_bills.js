@@ -207,9 +207,21 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
     };
 
     // A scanned receipt's total is the Amount Due, split as typed.
+    // The scan's tax goes in GST/HST (the H lines), not as a "Tax detected"
+    // note in the Memo, which the bill's payment then printed on the cheque.
+    const dropTaxNote = () => {
+        const notes = $('#bill-form [name="notes"]');
+        if (notes) notes.value = notes.value.split('\n').filter(l => !/^Tax detected:/.test(l)).join(' ').trim();
+    };
+    const baseScanField = BillsPage._applyScanField;
+    BillsPage._applyScanField = function (fieldKey) {
+        if (active() && fieldKey === 'tax') return;
+        return baseScanField.apply(BillsPage, arguments);
+    };
     const baseApplyScan = BillsPage._applyScan;
     BillsPage._applyScan = function (result) {
         baseApplyScan.call(BillsPage, result);
+        if (active()) dropTaxNote();
         const total = parseFloat((result && result.total) || '0');
         const due = $('#qbb-amount-due');
         if (active() && total > 0 && due) { due.value = total.toFixed(2); BillsPage.qbAmountDue(due); }

@@ -24,6 +24,7 @@ from app.services.check_numbers import (
     refuse_duplicate,
     unprinted_payments,
 )
+from app.services.cheque_memo import cheque_memo
 from app.services.closing_date import check_closing_date
 from app.services.pdf_service import generate_check_pdf, generate_checks_pdf
 from app.services.request_utils import content_disposition
@@ -135,7 +136,7 @@ def register_check_data(db: Session, txn_id: int) -> dict:
         "date": txn.date,
         "amount": bank_line.credit,
         "check_number": number,
-        "memo": "" if memo == payee else memo,
+        "memo": "" if memo == payee else cheque_memo(memo),
         "details": details,
     }
 
@@ -149,7 +150,7 @@ def bill_payment_check_data(db: Session, bp: BillPayment) -> dict:
         "date": bp.date,
         "amount": bp.amount,
         "check_number": bp.check_number or "",
-        "memo": (bp.notes or "").strip(),
+        "memo": cheque_memo(bp.notes),
         "details": [],
     }
     if bp.pay_from_account_id:

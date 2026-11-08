@@ -48,11 +48,39 @@ def test_both_stubs_carry_the_payment():
 def test_nothing_is_placed_in_the_micr_clear_band():
     html = _html()
     css = html.split("</style>")[-2]
+    # measured on the rendered page: a value's ink ends about 0.21 in
+    # below its box's top (8pt memo, the lowest line)
     for top in re.findall(r"\.c-[a-z-]+ \{[^}]*top: ([0-9.]+)in", css):
-        assert float(top) < 2.875 - 0.25, top
+        assert float(top) + 0.22 < 2.875, top
 
 
 def test_the_setting_accepts_the_stock():
     from app.routes.settings import ENUM_SETTINGS
 
     assert "cpa_top" in ENUM_SETTINGS["check_stock"]
+
+
+def test_the_memo_is_at_the_bottom_left():
+    html = _html()
+    css = html.split("</style>")[-2]
+    memo = re.search(r"\.c-memo \{ left: ([0-9.]+)in; top: ([0-9.]+)in", css)
+    assert float(memo.group(1)) < 1 and float(memo.group(2)) > 2.6
+
+
+def test_a_scans_tax_note_never_reaches_the_cheque():
+    from app.services.cheque_memo import cheque_memo
+
+    assert cheque_memo("Tax detected: $83.96") == ""
+    assert cheque_memo("Account 4471\nTax detected: $83.96") == "Account 4471"
+    html = _html(memo=cheque_memo("Acct 12\nTax detected: $1.00"))
+    assert "Tax detected" not in html and "Memo: Acct 12" in html
+
+
+def test_enter_bills_keeps_the_scans_tax_out_of_the_memo():
+    from pathlib import Path
+
+    js = (
+        Path(__file__).resolve().parents[1] / "app/static/js/enter_bills.js"
+    ).read_text(encoding="utf-8")
+    assert "if (active() && fieldKey === 'tax') return;" in js
+    assert "if (active()) dropTaxNote();" in js

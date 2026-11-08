@@ -367,7 +367,9 @@ def create_bill_payment(
     # line (#602); a memo typed on the payment wins, and a payment of
     # several bills leaves the memo for the person to type.
     if not (data.notes or "").strip() and len(applied_bills) == 1:
-        payment.notes = (applied_bills[0][0].notes or "").strip() or None
+        from app.services.cheque_memo import cheque_memo
+
+        payment.notes = cheque_memo(applied_bills[0][0].notes) or None
 
     # Journal: DR AP, CR Bank — always; the accounts were resolved above
     if True:

@@ -72,8 +72,8 @@
     .c-date span, .c-date-guide span { display: inline-block; width: 0.16in; text-align: center; }
     .c-words { left: 0.95in; top: 1.38in; width: 5.25in; overflow: hidden; font-size: 10pt; }
     .c-amount { left: 6.62in; top: 1.36in; font-size: 12pt; font-weight: bold; }
-    .c-payee { left: 0.75in; top: 2.02in; width: 3.6in; font-size: 10pt; line-height: 0.165in; white-space: normal; }
-    .c-memo { left: 0.95in; top: 1.72in; width: 5.25in; overflow: hidden; font-size: 8pt; }
+    .c-payee { left: 0.75in; top: 1.97in; width: 3.6in; font-size: 10pt; line-height: 0.155in; white-space: normal; }
+    .c-memo { left: 0.75in; top: 2.62in; width: 3.6in; overflow: hidden; font-size: 8pt; }
     .s-payee { left: 0.4in; font-size: 10pt; font-weight: bold; }
     .s-date { left: 6.4in; font-size: 9pt; }
     .s-memo { left: 0.4in; font-size: 8pt; width: 7.3in; overflow: hidden; }
@@ -167,7 +167,7 @@
             <div class="v c-date">{% for ch in (check.date.strftime('%Y%m%d') if check.date else '') %}<span>{{ ch }}</span>{% endfor %}</div>
             <div class="v c-words">{{ check.amount_words }} {{ '*' * 120 }}</div>
             <div class="v c-amount">**{{ '{:,.2f}'.format(check.amount) }}</div>
-            <div class="v c-payee">{{ check.payee }}{% for l in check.payee_address or [] %}<br>{{ l }}{% endfor %}</div>
+            <div class="v c-payee">{{ check.payee }}{% for l in (check.payee_address or [])[:3] %}<br>{{ l }}{% endfor %}</div>
             {% if check.memo %}<div class="v c-memo">Memo: {{ check.memo }}</div>{% endif %}
             {{ cpa_stub(check, 3.5) }}
             {{ cpa_stub(check, 7.0) }}
