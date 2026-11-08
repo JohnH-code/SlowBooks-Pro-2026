@@ -2708,6 +2708,7 @@ def run_window(port: int, log_fh=None) -> int:
         # Blocks until the window is closed. private_mode/storage_path:
         # see the comment above where storage_dir is created.
         install_mac_print_panel()
+        install_mac_window_menu()
         webview.start(gui=gui, private_mode=False, storage_path=str(storage_dir))
         # Clean exit: save again in case the closing event never fired.
         save_window_geometry(geometry_tracker.geometry(), geometry_path)
@@ -3239,6 +3240,57 @@ def _repair_schema(argv) -> int:
         print(f"dropped (empty) : {', '.join(result.dropped)}")
     print(f"result          : {'OK' if result.ok else 'FAILED'} - {result.message}")
     return 0 if result.ok else 1
+
+
+def install_mac_window_menu() -> bool:
+    """On a Mac, give the menu bar a Window menu (John's build), as every Mac
+    program has: Minimize (⌘M), Zoom, Bring All to Front, and below them
+    every open window by its title — the main window and each page opened
+    in a window of its own (open_app_window) — to switch between them, the
+    one in front ticked. macOS fills that list itself once the menu is the
+    application's windows menu, and ⌘` steps through the windows.
+
+    pywebview builds the menu bar in ``BrowserView._recreate_menus`` (on
+    start and when another window comes in front), with no Window menu; this
+    wraps that one function to add it. Anything unexpected keeps pywebview's
+    menu bar as it was. Returns whether it was installed."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        import AppKit
+        from webview.platforms.cocoa import BrowserView
+    except Exception:
+        return False
+    if getattr(BrowserView._recreate_menus, "_slowbooks", False):
+        return True
+    original = BrowserView._recreate_menus
+
+    def recreate(self, user_menu):
+        main_menu = original(self, user_menu)
+        try:
+            window_menu = AppKit.NSMenu.alloc().initWithTitle_("Window")
+            window_menu.addItemWithTitle_action_keyEquivalent_(
+                "Minimize", "performMiniaturize:", "m"
+            )
+            window_menu.addItemWithTitle_action_keyEquivalent_(
+                "Zoom", "performZoom:", ""
+            )
+            window_menu.addItem_(AppKit.NSMenuItem.separatorItem())
+            window_menu.addItemWithTitle_action_keyEquivalent_(
+                "Bring All to Front", "arrangeInFront:", ""
+            )
+            item = AppKit.NSMenuItem.alloc().init()
+            item.setTitle_("Window")
+            item.setSubmenu_(window_menu)
+            main_menu.addItem_(item)
+            AppKit.NSApplication.sharedApplication().setWindowsMenu_(window_menu)
+        except Exception as exc:  # the menu bar stays as pywebview made it
+            print(f"Window menu not added: {exc}")
+        return main_menu
+
+    recreate._slowbooks = True
+    BrowserView._recreate_menus = recreate
+    return True
 
 
 def install_mac_print_panel() -> bool:
