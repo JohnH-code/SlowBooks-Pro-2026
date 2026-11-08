@@ -122,6 +122,17 @@ const scenarios = {
     await p.get('DepositsPage').uploadAttachment(1);
     return last(p.toasts);
   },
+  // Attach File on the entry screens (John's build): the file goes up
+  // after the save, and a refusal is said after "Saved, but …"
+  async 'attach_file.js attachment'() {
+    const p = page(['app/static/js/attach_file.js']);
+    const A = p.get('AttachFile');
+    A.pending = [{ name: 'upload.csv', size: 1 }];
+    await A.flush('bill', 1);
+    const shown = last(p.toasts);
+    const said = "couldn't be attached: ";
+    return shown.includes(said) ? shown.slice(shown.indexOf(said) + said.length) : shown;
+  },
   async 'journal.js attachment'() {
     const p = page(['app/static/js/journal.js']);
     await p.get('JournalPage').uploadAttachment(1);
