@@ -8,6 +8,12 @@
  * opened to be changed lists the files it already has (each opens; × takes
  * one off). Nothing is uploaded until the save succeeds.
  *
+ * One button for documents (8 Nov): where the form can read a document
+ * (Enter Bills, Write Cheques — the scan), a PDF or picture waiting to be
+ * attached has "Fill in from this document": the scan reads it into the
+ * form, with its review boxes, and the file is attached on save as the
+ * scan's own. The separate Scan Receipt button is hidden on those forms.
+ *
  * The files go up the same way the View dialogs' Upload sends them
  * (POST /api/attachments/{type}/{id}); the types are the server's own:
  * bill, expense, deposit.
@@ -24,6 +30,7 @@ const AttachFile = {
         AttachFile.pending = [];
         AttachFile._entity = id ? { type, id } : null;
         AttachFile._saved = [];
+        AttachFile._read = null;
         const n = ++AttachFile._n;  // the newest form's list is the one drawn
         AttachFile._listId = `qb-attach-list-${n}`;
         if (id) setTimeout(() => AttachFile._loadSaved(), 0);
@@ -64,16 +71,41 @@ const AttachFile = {
         } catch (err) { toast(err.message, 'error'); }
     },
 
+    // Can this form read a document? (the scan row is on it, and the scan
+    // engine is installed)
+    _canRead(f) {
+        return !!document.getElementById('scan-row') && typeof ScanHelper !== 'undefined'
+            && ScanHelper._status && ScanHelper._status.available && ScanHelper._applyCb
+            && /^(image\/(png|jpeg|webp)|application\/pdf)$/.test(f.type || '');
+    },
+
+    // Read a waiting file into the form: the scan fills the fields and keeps
+    // the file to attach on save, so it leaves this list.
+    read(i) {
+        const f = AttachFile.pending[i];
+        if (!f || !AttachFile._canRead(f)) return;
+        if (ScanHelper._intakeId && !confirm('Another document was read into this form already; read this one instead?')) return;
+        AttachFile.pending.splice(i, 1);
+        AttachFile._read = f.name;
+        const row = document.getElementById('scan-row');
+        if (row) row.classList.add('scan-row--used');
+        ScanHelper.scan(f, ScanHelper._applyCb);
+        AttachFile._draw();
+    },
+
     _draw() {
         const el = document.getElementById(AttachFile._listId);
         if (!el) return;
         const saved = (AttachFile._entity ? AttachFile._saved : []).map(a => `<span class="qb-attach-file">
                 ${a.missing ? escapeHtml(a.filename) : `<a href="/api/attachments/download/${a.id}" target="_blank">${escapeHtml(a.filename)}</a>`}
                 <button type="button" class="qb-attach-x" aria-label="Delete attachment ${escapeHtml(a.filename)}" onclick="AttachFile.removeSaved(${a.id})">×</button></span>`);
+        const read = AttachFile._read && document.getElementById('scan-row')?.classList.contains('scan-row--used')
+            ? [`<span class="qb-attach-file qb-attach-file--new" title="Read into the form; attached when saved">${escapeHtml(AttachFile._read)} <span class="qb-attach-when">(read · on save)</span></span>`] : [];
         const waiting = AttachFile.pending.map((f, i) => `<span class="qb-attach-file qb-attach-file--new" title="Attached when saved">
                 ${escapeHtml(f.name)} <span class="qb-attach-when">(on save)</span>
+                ${AttachFile._canRead(f) ? `<button type="button" class="qb-attach-read" onclick="AttachFile.read(${i})" title="Read the vendor, date, number and amounts from it into the form">Fill in from this document</button>` : ''}
                 <button type="button" class="qb-attach-x" aria-label="Don't attach ${escapeHtml(f.name)}" onclick="AttachFile.remove(${i})">×</button></span>`);
-        el.innerHTML = saved.concat(waiting).join('');
+        el.innerHTML = saved.concat(read, waiting).join('');
     },
 
     // After the save: the waiting files go on the saved transaction. A file
@@ -97,3 +129,15 @@ const AttachFile = {
         if (done) toast(done === 1 ? 'File attached' : `${done} files attached`);
     },
 };
+
+// The scan's form callback, kept for "Fill in from this document".
+if (typeof ScanHelper !== 'undefined') {
+    const baseWire = ScanHelper.wire;
+    ScanHelper.wire = function (applyCallback, applyField, fieldTargets) {
+        ScanHelper._applyCb = applyCallback || null;
+        const r = baseWire.apply(ScanHelper, arguments);
+        // once the scan engine's status is known, the links can show
+        Promise.resolve(r).then(() => AttachFile._draw());
+        return r;
+    };
+}

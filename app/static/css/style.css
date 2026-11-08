@@ -4128,3 +4128,7 @@ body.page-window #sidebar, body.page-window #sidebar-toggle { display: none !imp
 .qb-attach-when { color: var(--text-muted); }
 .qb-attach-x { border: none; background: none; cursor: pointer; color: var(--text-muted); font-size: 14px; line-height: 1; padding: 0 2px; }
 .qb-bill .qbb-kind .qb-attach { margin-left: auto; }
+/* one button for documents: the scan runs from Attach File on these forms */
+.qb-bill #scan-btn, .qb-write-cheques #scan-btn { display: none; }
+.qb-bill #scan-row:not(.scan-row--used), .qb-write-cheques #scan-row:not(.scan-row--used) { display: none !important; }
+.qb-attach-read { border: none; background: none; color: var(--primary, #2a5db0); text-decoration: underline; cursor: pointer; font-size: 12px; padding: 0 2px; }
