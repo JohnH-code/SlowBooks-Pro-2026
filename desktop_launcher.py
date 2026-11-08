@@ -57,18 +57,56 @@ FROZEN = bool(getattr(sys, "frozen", False))
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 
 
-def get_data_dir() -> Path:
-    """Same resolution as app.services.company_service.data_dir(), duplicated
-    here so --setup-only works before the app's dependencies are installed."""
-    override = os.environ.get("SLOWBOOKS_DATA_DIR")
-    if override:
-        return Path(override)
+def default_data_dir() -> Path:
+    """The platform's own place for the data (Application Support on a Mac,
+    LOCALAPPDATA on Windows): the same as app.services.company_service's
+    fallback."""
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         return Path(base) / "SlowBooksPro" / "data"
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "SlowBooksPro" / "data"
     return Path.home() / ".slowbookspro" / "data"
+
+
+# Where the company files live, when not in the platform's own place
+# (John's build): one line naming the folder, kept beside the default data
+# folder, so the books can sit in a folder that is backed up with
+# everything else (as QuickBooks' company files can). Read on every launch;
+# --data-dir / SLOWBOOKS_DATA_DIR still win.
+DATA_LOCATION_FILE = "data-location.txt"
+
+
+def data_location_file() -> Path:
+    return default_data_dir().parent / DATA_LOCATION_FILE
+
+
+def chosen_data_dir() -> Path | None:
+    """The folder data-location.txt names, or None when there is none."""
+    try:
+        text = data_location_file().read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    line = next(
+        (
+            ln.strip()
+            for ln in text.splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        ),
+        "",
+    )
+    return Path(line).expanduser() if line else None
+
+
+def get_data_dir() -> Path:
+    """Same resolution as app.services.company_service.data_dir(), duplicated
+    here so --setup-only works before the app's dependencies are installed;
+    the launcher passes the answer to the app as SLOWBOOKS_DATA_DIR, so the
+    chosen folder (data-location.txt) is the app's too."""
+    override = os.environ.get("SLOWBOOKS_DATA_DIR")
+    if override:
+        return Path(override)
+    return chosen_data_dir() or default_data_dir()
 
 
 def _config_dir() -> Path:
