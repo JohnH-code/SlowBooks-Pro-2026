@@ -4134,3 +4134,18 @@ body.page-window #sidebar, body.page-window #sidebar-toggle { display: none !imp
 .qb-attach-read { border: none; background: none; color: var(--primary, #2a5db0); text-decoration: underline; cursor: pointer; font-size: 12px; padding: 0 2px; }
 .qb-bill .qbb-tax-input { width: 110px; text-align: right; font-weight: 600; }
 .qb-bill .qbb-tax-note { text-align: right; font-size: 11px; color: var(--text-muted); }
+
+/* Make General Journal Entries, QuickBooks' layout (make_journal.js) */
+.qb-journal .qbj-head { display: flex; gap: 24px; align-items: flex-end; margin-bottom: 8px; }
+.qb-journal .qbj-field { display: flex; flex-direction: column; gap: 2px; }
+.qb-journal .qbj-field label { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted, #555); }
+.qb-journal .qbj-field input { width: 150px; }
+.qb-journal .qbj-more { margin: 0 0 8px; font-size: 12px; }
+.qb-journal .qbj-more summary { cursor: pointer; color: var(--text-muted, #555); }
+.qb-journal .qbj-more .form-grid { margin-top: 6px; }
+.qb-journal #je-lines .je-desc { width: 100%; min-width: 180px; }
+.qb-journal #je-lines .je-debit, .qb-journal #je-lines .je-credit { width: 110px; }
+.qb-journal .qbj-totals { display: flex; gap: 12px; align-items: center; justify-content: flex-start; margin-top: 8px; font-size: 13px; }
+.qb-journal .qbj-totals strong { min-width: 100px; text-align: right; }
+.qb-journal #je-balance { font-size: 11px; font-weight: 700; margin-left: 12px; }
+.qb-journal .qb-actions { justify-content: flex-end; }
