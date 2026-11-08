@@ -2707,8 +2707,8 @@ def run_window(port: int, log_fh=None) -> int:
         gui = "edgechromium" if sys.platform == "win32" else None
         # Blocks until the window is closed. private_mode/storage_path:
         # see the comment above where storage_dir is created.
-        install_mac_print_panel()
         install_mac_window_menu()
+        install_mac_print_panel()
         webview.start(gui=gui, private_mode=False, storage_path=str(storage_dir))
         # Clean exit: save again in case the closing event never fired.
         save_window_geometry(geometry_tracker.geometry(), geometry_path)
