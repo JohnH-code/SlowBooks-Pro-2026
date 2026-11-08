@@ -586,7 +586,10 @@ def check_print_options(company_settings: dict) -> dict:
 
     stock = company_settings.get("check_stock") or "plain"
     return {
-        "stock": "preprinted" if stock == "preprinted" else "plain",
+        # cpa_top (John's build): a Canadian laser voucher cheque with the
+        # cheque on top and two stubs (Deluxe SS9209 and the like): each
+        # value printed at its own place on the sheet
+        "stock": stock if stock in ("preprinted", "cpa_top") else "plain",
         "nudge_x": _inches("check_nudge_x_in"),
         "nudge_y": _inches("check_nudge_y_in"),
     }

@@ -3,7 +3,11 @@
 <head>
     <title>Check</title>
 <style>
+{%- if stock == 'cpa_top' %}
+    @page { size: letter; margin: 0; }
+{%- else %}
     @page { size: letter; margin: 0.25in 0.5in; }
+{%- endif %}
     body { font-family: 'Courier New', Courier, monospace; font-size: 10pt; color: #000; }
     .check-page { height: 10in; display: flex; flex-direction: column; }
     .check-page + .check-page { break-before: page; }
@@ -50,6 +54,37 @@
     .cpa-guide { visibility: hidden; }
 </style>
 {%- endif %}
+{%- if stock == 'cpa_top' %}
+<style>
+    /* Canadian laser voucher cheque, cheque on top (John's build): Deluxe
+       SS9209 and the like, 8.5 x 11 in, cheque 0-3.5 in, stubs 3.5-7 and
+       7-11 in. The stock carries the company, bank, cheque number, MICR,
+       "PAY", "$", "TO THE ORDER OF" and the signature line; each value is
+       placed by itself, measured from the sheet's top-left corner. The
+       nudge moves the whole sheet's values together. Nothing prints in the
+       MICR clear band (the cheque's bottom 5/8 in, from 2.875 in). */
+    .cpa-sheet { position: relative; width: 8.5in; height: 11in; font-family: Helvetica, Arial, sans-serif; color: #000; }
+    .cpa-sheet + .cpa-sheet { break-before: page; }
+    .cpa-sheet .v { position: absolute; white-space: nowrap; }
+    .c-date-label { left: 6.0in; top: 1.02in; font-size: 7pt; }
+    .c-date-guide { left: 6.55in; top: 0.88in; font-size: 5.5pt; }
+    .c-date { left: 6.55in; top: 1.0in; font-size: 11pt; }
+    .c-date span, .c-date-guide span { display: inline-block; width: 0.16in; text-align: center; }
+    .c-words { left: 0.95in; top: 1.38in; width: 5.25in; overflow: hidden; font-size: 10pt; }
+    .c-amount { left: 6.62in; top: 1.36in; font-size: 12pt; font-weight: bold; }
+    .c-payee { left: 0.75in; top: 2.02in; width: 3.6in; font-size: 10pt; line-height: 0.165in; white-space: normal; }
+    .c-memo { left: 0.95in; top: 1.72in; width: 5.25in; overflow: hidden; font-size: 8pt; }
+    .s-payee { left: 0.4in; font-size: 10pt; font-weight: bold; }
+    .s-date { left: 6.4in; font-size: 9pt; }
+    .s-memo { left: 0.4in; font-size: 8pt; width: 7.3in; overflow: hidden; }
+    .s-lines { left: 0.4in; width: 7.5in; font-size: 9pt; border-collapse: collapse; white-space: normal; }
+    .s-lines th { text-align: left; font-size: 7.5pt; font-weight: normal; border-bottom: 0.5pt solid #000; padding: 1px 0; }
+    .s-lines td { padding: 1px 0; vertical-align: top; }
+    .s-lines .r { text-align: right; }
+    .s-foot { left: 0.4in; width: 7.5in; font-size: 9pt; }
+    .s-foot .r { position: absolute; right: 0; font-weight: bold; }
+</style>
+{%- endif %}
 </head>
 <body>
 {% macro stub(check) %}{% set word = check.word or 'Check' %}
@@ -75,6 +110,22 @@
                 </tbody>
             </table>
         </div>
+{% endmacro %}
+{% macro cpa_stub(check, top) %}
+            <div class="v s-payee" style="top: {{ top + 0.48 }}in;">{{ check.payee }}</div>
+            <div class="v s-date" style="top: {{ top + 0.48 }}in;">{{ check.date.strftime('%Y-%m-%d') if check.date else '' }}</div>
+            {% if check.memo %}<div class="v s-memo" style="top: {{ top + 0.66 }}in;">{{ check.memo }}</div>{% endif %}
+            <table class="v s-lines" style="top: {{ top + 0.85 }}in;">
+                <thead><tr><th>Description</th><th class="r">Amount</th></tr></thead>
+                <tbody>
+                {% for d in check.details[:12] %}
+                <tr><td>{{ d.description }}</td><td class="r">{{ '{:,.2f}'.format(d.amount) }}</td></tr>
+                {% endfor %}
+                {% if check.details|length > 12 %}<tr><td>… and {{ check.details|length - 12 }} more</td><td></td></tr>{% endif %}
+                {% if not check.details %}<tr><td>Payment</td><td class="r">{{ '{:,.2f}'.format(check.amount) }}</td></tr>{% endif %}
+                </tbody>
+            </table>
+            <div class="v s-foot" style="top: {{ top + 3.0 }}in;">{{ check.account_name or '' }}<span class="r">{{ '{:,.2f}'.format(check.amount) }}</span></div>
 {% endmacro %}
 {% macro cheque(check) %}
         <div class="check-area"{% if nudge_x or nudge_y %} style="transform: translate({{ nudge_x }}in, {{ nudge_y }}in);"{% endif %}>
@@ -107,6 +158,23 @@
             <div class="signature-line"></div>
         </div>
 {% endmacro %}
+{%- if stock == 'cpa_top' %}
+{%- for check in checks %}
+    <div class="cpa-sheet">
+        <div{% if nudge_x or nudge_y %} style="position:absolute; inset:0; transform: translate({{ nudge_x }}in, {{ nudge_y }}in);"{% else %} style="position:absolute; inset:0;"{% endif %}>
+            <div class="v c-date-label">DATE</div>
+            <div class="v c-date-guide">{% for ch in 'YYYYMMDD' %}<span>{{ ch }}</span>{% endfor %}</div>
+            <div class="v c-date">{% for ch in (check.date.strftime('%Y%m%d') if check.date else '') %}<span>{{ ch }}</span>{% endfor %}</div>
+            <div class="v c-words">{{ check.amount_words }} {{ '*' * 120 }}</div>
+            <div class="v c-amount">**{{ '{:,.2f}'.format(check.amount) }}</div>
+            <div class="v c-payee">{{ check.payee }}{% for l in check.payee_address or [] %}<br>{{ l }}{% endfor %}</div>
+            {% if check.memo %}<div class="v c-memo">Memo: {{ check.memo }}</div>{% endif %}
+            {{ cpa_stub(check, 3.5) }}
+            {{ cpa_stub(check, 7.0) }}
+        </div>
+    </div>
+{%- endfor %}
+{%- else %}
 {%- for check in checks %}
     <div class="check-page">
         {% if check.layout == 'top' %}{{ cheque(check) }}{{ stub(check) }}{{ stub(check) }}
@@ -114,5 +182,6 @@
         {% else %}{{ stub(check) }}{{ stub(check) }}{{ cheque(check) }}{% endif %}
     </div>
 {%- endfor %}
+{%- endif %}
 </body>
 </html>

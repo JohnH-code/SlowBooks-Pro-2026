@@ -129,6 +129,7 @@ def register_check_data(db: Session, txn_id: int) -> dict:
             if line
         ]
     return {
+        "account_name": bank_line.account.name if bank_line.account else "",
         "payee": payee,
         "payee_address": address,
         "date": txn.date,
@@ -151,6 +152,21 @@ def bill_payment_check_data(db: Session, bp: BillPayment) -> dict:
         "memo": (bp.notes or "").strip(),
         "details": [],
     }
+    if bp.pay_from_account_id:
+        acct = db.get(Account, bp.pay_from_account_id)
+        check_data["account_name"] = acct.name if acct else ""
+    if vendor is not None:
+        from app.services.addresses import city_line
+
+        check_data["payee_address"] = [
+            line
+            for line in (
+                vendor.address1,
+                vendor.address2,
+                city_line(vendor.city, vendor.state, vendor.zip),
+            )
+            if line
+        ]
     for alloc in bp.allocations:
         bill = db.query(Bill).filter(Bill.id == alloc.bill_id).first()
         check_data["details"].append(
@@ -202,7 +218,7 @@ def test_print_check(
         if check_stock not in ENUM_SETTINGS["check_stock"]:
             raise HTTPException(
                 status_code=422,
-                detail="check_stock must be one of: plain, preprinted",
+                detail="check_stock must be one of: plain, preprinted, cpa_top",
             )
         company["check_stock"] = check_stock
     for key, value in (

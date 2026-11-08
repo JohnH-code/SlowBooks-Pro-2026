@@ -1048,6 +1048,7 @@ const SettingsPage = {
                             <select name="check_stock">
                                 <option value="plain" ${s.check_stock !== 'preprinted' ? 'selected' : ''}>Plain / voucher stock</option>
                                 <option value="preprinted" ${s.check_stock === 'preprinted' ? 'selected' : ''}>Pre-printed stock: values only</option>
+                                <option value="cpa_top" ${s.check_stock === 'cpa_top' ? 'selected' : ''}>Canadian laser cheque, cheque on top (Deluxe SS9209 and the like)</option>
                             </select>
                             <div style="font-size:10px; color:var(--text-muted); margin-top:4px;">Pre-printed stock already carries the "Pay to the order of", memo and signature lines. Choose it to print only the values — payee, amount, amount in words, date and memo — in their places, with no labels, lines or borders. The two stubs are unchanged either way.</div>
                         </div>

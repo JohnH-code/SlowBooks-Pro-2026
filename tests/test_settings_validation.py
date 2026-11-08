@@ -89,8 +89,8 @@ def test_the_other_numeric_settings_are_checked_the_same_way(
     assert sentence in r.json()["detail"]
 
 
-@pytest.mark.parametrize("value", ["plain", "preprinted"])
-def test_check_stock_accepts_the_two_choices(client, value):
+@pytest.mark.parametrize("value", ["plain", "preprinted", "cpa_top"])
+def test_check_stock_accepts_the_choices(client, value):
     r = client.put("/api/settings", json={"check_stock": value})
     assert r.status_code == 200, r.text
     assert _settings(client)["check_stock"] == value
@@ -99,7 +99,7 @@ def test_check_stock_accepts_the_two_choices(client, value):
 def test_check_stock_refuses_anything_else(client):
     r = client.put("/api/settings", json={"check_stock": "glossy"})
     assert r.status_code == 422, r.text
-    assert "check_stock must be one of: plain, preprinted" in r.json()["detail"]
+    assert "check_stock must be one of: cpa_top, plain, preprinted" in r.json()["detail"]
     assert _settings(client)["check_stock"] == "plain"
 
 
