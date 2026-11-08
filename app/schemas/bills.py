@@ -308,6 +308,15 @@ class BillPaymentMemoUpdate(StrictModel):
     notes: Optional[str] = None
 
 
+class BillPaymentReferenceUpdate(StrictModel):
+    """A bill payment's cheque or reference number and its method, changed
+    in place (John's build): nothing in the books moves, so the payment is
+    not voided and replaced. "EFT" is a reference, "1043" a cheque number."""
+
+    check_number: Optional[str] = Field(None, max_length=50)
+    method: Optional[str] = Field(None, max_length=50)
+
+
 class BillPaymentAllocationResponse(BaseModel):
     bill_id: int
     amount: Decimal = Decimal("0")
@@ -327,6 +336,9 @@ class BillPaymentResponse(BaseModel):
     amount: Decimal = Decimal("0")
     method: Optional[str] = None
     check_number: Optional[str] = None
+    # the posting's own reference: "426 · QB #921" or "QB #8391" on one
+    # brought over from QuickBooks Desktop, whose Num was the number
+    reference: Optional[str] = None
     # the account it was paid from, which Pay Bills fills in when it opens to
     # change the payment (#689)
     pay_from_account_id: Optional[int] = None

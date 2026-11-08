@@ -233,7 +233,22 @@ def unprinted_payments(db: Session, account_id: int) -> list[BillPayment]:
     if closing is not None:
         q = q.filter(BillPayment.date > closing)
     rows = q.order_by(BillPayment.date, BillPayment.id).all()
-    return [bp for bp in rows if _paying_account_id(db, bp) == account_id]
+    # one brought over from QuickBooks Desktop with no Num was never a
+    # cheque waiting to print (John's build): QuickBooks had it paid
+    return [
+        bp
+        for bp in rows
+        if _paying_account_id(db, bp) == account_id and not imported(bp)
+    ]
+
+
+def imported(bp: BillPayment) -> bool:
+    """Whether the payment came over from QuickBooks Desktop (its posting
+    carries "QB #<Trans #>")."""
+    from app.services.qbd_import import REF_PREFIX
+
+    txn = bp.transaction if bp.transaction_id else None
+    return bool(txn is not None and REF_PREFIX in (txn.reference or ""))
 
 
 def next_check_number(db: Session, account_id: int) -> str:

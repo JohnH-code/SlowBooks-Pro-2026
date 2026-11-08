@@ -1135,7 +1135,9 @@ const BillsPage = {
             PaymentTerms.rememberDiscountAccount('purchases', discountAccountId);
         }
         const checkNumber = form.check_number.value || null;
-        if (checkNumber && byVendor.size > 1) {
+        // a cheque number is one cheque; a reference such as "EFT" may name
+        // several vendors' payments made the same way (John's build)
+        if (checkNumber && /^\d+$/.test(checkNumber.trim()) && byVendor.size > 1) {
             toast('One check number cannot pay several vendors. Pay one vendor at a time, or leave Check # blank.', 'error');
             return;
         }

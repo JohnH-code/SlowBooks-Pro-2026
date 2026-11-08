@@ -256,5 +256,57 @@
         BillsPage.qbMethodChanged();
         BillsPage.qbPayBalance();
         BillsPage.qbPayTotals();
+        // what the books see, to tell a changed number from a changed payment
+        const form = box.form;
+        if (!form) return;
+        form._qbOrig = { books: BillsPage.qbPaySig(form), number: box.value.trim(), method: form.method.value };
+        const follow = () => {
+            const submit = form.querySelector('button[type="submit"]');
+            const only = BillsPage.qbOnlyNumber(form);
+            if (submit) submit.textContent = only ? 'Save & Close' : 'Void and Replace';
+            const note = form.querySelector('.replace-note');
+            if (note) note.hidden = only;
+        };
+        form.addEventListener('input', follow);
+        form.addEventListener('change', follow);
+        follow();
+    };
+
+    // The payment as the books see it: date, account, class and each bill's
+    // amount and discount. The number and the method are not in it.
+    BillsPage.qbPaySig = function (form) {
+        const bills = $$('.pay-amount').map(i => {
+            const d = $(`.pay-discount[data-bill="${i.dataset.bill}"]`);
+            return [i.dataset.bill, (parseFloat(i.value) || 0).toFixed(2), (parseFloat(d && d.value) || 0).toFixed(2)];
+        }).filter(r => r[1] !== '0.00' || r[2] !== '0.00').sort();
+        return JSON.stringify([form.date.value, form.pay_from_account_id.value,
+            typeof classIdFromForm === 'function' ? classIdFromForm(form) : null, bills]);
+    };
+
+    // Editing a payment where only its number or method changed: that is
+    // saved in place, with no void row left behind (John's build).
+    BillsPage.qbOnlyNumber = function (form) {
+        const o = form && form._qbOrig;
+        return !!(o && Replace.replacing(form) && BillsPage.qbPaySig(form) === o.books);
+    };
+
+    const baseSavePay = BillsPage.savePay;
+    BillsPage.savePay = async function (e) {
+        const form = e && e.target;
+        if (!BillsPage.qbOnlyNumber(form)) return baseSavePay.call(BillsPage, e);
+        e.preventDefault();
+        const o = form._qbOrig;
+        const number = (form.check_number.value || '').trim();
+        const method = form.method.value;
+        if (number === o.number && method === o.method) { closeModal(); return; }
+        const id = Number(form.dataset.replaceOf);
+        try {
+            const send = q => API.put(`/bill-payments/${id}/reference`, { check_number: number || null, method }, q ? { query: q } : null);
+            const done = typeof CheckNumberWarn !== 'undefined' ? await CheckNumberWarn.send(send, form.check_number) : await send();
+            if (!done) return;
+            toast(number ? `Bill payment #${id} is now ${number}` : `Bill payment #${id} changed`);
+            closeModal();
+            await App.navigate(location.hash || '#/bills');
+        } catch (err) { toast(err.message, 'error'); }
     };
 })();

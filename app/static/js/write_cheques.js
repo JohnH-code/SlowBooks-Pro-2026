@@ -87,7 +87,7 @@
             if (p.is_voided) { tr.className = 'row--dim'; tr.style.textDecoration = 'line-through'; }
             tr.innerHTML = `<td>${formatDate(p.date)}</td><td>${escapeHtml(p.vendor_name || '')}</td>
                 <td>Bill Payment</td><td>${escapeHtml(acct ? acct.name : '')}</td>
-                <td>${escapeHtml(p.check_number || (p.method === 'check' ? 'To print' : ''))}</td>
+                <td>${escapeHtml(WriteChequesNo(p))}</td>
                 <td style="text-decoration:none;">${statusBadge(p.is_voided ? 'void' : 'recorded')}</td>
                 <td class="amount">${formatCurrency(p.amount)}</td>
                 <td class="actions" style="text-decoration:none;">
@@ -585,3 +585,13 @@
         if ($('#expense-form.qb-write-cheques')) ExpensesPage.qbLineChanged();
     };
 })();
+
+// The No. column for a bill payment (John's build): its cheque or reference
+// number ("1043", "EFT"); "To print" only for a cheque written here and not
+// yet numbered. One brought over from QuickBooks with no Num shows blank,
+// as QuickBooks shows it: it was paid, not waiting to print.
+function WriteChequesNo(p) {
+    if (p.check_number) return p.check_number;
+    if (/QB #\d/.test(p.reference || '')) return '';
+    return (p.method || 'check') === 'check' && !p.is_voided ? 'To print' : '';
+}

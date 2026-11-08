@@ -16,6 +16,7 @@ from app.schemas.bills import (
     BillPaymentDiscountAdd,
     BillPaymentDiscountResponse,
     BillPaymentMemoUpdate,
+    BillPaymentReferenceUpdate,
     BillPaymentResponse,
 )
 from app.services.accounting import (
@@ -91,6 +92,8 @@ def get_bill_payment(bill_payment_id: int, db: Session = Depends(get_db)):
 def _validated(db: Session, payment: BillPayment) -> BillPaymentResponse:
     """The payment as the screens read it, its class named (#686)."""
     resp = BillPaymentResponse.model_validate(payment)
+    txn = payment.transaction if payment.transaction_id else None
+    resp.reference = txn.reference if txn is not None else None
     if payment.class_id:
         from app.models.classes import TxnClass
 
@@ -559,6 +562,49 @@ def update_bill_payment_memo(
     if payment.is_voided:
         raise HTTPException(status_code=400, detail="A void payment has no check.")
     payment.notes = (data.notes or "").strip() or None
+    db.commit()
+    db.refresh(payment)
+    resp = _validated(db, payment)
+    if payment.vendor:
+        resp.vendor_name = payment.vendor.name
+    return resp
+
+
+@router.put("/{bill_payment_id}/reference", response_model=BillPaymentResponse)
+def update_bill_payment_reference(
+    bill_payment_id: int,
+    data: BillPaymentReferenceUpdate,
+    db: Session = Depends(get_db),
+    allow_duplicate_check_number: bool = Query(False),
+):
+    """Change the payment's cheque or reference number and its method in
+    place (John's build): "EFT" on a payment made online, or the number of
+    the cheque that was written. Nothing is posted, so the payment is not
+    voided and replaced. A cheque number the paying account already has is
+    refused as Pay Bills refuses it (#481)."""
+    from app.services.accounting import get_checking_account_id
+
+    payment = db.query(BillPayment).filter(BillPayment.id == bill_payment_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Bill payment not found")
+    if payment.is_voided:
+        raise HTTPException(
+            status_code=400,
+            detail="This bill payment is void; there is nothing to change.",
+        )
+    number = (data.check_number or "").strip() or None
+    method = (data.method or "").strip() or payment.method
+    bank_id = payment.pay_from_account_id or get_checking_account_id(db)
+    if number and number != (payment.check_number or "").strip():
+        refuse_duplicate(
+            db,
+            bank_id,
+            number,
+            allow=allow_duplicate_check_number,
+            exclude_bill_payment_id=payment.id,
+        )
+    payment.check_number = number
+    payment.method = method
     db.commit()
     db.refresh(payment)
     resp = _validated(db, payment)
