@@ -110,18 +110,43 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
         return row;
     };
 
+    // The GST/HST as the lines work it out, or as typed over it — the
+    // amount on the supplier's bill, as QuickBooks lets the tax box be
+    // changed. Blank goes back to the lines' own.
+    const computedTax = () => r2(rows().reduce((t, r) => t + taxOf(r), 0));
+    const totalTax = () => (B.taxOverride != null ? r2(B.taxOverride) : computedTax());
+
+    BillsPage.qbTaxTyped = function (input) {
+        const v = input.value.trim();
+        B.taxOverride = v === '' ? null : Math.max(0, parseFloat(v) || 0);
+        BillsPage.recalc();
+    };
+
+    BillsPage.qbTaxReset = function () {
+        B.taxOverride = null;
+        BillsPage.recalc();
+    };
+
     const baseRecalc = BillsPage.recalc;
     BillsPage.recalc = function () {
         const total = baseRecalc.apply(BillsPage, arguments);
         if (!active()) return total;
         const all = rows();
         const sum = kind => r2(all.filter(r => r.dataset.qbb === kind).reduce((t, r) => t + netOf(r), 0));
-        const tax = r2(all.reduce((t, r) => t + taxOf(r), 0));
+        const calc = computedTax();
+        const tax = totalTax();
         const grand = r2(total + tax);
         const set = (sel, v) => { const el = $(sel); if (el) el.textContent = formatCurrency(v); };
         set('#qbb-exp-total', sum('exp'));
         set('#qbb-items-total', sum('items'));
-        set('#qbb-tax-total', tax);
+        const tin = $('#qbb-tax-input');
+        if (tin && document.activeElement !== tin) tin.value = tax ? tax.toFixed(2) : '';
+        const note = $('#qbb-tax-note');
+        if (note) {
+            const edited = B.taxOverride != null && Math.abs(B.taxOverride - calc) > 0.004;
+            note.hidden = !edited;
+            if (edited) note.innerHTML = `typed over · lines give ${formatCurrency(calc)} <button type="button" class="qb-attach-read" onclick="BillsPage.qbTaxReset()">use that</button>`;
+        }
         set('#bill-total', grand);
         const due = $('#qbb-amount-due');
         if (due && document.activeElement !== due) due.value = grand ? grand.toFixed(2) : '';
@@ -133,7 +158,7 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
     BillsPage.collectLines = function () {
         const out = baseCollect.apply(BillsPage, arguments);
         if (!active()) return out;
-        const tax = r2(rows().reduce((t, r) => t + taxOf(r), 0));
+        const tax = totalTax();
         if (tax > 0 && B.hst) {
             out.lines.push({
                 purchase_order_line_id: null, item_id: null, account_id: B.hst,
@@ -171,6 +196,7 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
         const exp = all.filter(r => r.dataset.qbb === 'exp');
         if (exp.length !== 1 || all.some(r => r.dataset.qbb === 'items' && netOf(r))) return;
         const row = exp[0];
+        B.taxOverride = null;
         const gross = parseFloat(input.value) || 0;
         const net = taxed(row) ? r2(gross / (1 + B.rate)) : r2(gross);
         row.querySelector('.line-amt').value = gross ? net.toFixed(2) : '';
@@ -225,6 +251,7 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
         B.rateText = settings.hst_rate || '13';
         B.hst = parseInt(settings.hst_account_id, 10) || null;
         B.bill = bill;
+        B.taxOverride = null;
         BillsPage._items = items;
         BillsPage._accounts = PurchaseAccounts.filter(accounts, ...(bill ? bill.lines.map(l => l.account_id) : []));
         BillsPage._defaultExpenseAccountId = null;
@@ -307,7 +334,8 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
                 </table></div>
                 <button type="button" class="btn btn-sm btn-secondary" style="margin-top:6px;" onclick="BillsPage.addLine()">+ Add Line</button>
                 <div class="qb-totals" aria-live="polite">
-                    ${canada ? `<div class="qb-total-row"><span>GST/HST (${escapeHtml(B.rateText)}%)</span><strong id="qbb-tax-total">$0.00</strong></div>` : ''}
+                    ${canada ? `<div class="qb-total-row"><span>GST/HST (${escapeHtml(B.rateText)}%)</span><input id="qbb-tax-input" class="money qbb-tax-input" type="number" step="0.01" min="0" aria-label="GST/HST" title="Worked out from the lines coded H; type the supplier's own figure to change it" oninput="BillsPage.qbTaxTyped(this)" onblur="BillsPage.recalc()"></div>
+                    <div class="qbb-tax-note" id="qbb-tax-note" hidden></div>` : ''}
                     <div class="qb-total-row qb-total-row--grand"><span>Total</span><strong id="bill-total">$0.00</strong></div>
                 </div>
                 <div class="form-actions qb-actions">
@@ -335,7 +363,8 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
                 const all = rows();
                 const shown = r2(all.reduce((t, r) => t + taxOf(r), 0));
                 const taxedRows = all.filter(taxed);
-                if (shown !== tax && taxedRows.length) {
+                if (Math.abs(shown - tax) > 0.02) B.taxOverride = tax;  // the supplier's own figure
+                else if (shown !== tax && taxedRows.length) {
                     const big = taxedRows.reduce((a, b) => (netOf(b) > netOf(a) ? b : a));
                     big.dataset.tax = r2(taxOf(big) + tax - shown).toFixed(2);
                 }

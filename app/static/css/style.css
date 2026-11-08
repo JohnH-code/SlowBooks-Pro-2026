@@ -4132,3 +4132,5 @@ body.page-window #sidebar, body.page-window #sidebar-toggle { display: none !imp
 .qb-bill #scan-btn, .qb-write-cheques #scan-btn { display: none; }
 .qb-bill #scan-row:not(.scan-row--used), .qb-write-cheques #scan-row:not(.scan-row--used) { display: none !important; }
 .qb-attach-read { border: none; background: none; color: var(--primary, #2a5db0); text-decoration: underline; cursor: pointer; font-size: 12px; padding: 0 2px; }
+.qb-bill .qbb-tax-input { width: 110px; text-align: right; font-weight: 600; }
+.qb-bill .qbb-tax-note { text-align: right; font-size: 11px; color: var(--text-muted); }
