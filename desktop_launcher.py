@@ -1318,6 +1318,7 @@ class PickerApi:
         self._port = port
         self._server: subprocess.Popen | None = None
         self._window = None  # set by run_window once the window exists
+        self._children = {}  # a page's route -> its own window (open_app_window)
         # First load of the picker opens the last company straight to
         # sign-in (owner, 2026-09-13: "when there are companies it loads to
         # companies now"); a picker reached by choice — sign out, Switch
@@ -1368,6 +1369,77 @@ class PickerApi:
             )
         except Exception as exc:
             return {"success": False, "error": str(exc)}
+        return {"success": True}
+
+    def open_app_window(self, route: str, title: str = "") -> dict:
+        """Open one of the app's pages in a window of its own (John's build),
+        as QuickBooks opens each list and form in its own window: the
+        sidebar's items open here, and closing the window closes the page.
+        A page already open in a window is brought forward, not opened
+        twice. The window loads the company's own address, so it shares the
+        main window's sign-in (the profile is persistent, private_mode
+        False); ?window=page tells the page to leave the sidebar out.
+        """
+        import webview
+
+        if self._server is None:
+            return {"success": False, "error": "no company is open"}
+        route = str(route or "#/")
+        if not route.startswith("#/") or len(route) > 300:
+            return {"success": False, "error": "not a page of the app"}
+        key = route.split("?", 1)[0]
+        open_ = self._children.get(key)
+        if open_ is not None:
+            try:
+                open_.restore()
+                open_.show()
+                # the window comes to the front: on top, then back in line
+                open_.on_top = True
+                open_.on_top = False
+                return {"success": True, "existing": True}
+            except Exception:
+                self._children.pop(key, None)
+        try:
+            main = self._window
+            width, height = 1180, 820
+            try:
+                if main is not None and main.width and main.height:
+                    width = max(900, int(main.width * 0.85))
+                    height = max(640, int(main.height * 0.85))
+            except Exception:
+                pass
+            win = webview.create_window(
+                (title or "SlowBooks Pro 2026")[:120],
+                f"http://127.0.0.1:{self._port}/?window=page{route}",
+                js_api=self,
+                width=width,
+                height=height,
+                min_size=MIN_WINDOW_SIZE,
+                zoomable=True,
+            )
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+        self._children[key] = win
+
+        def _gone(*_args):
+            if self._children.get(key) is win:
+                self._children.pop(key, None)
+
+        try:
+            win.events.closed += _gone
+        except Exception:
+            pass
+        return {"success": True}
+
+    def close_app_windows(self) -> dict:
+        """Close every page window (the company is closing, or the main
+        window is)."""
+        for key, win in list(self._children.items()):
+            self._children.pop(key, None)
+            try:
+                win.destroy()
+            except Exception:
+                pass
         return {"success": True}
 
     def open_external(self, url: str) -> dict:
@@ -1446,7 +1518,9 @@ class PickerApi:
             result["note"] = note
         return result
 
-    def print_document_pdf(self, title: str, base64_data: str, folder: str = "") -> dict:
+    def print_document_pdf(
+        self, title: str, base64_data: str, folder: str = ""
+    ) -> dict:
         """A Print button (an invoice, a cheque): send the already-fetched
         PDF to the printer with the Print dialog (_print_pdf). Nothing is
         kept in the user's folders: the printer needs a file, so a working
@@ -1639,6 +1713,7 @@ class PickerApi:
         """
         import threading
 
+        self.close_app_windows()  # their company is closing
         stop_server(self._server)
         self._server = None
         self._recovery_key = ""
@@ -2612,6 +2687,11 @@ def run_window(port: int, log_fh=None) -> int:
         min_size=MIN_WINDOW_SIZE,
         zoomable=True,
     )
+    # the page windows close with the main one (open_app_window)
+    try:
+        api._window.events.closing += lambda *_a: api.close_app_windows()
+    except Exception as exc:  # an older pywebview without these events
+        print(f"Page windows will not close with the main window: {exc}")
     geometry_tracker = WindowGeometryTracker(geometry, screens=screens)
     try:
         _track_window_geometry(api._window, geometry_tracker, geometry_path)

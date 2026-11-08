@@ -4116,3 +4116,6 @@ tbody tr.row--dim > td.amount { color: var(--text-muted); }
 .cc-card-note { font-size: 13px; color: var(--text-muted); margin: 0 0 8px; }
 .cc-reg-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 13px; }
 .cc-reg-bar label { font-size: 11px; text-transform: uppercase; color: var(--text-muted); }
+
+/* A page in its own window (desktop_windows.js): no sidebar, no toggle */
+body.page-window #sidebar, body.page-window #sidebar-toggle { display: none !important; }
