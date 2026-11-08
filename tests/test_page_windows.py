@@ -181,3 +181,15 @@ def test_a_mac_gets_a_window_menu_listing_the_windows(monkeypatch):
     titles = [i[0] for i in window_item.submenu.items if isinstance(i, tuple)]
     assert titles == ["Minimize", "Zoom", "Bring All to Front"]
     assert calls["windows_menu"] is window_item.submenu
+
+
+def test_the_closing_handler_answers_none():
+    """pywebview adds each handler's answer to a set: a dict there is
+    "unhashable type: 'dict'" in the log on every quit."""
+    import inspect
+
+    import desktop_launcher
+
+    src = inspect.getsource(desktop_launcher)
+    assert "events.closing += lambda *_a: api.close_app_windows()\n" not in src
+    assert "lambda *_a: (api.close_app_windows(), None)[1]" in src

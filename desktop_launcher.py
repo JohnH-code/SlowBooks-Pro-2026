@@ -2748,7 +2748,9 @@ def run_window(port: int, log_fh=None) -> int:
     )
     # the page windows close with the main one (open_app_window)
     try:
-        api._window.events.closing += lambda *_a: api.close_app_windows()
+        # a handler's answer goes into a set: None, never close_app_windows'
+        # dict (unhashable, logged as an error on every quit)
+        api._window.events.closing += lambda *_a: (api.close_app_windows(), None)[1]
     except Exception as exc:  # an older pywebview without these events
         print(f"Page windows will not close with the main window: {exc}")
     geometry_tracker = WindowGeometryTracker(geometry, screens=screens)
