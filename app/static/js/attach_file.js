@@ -98,7 +98,7 @@ const AttachFile = {
         if (!el) return;
         const saved = (AttachFile._entity ? AttachFile._saved : []).map(a => `<span class="qb-attach-file">
                 ${a.missing ? escapeHtml(a.filename) : `<a href="/api/attachments/download/${a.id}" target="_blank">${escapeHtml(a.filename)}</a>`}
-                <button type="button" class="qb-attach-x" aria-label="Delete attachment ${escapeHtml(a.filename)}" onclick="AttachFile.removeSaved(${a.id})">×</button></span>`);
+                <button type="button" data-destructive class="qb-attach-x" aria-label="Delete attachment ${escapeHtml(a.filename)}" onclick="AttachFile.removeSaved(${a.id})">×</button></span>`);
         const read = AttachFile._read && document.getElementById('scan-row')?.classList.contains('scan-row--used')
             ? [`<span class="qb-attach-file qb-attach-file--new" title="Read into the form; attached when saved">${escapeHtml(AttachFile._read)} <span class="qb-attach-when">(read · on save)</span></span>`] : [];
         const waiting = AttachFile.pending.map((f, i) => `<span class="qb-attach-file qb-attach-file--new" title="Attached when saved">

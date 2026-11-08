@@ -91,7 +91,7 @@
     function state() {
         const form = document.getElementById('invoice-form');
         return form ? JSON.stringify(Array.from(form.elements)
-            .filter(e => e.type !== 'button' && e.type !== 'submit')
+            .filter(e => e.type !== 'button' && e.type !== 'submit' && !(e.classList && e.classList.contains('cbx-input')) && !/-new-name$/.test(e.id || ''))
             .map(e => (e.type === 'checkbox' ? e.checked : e.value))) : '';
     }
 

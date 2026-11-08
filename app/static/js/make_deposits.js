@@ -305,7 +305,7 @@
     // What the form holds, to tell whether a saved deposit was changed.
     const state = c => JSON.stringify([
         Array.from(c.picked).sort(),
-        Array.from(c.form.elements).filter(e => e.type !== 'checkbox' && e.type !== 'button').map(e => e.value),
+        Array.from(c.form.elements).filter(e => e.type !== 'checkbox' && e.type !== 'button' && !(e.classList && e.classList.contains('cbx-input')) && !/-new-name$/.test(e.id || '')).map(e => e.value),
     ]);
 
     DepositsPage.qbSave = async function (el, mode) {

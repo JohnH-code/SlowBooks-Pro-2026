@@ -1,7 +1,9 @@
 /**
  * Enter Bills as QuickBooks Desktop 2020 lays it out (John's build).
  *
- * Bill / Credit across the top (Credit opens a vendor credit); the pale
+ * Bill / Credit across the top (Credit enters a vendor credit in this same
+ * window, as QuickBooks does: Credit Amount, no Terms or Bill Due; Vendor
+ * Credits' New and Edit open it here too); the pale
  * blue Bill panel with Vendor, Address, Terms and Memo on the left and
  * Date, Ref. No., Amount Due and Bill Due on the right; the Expenses and
  * Items tabs, each with its total; the GST/HST and the total under the
@@ -232,16 +234,38 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
     };
 
     // ── the form ──────────────────────────────────────────────────────────
-    async function open(id) {
+    // A vendor credit as the form reads a bill: Ref. No. is its credit
+    // note number, its lines as a bill's.
+    function creditAsBill(c) {
+        return {
+            id: null, vendor_id: c.vendor_id, vendor_name: c.vendor_name, date: c.date,
+            bill_number: c.ref_number || '', notes: c.notes || '', class_id: c.class_id,
+            job_id: c.job_id, currency: null, exchange_rate: 1, terms: null, tax_rate: 0,
+            lines: (c.lines || []).map(l => ({
+                item_id: l.item_id, account_id: l.account_id, description: l.description,
+                quantity: Number(l.quantity), rate: Number(l.rate),
+                amount: l.amount != null ? Number(l.amount) : r2(Number(l.quantity) * Number(l.rate)),
+                class_id: l.class_id, cost_code_id: l.cost_code_id, cost_type: l.cost_type,
+            })),
+        };
+    }
+
+    // `opts.credit` opens it as a Credit (a vendor credit), `opts.creditId`
+    // a saved vendor credit to change (saved by Void and Replace, as before).
+    async function open(id, opts = {}) {
         const startVendor = id ? null : BillsPage._startVendor;
         BillsPage._startVendor = null;
-        const [vendors, items, accounts, bill, settings] = await Promise.all([
+        const creditId = opts.creditId || null;
+        const [vendors, items, accounts, doc, settings] = await Promise.all([
             API.get('/vendors?active_only=true'),
             API.get('/items?active_only=true'),
             API.get('/accounts'),
-            id ? API.get(`/bills/${id}`) : Promise.resolve(null),
+            id ? API.get(`/bills/${id}`) : creditId ? API.get(`/vendor-credits/${creditId}`) : Promise.resolve(null),
             API.get('/settings').catch(() => ({})),
         ]);
+        if (creditId && doc && doc.status === 'void') { toast('This vendor credit is void; there is nothing to change.', 'error'); return; }
+        B.credit = creditId ? { id: creditId, orig: doc } : (opts.credit ? { id: null, orig: null } : null);
+        const bill = creditId ? creditAsBill(doc) : doc;
         if (bill && bill.status === 'void') { toast('A voided bill cannot be edited', 'error'); return; }
         if (bill && !vendors.some(v => v.id === bill.vendor_id)) {
             vendors.push({ id: bill.vendor_id, name: bill.vendor_name || `Vendor #${bill.vendor_id}` });
@@ -250,7 +274,7 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
         B.rate = (parseFloat(settings.hst_rate || '13') || 0) / 100;
         B.rateText = settings.hst_rate || '13';
         B.hst = parseInt(settings.hst_account_id, 10) || null;
-        B.bill = bill;
+        B.bill = B.credit ? null : bill;
         B.taxOverride = null;
         BillsPage._items = items;
         BillsPage._accounts = PurchaseAccounts.filter(accounts, ...(bill ? bill.lines.map(l => l.account_id) : []));
@@ -258,7 +282,7 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
         BillsPage._taxRate = bill ? Number(bill.tax_rate) || 0 : 0;
         BillsPage.lineCount = 1;
         BillsPage._vendors = vendors;
-        BillsPage._formBillId = bill ? bill.id : null;
+        BillsPage._formBillId = bill && !B.credit ? bill.id : null;
         const classGroup = await classFormGroupHtml(bill ? bill.class_id : undefined);
         const jobGroup = await jobFormGroupHtml(bill ? bill.job_id : null);
         await PaymentTerms.load();
@@ -276,24 +300,28 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
             ? `<div class="form-grid qb-extra">${classGroup}${jobGroup}${foreign ? currency : ''}</div>${foreign ? '' : currency}` : currency;
         const canada = B.canada;
 
-        openModal(bill ? `Enter Bills — ${escapeHtml(bill.bill_number || '')} (editing)` : 'Enter Bills', `
+        const editing = B.credit ? !!B.credit.id : !!bill;
+        const title = B.credit && B.credit.id ? `Enter Bills — Credit ${escapeHtml(B.credit.orig.credit_number || '')} (editing)`
+            : bill ? `Enter Bills — ${escapeHtml(bill.bill_number || '')} (editing)` : 'Enter Bills';
+        openModal(title, `
             <div class="bill-with-summary"><div class="bill-with-summary__form">
             <form id="bill-form" class="qb-write-cheques qb-bill" aria-labelledby="modal-title" data-skip-to="#bill-lines" data-skip-text="Skip to the lines" onsubmit="event.preventDefault(); BillsPage.qbSave('close')">
                 <div class="qb-account-row qbb-kind">
-                    <label><input type="radio" name="qbb_kind" value="bill" checked> Bill</label>
-                    ${bill ? '' : `<label title="A credit from the vendor: opens a vendor credit"><input type="radio" name="qbb_kind" value="credit" onchange="BillsPage.qbCredit()"> Credit</label>`}
+                    ${editing && B.credit ? '' : `<label><input type="radio" name="qbb_kind" value="bill"${B.credit ? '' : ' checked'} onchange="BillsPage.qbKind('bill')"> Bill</label>`}
+                    ${editing && !B.credit ? '' : `<label title="A credit from the vendor for a return, a short shipment or an overcharge: it reduces what you owe them"><input type="radio" name="qbb_kind" value="credit"${B.credit ? ' checked' : ''} onchange="BillsPage.qbKind('credit')"> Credit</label>`}
                 </div>
-                ${typeof AttachFile !== 'undefined' ? AttachFile.html('bill', bill ? bill.id : null) : ''}
+                ${B.credit && B.credit.id ? `<p class="replace-note" role="note" style="margin:0 0 6px; font-size:11px; color:var(--gray-500);">Saving voids credit ${escapeHtml(B.credit.orig.credit_number || '')} and enters this one in its place; the two are linked.</p>` : ''}
+                <div class="qbb-bill-only">${typeof AttachFile !== 'undefined' ? AttachFile.html('bill', bill && !B.credit ? bill.id : null) : ''}</div>
                 ${bill ? '' : ScanHelper.scanRowHtml()}
                 <div class="qb-cheque qbb-panel">
-                    <div class="qbb-title">Bill</div>
+                    <div class="qbb-title" id="qbb-title">Bill</div>
                     <div class="qbb-cols">
                         <div class="qbb-left">
                             <div class="qbb-field"><label for="bill-vendor">Vendor</label>
                                 <div class="qbb-vendor">${VendorQuickAdd.html(vendors, { id: 'bill-vendor', onchange: 'BillsPage.vendorSelected(this.value)' })}</div></div>
                             <div class="qbb-field"><label for="qbb-address">Address</label>
                                 <textarea id="qbb-address" rows="4" readonly tabindex="-1" title="From the vendor's record"></textarea></div>
-                            <div class="qbb-field"><label for="qbb-terms">Terms</label>
+                            <div class="qbb-field qbb-bill-only"><label for="qbb-terms">Terms</label>
                                 <select id="qbb-terms" name="terms" onchange="this.form.due_date.dataset.touched=''; BillsPage.qbDueDate()">
                                     ${PaymentTerms.optionsHtml(terms, null, !bill || bill.payment_term_id != null)}
                                 </select></div>
@@ -303,9 +331,9 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
                                 <input id="qbb-date" name="date" type="date" required value="${bill ? bill.date : todayISO()}" onchange="this.form.due_date.dataset.touched=''; BillsPage.qbDueDate()"></div>
                             <div class="qbb-field"><label for="qbb-ref">Ref. No.</label>
                                 <input id="qbb-ref" name="bill_number" placeholder="the vendor's invoice no." value="${bill ? escapeHtml(bill.bill_number || '') : ''}"></div>
-                            <div class="qbb-field"><label for="qbb-amount-due">Amount Due</label>
+                            <div class="qbb-field"><label for="qbb-amount-due" id="qbb-amount-label">Amount Due</label>
                                 <input id="qbb-amount-due" class="money" type="number" step="0.01" min="0" oninput="BillsPage.qbAmountDue(this)" onblur="BillsPage.recalc()"></div>
-                            <div class="qbb-field"><label for="qbb-due">Bill Due</label>
+                            <div class="qbb-field qbb-bill-only"><label for="qbb-due">Bill Due</label>
                                 <input id="qbb-due" name="due_date" type="date" value="${bill && bill.due_date ? bill.due_date : ''}" oninput="this.dataset.touched='1'"></div>
                         </div>
                     </div>
@@ -341,7 +369,7 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
                 <div class="form-actions qb-actions">
                     <button type="button" class="btn btn-secondary" onclick="BillsPage.qbSave('close')">Save &amp; Close</button>
                     <button type="button" class="btn btn-primary" onclick="BillsPage.qbSave('new')">Save &amp; New</button>
-                    <button type="button" class="btn btn-secondary" onclick="BillsPage.qbClear()" title="${bill ? 'Put the bill back as it was saved' : 'Start this bill over'}">${bill ? 'Revert' : 'Clear'}</button>
+                    <button type="button" class="btn btn-secondary" onclick="BillsPage.qbClear()" title="${editing ? 'Put it back as it was saved' : 'Start over'}">${editing ? 'Revert' : 'Clear'}</button>
                 </div>
             </form></div>
             <aside id="bill-vendor-summary" class="bill-vendor-summary" aria-label="Vendor summary" aria-live="polite" hidden></aside></div>`, { wide: true });
@@ -381,30 +409,97 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
             BillsPage.qbDueDate();
         }
         BillsPage.termsHint();
+        showKind();
         BillsPage.recalc();
         B.snap = state();
     }
+
+    // Bill or Credit: the title, Amount Due or Credit Amount, and the
+    // boxes a credit has none of (Terms, Bill Due, Attach File).
+    function showKind() {
+        const credit = !!B.credit;
+        const t = $('#qbb-title');
+        if (t) t.textContent = credit ? 'Credit' : 'Bill';
+        const a = $('#qbb-amount-label');
+        if (a) a.textContent = credit ? 'Credit Amount' : 'Amount Due';
+        document.querySelectorAll('#bill-form .qbb-bill-only').forEach(el => { el.hidden = credit; });
+        const scan = $('#scan-row');
+        if (scan) scan.hidden = credit;
+        const form = $('#bill-form');
+        if (form) form.classList.toggle('qbb-credit', credit);
+    }
+
+    BillsPage.qbKind = function (kind) {
+        if (kind === 'credit' && !B.credit) B.credit = { id: null, orig: null };
+        if (kind === 'bill') B.credit = null;
+        showKind();
+    };
 
     // What the form holds, to tell whether a saved bill was changed.
     function state() {
         const form = $('#bill-form');
         return form ? JSON.stringify(Array.from(form.elements)
-            .filter(e => e.type !== 'button' && e.type !== 'radio')
+            .filter(e => e.type !== 'button' && e.type !== 'radio' && !(e.classList && e.classList.contains('cbx-input')) && !/-new-name$/.test(e.id || ''))
             .map(e => (e.type === 'checkbox' ? e.checked : e.value))) : '';
     }
 
-    BillsPage.showForm = function (id = null) { return open(id); };
+    BillsPage.showForm = function (id = null, opts = {}) { return open(id, opts); };
 
-    BillsPage.qbCredit = function () {
-        ScanHelper.discard();
-        closeModal();
-        if (typeof VendorCreditsPage !== 'undefined') VendorCreditsPage.showForm();
-    };
+    BillsPage.qbCredit = function () { BillsPage.qbKind('credit'); };
 
     BillsPage.qbClear = function () {
         ScanHelper.discard();
-        open(B.bill ? B.bill.id : null);
+        if (B.credit) open(null, B.credit.id ? { creditId: B.credit.id } : { credit: true });
+        else open(B.bill ? B.bill.id : null);
     };
+
+    // Vendor Credits' New and Edit open here, as Credit (vendor_credits.js
+    // loads after this file, so once every script has).
+    const takeVendorCredits = () => {
+        if (typeof VendorCreditsPage === 'undefined') return;
+        VendorCreditsPage.showForm = () => open(null, { credit: true });
+        VendorCreditsPage.replace = id => open(null, { creditId: id });
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', takeVendorCredits);
+    else takeVendorCredits();
+
+    // A credit saved as a vendor credit: its lines as the vendor credit
+    // takes them (an amount alone is 1 x the amount), the GST/HST a line to
+    // the GST/HST account, as on a bill.
+    async function saveCredit(form, lines, mode) {
+        const vendorId = await VendorQuickAdd.ensure('bill-vendor');
+        const c = B.credit || {};
+        const orig = c.orig || {};
+        const body = {
+            vendor_id: vendorId,
+            date: form.date.value,
+            ref_number: form.bill_number.value.trim() || null,
+            tax_rate: 0,
+            notes: form.notes.value || null,
+            class_id: classIdFromForm(form),
+            lines: lines.map((l, i) => {
+                const out = {
+                    item_id: l.item_id || null,
+                    account_id: l.account_id || null,
+                    description: l.description || '',
+                    quantity: l.quantity != null ? l.quantity : 1,
+                    rate: l.rate != null ? l.rate : r2(l.amount),
+                    line_order: i,
+                };
+                for (const k of ['class_id', 'job_id', 'cost_code_id', 'cost_type']) if (l[k] != null) out[k] = l[k];
+                return out;
+            }),
+        };
+        const job = typeof jobIdFromForm === 'function' ? jobIdFromForm(form) : null;
+        if (job || orig.job_id) body.job_id = job || orig.job_id;
+        if (orig.original_bill_id) body.original_bill_id = orig.original_bill_id;
+        const saved = await API.post(c.id ? `/vendor-credits/${Number(c.id)}/replace` : '/vendor-credits', body);
+        toastPosted(c.id ? `Vendor credit voided and replaced by credit ${saved.credit_number || `#${saved.id}`}` : `Credit ${saved.credit_number || ''} saved`);
+        for (const w of (saved && saved.warnings) || []) toast(w, 'warning');
+        closeModal();
+        if (location.hash.startsWith('#/vendor-credits')) App.navigate('#/vendor-credits'); else App.refresh();
+        if (mode === 'new') setTimeout(() => open(null, { credit: true }), 250);
+    }
 
     // Save & Close also closes a blank bill or an unchanged one, as
     // QuickBooks' does; Save & New opens a fresh bill after saving.
@@ -412,15 +507,16 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
         const form = $('#bill-form');
         if (!form) return;
         const id = B.bill ? B.bill.id : null;
-        const files = typeof AttachFile !== 'undefined' && AttachFile.pending.length;
-        if (mode === 'close' && !files && (id ? B.snap === state() : !rows().some(r => netOf(r)))) {
+        const files = !B.credit && typeof AttachFile !== 'undefined' && AttachFile.pending.length;
+        const editing = id || (B.credit && B.credit.id);
+        if (mode === 'close' && !files && (editing ? B.snap === state() : !rows().some(r => netOf(r)))) {
             ScanHelper.discard();
             closeModal();
             return;
         }
         const { lines, missing } = BillsPage.collectLines();
         if (BillsPage.recalc() <= 0) {
-            toast('Enter what the vendor charged: an amount on at least one line.', 'error');
+            toast(B.credit ? 'Enter the amount of the credit: an amount on at least one line.' : 'Enter what the vendor charged: an amount on at least one line.', 'error');
             return;
         }
         if (missing) {
@@ -428,8 +524,13 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
             if (missing.sel.hidden) BillsPage.qbTab('items'); else missing.sel.focus();
             return;
         }
-        if (!(await TxnWarn.ok(form, { editing: !!id }))) return;
+        if (!(await TxnWarn.ok(form, { editing: !!editing }))) return;
         if (!(await ClassWarn.ok(form, { rows: '#bill-lines tr', cls: 'line-function' }))) return;
+        if (B.credit) {
+            ScanHelper.discard();
+            try { await saveCredit(form, lines, mode); } catch (err) { toast(err.message, 'error'); }
+            return;
+        }
         try {
             const vendorId = await VendorQuickAdd.ensure('bill-vendor');
             const termSel = PaymentTerms.selection(form.terms);

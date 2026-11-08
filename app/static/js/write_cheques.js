@@ -283,7 +283,7 @@
 
     // What the form holds, to tell whether a saved cheque was changed.
     const qbState = form => JSON.stringify(Array.from(form.elements)
-        .filter(e => e.name || e.className)
+        .filter(e => e.name || e.className && !(e.classList && e.classList.contains('cbx-input')) && !/-new-name$/.test(e.id || ''))
         .map(e => (e.type === 'checkbox' || e.type === 'radio' ? e.checked : e.value)));
 
     // Nothing entered on a new cheque: no payee, amount or line amount.

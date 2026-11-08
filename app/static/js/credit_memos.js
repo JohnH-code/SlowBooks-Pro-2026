@@ -301,6 +301,7 @@ const CreditMemosPage = {
             const saved = await SalesLines.sendAllowingZero(flags =>
                 API.post('/credit-memos' + (typeof Replace === 'undefined' ? '' : Replace.suffix(form)), { ...data, ...flags }));
             if (!saved) return;
+            CreditMemosPage._lastSaved = saved;  // what Create Credit Memos asks about next
             if ((typeof Replace !== 'undefined' && Replace.replacing(form))) toastPosted(`Credit memo voided and replaced by credit memo ${saved.memo_number || `#${saved.id}`}`);
             else toastPosted('Credit memo created');
             closeModal();
