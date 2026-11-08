@@ -27,8 +27,38 @@ def test_the_file_names_the_folder(tmp_path, monkeypatch):
         f"# where the books are\n{chosen}\n", encoding="utf-8"
     )
     assert dl.get_data_dir() == chosen
-    # the .env (the settings key) goes with the books
-    assert dl.env_file() == chosen.parent / ".env" or not dl.FROZEN
+
+
+def test_the_settings_key_goes_with_the_books(tmp_path, monkeypatch):
+    default = _home(tmp_path, monkeypatch)
+    monkeypatch.setattr(dl, "FROZEN", True)
+    chosen = tmp_path / "DATA" / "Slowbooks"
+    chosen.mkdir(parents=True)
+    (default.parent / "data-location.txt").write_text(f"{chosen}\n", encoding="utf-8")
+    assert dl.env_file() == chosen / ".env"
+    # still so once the launcher pins the folder for the app
+    monkeypatch.setenv("SLOWBOOKS_DATA_DIR", str(chosen))
+    assert dl.env_file() == chosen / ".env"
+    # the computer's own font set-up stays in the platform's place
+    assert dl._config_dir() == default.parent
+
+
+def test_a_first_move_s_layout_still_finds_its_key(tmp_path, monkeypatch):
+    """The first move put the books in Slowbooks/data and the key beside
+    that folder; until the folder is tidied the key is read from there."""
+    default = _home(tmp_path, monkeypatch)
+    monkeypatch.setattr(dl, "FROZEN", True)
+    chosen = tmp_path / "DATA" / "Slowbooks" / "data"
+    chosen.mkdir(parents=True)
+    (chosen.parent / ".env").write_text("K=1\n", encoding="utf-8")
+    (default.parent / "data-location.txt").write_text(f"{chosen}\n", encoding="utf-8")
+    assert dl.env_file() == chosen.parent / ".env"
+
+
+def test_with_no_chosen_folder_the_key_stays_where_it_was(tmp_path, monkeypatch):
+    default = _home(tmp_path, monkeypatch)
+    monkeypatch.setattr(dl, "FROZEN", True)
+    assert dl.env_file() == default.parent / ".env"
 
 
 def test_the_command_line_still_wins(tmp_path, monkeypatch):

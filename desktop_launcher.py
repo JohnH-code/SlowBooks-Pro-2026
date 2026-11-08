@@ -109,9 +109,23 @@ def get_data_dir() -> Path:
     return chosen_data_dir() or default_data_dir()
 
 
+def _chosen_in_use() -> Path | None:
+    """The chosen folder (data-location.txt), when it is the data folder in
+    use: the launcher pins SLOWBOOKS_DATA_DIR to it, so this still holds
+    after that."""
+    chosen = chosen_data_dir()
+    return chosen if chosen is not None and get_data_dir() == chosen else None
+
+
 def _config_dir() -> Path:
-    """Writable per-user config root (parent of the data dir when frozen)."""
-    return get_data_dir().parent if FROZEN else Path(__file__).resolve().parent
+    """Writable per-user config root (parent of the data dir when frozen).
+    With a chosen data folder it stays the platform's own place (the font
+    configuration and caches belong to this computer, not to the books)."""
+    if not FROZEN:
+        return Path(__file__).resolve().parent
+    if _chosen_in_use() is not None:
+        return default_data_dir().parent
+    return get_data_dir().parent
 
 
 def _purge_stale_webview_cache(storage_dir: Path, current_version: str) -> None:
@@ -151,6 +165,13 @@ def env_file() -> Path:
     """Writable per-user .env. Resolved on every call (not at import) so
     --data-dir / SLOWBOOKS_DATA_DIR, which are applied after this module
     loads, move the .env along with the rest of the data directory."""
+    chosen = _chosen_in_use() if FROZEN else None
+    if chosen is not None:
+        # the settings key goes with the books, in the chosen folder itself;
+        # one folder up where a first move put it, until it is tidied
+        if not (chosen / ".env").exists() and (chosen.parent / ".env").exists():
+            return chosen.parent / ".env"
+        return chosen / ".env"
     return _config_dir() / ".env"
 
 
