@@ -86,6 +86,7 @@
             <div class="qb-toolbar">
                 <button type="button" class="btn btn-sm btn-secondary" onclick="DepositsPage.qbTogglePayments(this)">Payments… <span class="qbd-badge"${waiting ? '' : ' style="display:none"'}>${waiting}</span></button>
                 ${d ? `<button type="button" class="btn btn-sm btn-secondary" onclick="window.open('/api/deposits/${d.id}/print-preview','_blank')">Print</button>` : ''}
+                ${typeof AttachFile !== 'undefined' ? AttachFile.html('deposit', d ? d.id : null) : ''}
             </div>
             <div class="qbd-top">
                 <label for="${id}-bank-acct">Deposit To</label>
@@ -313,7 +314,8 @@
         const form = c.form;
         // Save & Close is also the way out, as in QuickBooks: a blank new
         // deposit or an unchanged saved one just closes
-        if (mode === 'close' && (c.deposit ? c.snap === state(c) : !started(c))) {
+        const files = typeof AttachFile !== 'undefined' && AttachFile.pending.length;
+        if (mode === 'close' && !files && (c.deposit ? c.snap === state(c) : !started(c))) {
             if (c.deposit) closeModal(); else leave();
             return;
         }
@@ -335,6 +337,7 @@
                 if (classSel) body.class_id = classId;
                 const saved = await API.put(`/deposits/${d.id}`, body);
                 toastPosted(saved && saved.note ? `Deposit saved. ${saved.note}` : 'Deposit saved');
+                if (typeof AttachFile !== 'undefined') await AttachFile.flush('deposit', d.id);
                 closeModal();
                 if (mode === 'new') { App.navigate('#/deposits'); return; }
                 App.navigate(location.hash.startsWith('#/banking') ? location.hash : '#/deposits');
@@ -351,6 +354,7 @@
                     other_lines: lines,
                 });
                 toastPosted(`Deposited ${formatCurrency(result.amount)}`);
+                if (typeof AttachFile !== 'undefined') await AttachFile.flush('deposit', result.transaction_id);
                 if (mode === 'close') leave(); else App.navigate('#/deposits');
             }
         } catch (err) { toast(err.message, 'error'); }

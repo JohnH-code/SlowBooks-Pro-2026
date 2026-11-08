@@ -256,6 +256,7 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
                     <label><input type="radio" name="qbb_kind" value="bill" checked> Bill</label>
                     ${bill ? '' : `<label title="A credit from the vendor: opens a vendor credit"><input type="radio" name="qbb_kind" value="credit" onchange="BillsPage.qbCredit()"> Credit</label>`}
                 </div>
+                ${typeof AttachFile !== 'undefined' ? AttachFile.html('bill', bill ? bill.id : null) : ''}
                 ${bill ? '' : ScanHelper.scanRowHtml()}
                 <div class="qb-cheque qbb-panel">
                     <div class="qbb-title">Bill</div>
@@ -382,7 +383,8 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
         const form = $('#bill-form');
         if (!form) return;
         const id = B.bill ? B.bill.id : null;
-        if (mode === 'close' && (id ? B.snap === state() : !rows().some(r => netOf(r)))) {
+        const files = typeof AttachFile !== 'undefined' && AttachFile.pending.length;
+        if (mode === 'close' && !files && (id ? B.snap === state() : !rows().some(r => netOf(r)))) {
             ScanHelper.discard();
             closeModal();
             return;
@@ -415,15 +417,18 @@ window.qbGuessTaxCodes = function (nets, tax, rate) {
                 lines,
             };
             if (form.due_date.value && form.due_date.dataset.touched) body.due_date = form.due_date.value;
+            let savedId = id;
             if (id) {
                 const saved = await API.put(`/bills/${id}`, body);
                 toastPosted('Bill updated');
                 for (const w of (saved && saved.warnings) || []) toast(w, 'warning');
             } else {
                 const result = await API.post('/bills', body);
+                savedId = result.id;
                 await ScanHelper.attachAfterSave('bill', result.id);
                 toastPosted('Bill saved');
             }
+            if (typeof AttachFile !== 'undefined') await AttachFile.flush('bill', savedId);
             closeModal();
             if (location.hash.startsWith('#/bills')) App.navigate('#/bills'); else App.refresh();
             if (mode === 'new') setTimeout(() => open(null), 250);

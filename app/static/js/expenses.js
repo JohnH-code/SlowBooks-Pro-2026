@@ -475,6 +475,7 @@ const ExpensesPage = {
             if (!result) return;
             ExpensesPage._qbSaved = result;  // write_cheques.js: print when saved
             await ScanHelper.attachAfterSave('expense', result.id);
+            if (typeof AttachFile !== 'undefined') await AttachFile.flush('expense', result.id);  // John's build: Attach File
             if (editId) toastPosted('Cheque saved');
             else if ((typeof Replace !== 'undefined' && Replace.replacing(form))) toastPosted(`Expense voided and replaced by expense #${result.id}`);
             else toastPosted('Expense recorded');

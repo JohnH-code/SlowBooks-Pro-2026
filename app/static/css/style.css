@@ -4119,3 +4119,12 @@ tbody tr.row--dim > td.amount { color: var(--text-muted); }
 
 /* A page in its own window (desktop_windows.js): no sidebar, no toggle */
 body.page-window #sidebar, body.page-window #sidebar-toggle { display: none !important; }
+
+/* Attach File on the entry screens (attach_file.js) */
+.qb-attach { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.qb-attach-list { display: inline-flex; flex-wrap: wrap; gap: 4px 8px; font-size: 12px; }
+.qb-attach-file { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; border: 1px solid var(--panel-border); border-radius: 10px; background: var(--panel-bg); }
+.qb-attach-file--new { border-style: dashed; }
+.qb-attach-when { color: var(--text-muted); }
+.qb-attach-x { border: none; background: none; cursor: pointer; color: var(--text-muted); font-size: 14px; line-height: 1; padding: 0 2px; }
+.qb-bill .qbb-kind .qb-attach { margin-left: auto; }

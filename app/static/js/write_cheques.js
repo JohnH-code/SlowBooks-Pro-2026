@@ -298,7 +298,8 @@
         if (!form) return;
         // Save & Close is also the way out, as in QuickBooks: a blank new
         // cheque or an unchanged saved one just closes
-        if (mode === 'close' && (ExpensesPage._editId
+        const files = typeof AttachFile !== 'undefined' && AttachFile.pending.length;
+        if (mode === 'close' && !files && (ExpensesPage._editId
             ? ExpensesPage._qbSnap && ExpensesPage._qbSnap === qbState(form)
             : qbBlank(form))) {
             ScanHelper.discard();
@@ -474,6 +475,7 @@
                 <div class="qb-toolbar">
                     <button type="button" class="btn btn-sm btn-secondary" onclick="ExpensesPage.qbMemorize()" title="Keep this cheque to enter again, on a schedule or when you choose">Memorize</button>
                     <label class="qb-print-later" title="Print the cheque as soon as it is saved (a bank account only)"><input type="checkbox" name="qb_print"> Print when saved</label>
+                    ${typeof AttachFile !== 'undefined' ? AttachFile.html('expense', ExpensesPage._editId || null) : ''}
                 </div>
                 ${ScanHelper.scanRowHtml()}
                 <div class="qb-account-row">
