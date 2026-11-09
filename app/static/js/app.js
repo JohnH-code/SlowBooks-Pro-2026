@@ -103,6 +103,7 @@ const App = {
         // the entry keeps its state, so Back still knows what is behind it)
         '/check-register': { page: 'banking',         label: 'Banking',            render: () => { history.replaceState(history.state, '', '#/banking'); App.navigate('#/banking'); return ''; } },
         '/cc-charges':    { page: 'cc-charges',      label: 'CC Charges',         render: () => CCChargesPage.render() },
+        '/bookkeeper':    { page: 'bookkeeper',      label: 'Bookkeeper Inbox',   render: () => BookkeeperInbox.render() },
         '/cc-charges/:id':    { page: 'cc-charges', label: 'CC Charge',     document: true, render: (id) => App.withDocument(() => CCChargesPage.render(), () => JournalPage.view(id)) },
         '/expenses':      { page: 'expenses',        label: 'Enter Cheques',      render: () => ExpensesPage.render() },
         '/expenses/:id':      { page: 'expenses',   label: 'Expense',       document: true, render: (id) => App.withDocument(() => ExpensesPage.render(), () => ExpensesPage.showDetail(id)) },

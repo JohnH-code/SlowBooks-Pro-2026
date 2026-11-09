@@ -77,6 +77,10 @@ DEFAULT_SETTINGS = {
     "company_email": "",
     "company_website": "",
     "company_tax_id": "",
+    # The company's bookkeeper folder (John's build): where the agent
+    # bookkeeper leaves what it prepared, in "To review", for the
+    # Bookkeeper inbox. Blank: no inbox.
+    "bookkeeper_folder": "",
     "operator_name": "",
     "operator_email": "",
     # Desktop: "true" signs the company out whenever the app is quit, so the

@@ -439,6 +439,9 @@ const SettingsPage = {
                             <input name="company_website" value="${escapeHtml(s.company_website || '')}"></div>
                         <div class="form-group"><label>Tax ID / EIN</label>
                             <input name="company_tax_id" value="${escapeHtml(s.company_tax_id || '')}"></div>
+                        <div class="form-group full-width"><label for="bookkeeper-folder">Bookkeeper folder</label>
+                            <input id="bookkeeper-folder" name="bookkeeper_folder" placeholder="e.g. ~/DATA/Alderella/Bookkeeper" aria-describedby="bookkeeper-folder-help" value="${escapeHtml(s.bookkeeper_folder || '')}">
+                            <div id="bookkeeper-folder-help" style="font-size:10px; color:var(--text-muted); margin-top:4px;">Where the agent bookkeeper leaves what it prepared (its "To review" folder) for the Bookkeeper Inbox. Blank: no inbox.</div></div>
                         <div class="form-group full-width"><label for="company-type">Company Type</label>
                             <select id="company-type" name="company_type" data-prev="${s.company_type === 'nonprofit' ? 'nonprofit' : (s.company_type === 'construction' ? 'construction' : 'business')}" onchange="SettingsPage.changeCompanyType(this)">
                                 <option value="business" ${(s.company_type !== 'nonprofit' && s.company_type !== 'construction') ? 'selected' : ''}>Business</option>
