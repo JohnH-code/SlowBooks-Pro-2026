@@ -41,13 +41,36 @@ REGISTER_CHECK_SOURCES = ("bank_entry", "expense")
 def _kept_address(check_data: dict, text) -> None:
     """The payee and address the cheque was written with (John's build):
     Write Cheques' Address box, or a bill payment's vendor as paid. It
-    prints as it was kept, whatever the vendor's record says now."""
+    prints as it was kept, whatever the vendor's record says now. Like
+    vendor_address_fields (#726), the lines start with the payee's name."""
     lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
     if not lines:
         return
     check_data["payee_block"] = lines
-    payee = (check_data.get("payee") or "").strip().lower()
-    check_data["payee_address"] = lines[1:] if lines[0].lower() == payee else lines
+    check_data["payee_address"] = lines
+
+
+def vendor_address_fields(vendor) -> dict:
+    """The payee's postal address for the check face (#726), merged into a
+    check's data: the payee's name and the vendor's street lines, then
+    "City, ST 12345". A vendor with no address (or no vendor) gives an empty
+    list, and the face prints no address block at all."""
+    if vendor is None:
+        return {"payee_address": []}
+    street = [
+        (line or "").strip()
+        for line in (vendor.address1, vendor.address2)
+        if (line or "").strip()
+    ]
+    city = (vendor.city or "").strip()
+    state = (vendor.state or "").strip()
+    zip_code = (vendor.zip or "").strip()
+    region = " ".join(x for x in (state, zip_code) if x)
+    last = ", ".join(x for x in (city, region) if x)
+    lines = street + ([last] if last else [])
+    if not lines:
+        return {"payee_address": []}
+    return {"payee_address": [vendor.name, *lines] if vendor.name else lines}
 
 
 def register_check_data(db: Session, txn_id: int) -> dict:
@@ -122,34 +145,22 @@ def register_check_data(db: Session, txn_id: int) -> dict:
     number = re.split(r"\s*·\s*QB #", txn.reference or "")[0].strip()
     if number.startswith("QB #"):
         number = ""
-    # the vendor's address under the payee, for a window envelope
-    address = []
+    # The vendor behind the check, for its address (#726): an expense names
+    # its vendor as its source, a register entry on its own row (#491).
+    vendor_id = txn.source_id if txn.source_type == "expense" else txn.vendor_id
     vendor = (
-        db.get(Vendor, txn.source_id)
-        if txn.source_type == "expense" and txn.source_id
-        else None
+        db.query(Vendor).filter(Vendor.id == vendor_id).first() if vendor_id else None
     )
-    if vendor is not None:
-        from app.services.addresses import city_line
-
-        address = [
-            line
-            for line in (
-                vendor.address1,
-                vendor.address2,
-                city_line(vendor.city, vendor.state, vendor.zip),
-            )
-            if line
-        ]
     check_data = {
         "account_name": bank_line.account.name if bank_line.account else "",
         "payee": payee,
-        "payee_address": address,
         "date": txn.date,
         "amount": bank_line.credit,
         "check_number": number,
         "memo": "" if memo == payee else cheque_memo(memo),
         "details": details,
+        "bank_account": bank_line.account.name,
+        **vendor_address_fields(vendor),
     }
     _kept_address(check_data, txn.payee_address)
     return check_data
@@ -166,24 +177,15 @@ def bill_payment_check_data(db: Session, bp: BillPayment) -> dict:
         "check_number": bp.check_number or "",
         "memo": cheque_memo(bp.notes),
         "details": [],
+        "bank_account": "",
+        **vendor_address_fields(vendor),
     }
     if bp.pay_from_account_id:
-        acct = db.get(Account, bp.pay_from_account_id)
-        check_data["account_name"] = acct.name if acct else ""
-    if bp.payee_address:
-        _kept_address(check_data, bp.payee_address)
-    elif vendor is not None:
-        from app.services.addresses import city_line
-
-        check_data["payee_address"] = [
-            line
-            for line in (
-                vendor.address1,
-                vendor.address2,
-                city_line(vendor.city, vendor.state, vendor.zip),
-            )
-            if line
-        ]
+        bank = db.query(Account).filter(Account.id == bp.pay_from_account_id).first()
+        check_data["bank_account"] = bank.name if bank else ""
+        check_data["account_name"] = check_data["bank_account"]
+    # the vendor's address as it stood when paid (John's build)
+    _kept_address(check_data, bp.payee_address)
     # each bill as QuickBooks' voucher lists it (John's build): its date and
     # the vendor's invoice number, the bill's gross amount, the early-payment
     # discount taken on it, and what this cheque pays
@@ -223,6 +225,7 @@ def bill_payment_check_data(db: Session, bp: BillPayment) -> dict:
 @router.get("/test-print")
 def test_print_check(
     check_stock: str = Query(default=None),
+    check_position: str = Query(default=None),
     check_nudge_x_in: str = Query(default=None),
     check_nudge_y_in: str = Query(default=None),
     db: Session = Depends(get_db),
@@ -231,9 +234,11 @@ def test_print_check(
     same renderer and the same check-stock settings as a real check, so the
     alignment nudge can be set by holding the sheet against the stock.
 
-    The Settings page passes the form's current (unsaved) stock and nudge, so
-    a nudge can be tried before it is saved; each is checked the way saving
-    it would be. Any left out reads the saved setting. Nothing is stored."""
+    The Settings page passes the form's current (unsaved) stock, check
+    position (#727) and nudge, so a nudge can be tried before it is saved;
+    each is checked the way saving it would be. Any left out reads the saved
+    setting. Nothing is stored. The sample carries a fictional payee address
+    (#726) so the address block can be lined up too."""
     check_data = {
         "payee": "Sample Payee",
         "date": date.today(),
@@ -241,6 +246,8 @@ def test_print_check(
         "check_number": "0000",
         "memo": "Alignment test",
         "details": [{"description": "Alignment test", "amount": Decimal("1234.56")}],
+        "bank_account": "Sample Checking",
+        "payee_address": ["Sample Payee", "123 Any Street", "Anytown, ST 00000"],
     }
     company = dict(get_settings(db))
     _cheque_style(check_data, company)
@@ -251,6 +258,13 @@ def test_print_check(
                 detail="check_stock must be one of: plain, preprinted, cpa_top",
             )
         company["check_stock"] = check_stock
+    if check_position is not None:
+        if check_position not in ENUM_SETTINGS["check_position"]:
+            raise HTTPException(
+                status_code=422,
+                detail="check_position must be one of: bottom, top",
+            )
+        company["check_position"] = check_position
     for key, value in (
         ("check_nudge_x_in", check_nudge_x_in),
         ("check_nudge_y_in", check_nudge_y_in),
