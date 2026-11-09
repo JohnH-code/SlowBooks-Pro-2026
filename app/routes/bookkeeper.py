@@ -239,9 +239,7 @@ def inbox(db: Session = Depends(get_db)):
                 and not it.get("entered")
                 and not it.get("dismissed")
             ]
-            sources = [
-                s for s in data.get("source") or [] if (review / str(s)).is_file()
-            ]
+            sources = [{"name": p.name, "n": n} for n, p, _ in _sources(folder, data)]
             files.append(
                 {
                     "file": path.name,
@@ -252,6 +250,45 @@ def inbox(db: Session = Depends(get_db)):
                 }
             )
     return {"folder": str(folder), "exists": folder.is_dir(), "files": files}
+
+
+def _sources(folder: Path, data: dict) -> list:
+    """The statements a file names, as (index, path, in To review): a bare
+    file name is in To review; a path with a folder in it ("RBC bank
+    statements/ALD - CAN $ Statement-4696 2026-11-30.pdf") is under the
+    company's own folder (the bookkeeper folder's parent), where John
+    keeps his statements: shown and attached from there, never moved.
+    Anything outside the company's folder is left out."""
+    out = []
+    review = (folder / TO_REVIEW).resolve()
+    company = folder.parent.resolve()
+    for n, raw in enumerate(data.get("source") or []):
+        text = str(raw or "").strip()
+        if not text or text.lower().endswith(".json"):
+            continue
+        if "/" in text or "\\" in text:
+            path = (company / text).resolve()
+            if company not in path.parents:
+                continue
+        else:
+            if not _NAME.match(text) or text.startswith("."):
+                continue
+            path = review / text
+        if path.is_file():
+            out.append((n, path, path.parent == review))
+    return out
+
+
+@router.get("/statement/{name}/{n}")
+def statement(name: str, n: int, db: Session = Depends(get_db)):
+    """The n-th statement an inbox file names, to look at beside it."""
+    folder = _need_folder(db)
+    data = _read(_in(folder, name))
+    for i, path, _ in _sources(folder, data):
+        if i == n:
+            kind = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            return FileResponse(path, media_type=kind, filename=path.name)
+    raise HTTPException(status_code=404, detail="No such statement")
 
 
 @router.get("/source/{name}")
@@ -280,9 +317,9 @@ def _settle(folder: Path, path: Path, data: dict) -> bool:
     dest = folder / (DONE if any(it.get("entered") for it in items) else DISMISSED)
     dest = dest / month
     dest.mkdir(parents=True, exist_ok=True)
-    for name in [*(data.get("source") or []), path.name]:
-        src = folder / TO_REVIEW / str(name)
-        if src.is_file() and _NAME.match(str(name)):
+    moving = [p for _, p, inside in _sources(folder, data) if inside] + [path]
+    for src in moving:
+        if src.is_file():
             target = dest / src.name
             n = 1
             while target.exists():
@@ -312,10 +349,7 @@ def entered(name: str, item_id: str, body: Entered, db: Session = Depends(get_db
         raise HTTPException(status_code=409, detail="Already entered")
     attached = []
     if item.get("attach", True) and body.entity_type in ("bill", "expense"):
-        for src in data.get("source") or []:
-            f = folder / TO_REVIEW / str(src)
-            if not (f.is_file() and _NAME.match(str(src))):
-                continue
+        for _, f, _inside in _sources(folder, data):
             file_store.add_attachment(
                 db,
                 entity_type=_ATTACH_TYPE[body.entity_type],

@@ -70,7 +70,7 @@ def test_a_prepared_bill_is_listed_with_its_vendor_and_accounts_found(
     )
     box = client.get("/api/bookkeeper/inbox").json()
     (f,) = box["files"]
-    assert f["source"] == ["statement.pdf"]
+    assert f["source"] == [{"name": "statement.pdf", "n": 0}]
     (it,) = f["items"]
     assert it["vendor_id"] == vid
     assert [ln["account_id"] for ln in it["lines"]] == [
@@ -296,3 +296,61 @@ def test_a_statement_is_matched_and_starts_a_reconciliation(
             .count()
             == 0
         )
+
+
+def test_a_statement_kept_in_the_company_folder_is_shown_and_never_moved(
+    client, seed_accounts, folder, tmp_path
+):
+    kept = tmp_path / "RBC bank statements"
+    kept.mkdir()
+    (kept / "ALD - CAN $ Statement-4696 2026-11-30.pdf").write_bytes(b"%PDF rbc")
+    (tmp_path / "secret.pdf").write_bytes(b"%PDF no")
+    vid = _vendor(client, "Royal Bank")
+    (folder / "To review" / "rbc.json").write_text(
+        json.dumps(
+            {
+                "source": [
+                    "RBC bank statements/ALD - CAN $ Statement-4696 2026-11-30.pdf",
+                    "../../etc/passwd",
+                    "../secret.pdf",
+                ],
+                "items": [
+                    {
+                        "id": "1",
+                        "kind": "expense",
+                        "vendor": "Royal Bank",
+                        "date": "2026-11-30",
+                        "paid_from": "Checking",
+                        "lines": [{"account": "Office Supplies", "amount": "33.00"}],
+                    }
+                ],
+            }
+        )
+    )
+    (f,) = client.get("/api/bookkeeper/inbox").json()["files"]
+    assert f["source"] == [
+        {"name": "ALD - CAN $ Statement-4696 2026-11-30.pdf", "n": 0}
+    ]
+    r = client.get("/api/bookkeeper/statement/rbc.json/0")
+    assert r.status_code == 200 and r.content == b"%PDF rbc"
+    assert client.get("/api/bookkeeper/statement/rbc.json/2").status_code == 404
+    e = client.post(
+        "/api/expenses",
+        json={
+            "date": "2026-11-30",
+            "vendor_id": vid,
+            "paid_from_account_id": seed_accounts["1000"].id,
+            "amount": 33.0,
+            "lines": [{"account_id": seed_accounts["6400"].id, "amount": 33.0}],
+        },
+    )
+    assert e.status_code == 201, e.text
+    r = client.post(
+        "/api/bookkeeper/inbox/rbc.json/1/entered",
+        json={"entity_type": "expense", "entity_id": e.json()["id"]},
+    )
+    assert r.json()["filed"] is True
+    # the statement stays where John keeps it; only the inbox file is filed
+    assert (kept / "ALD - CAN $ Statement-4696 2026-11-30.pdf").is_file()
+    month = folder / "Done" / date.today().strftime("%Y-%m")
+    assert [p.name for p in month.iterdir()] == ["rbc.json"]

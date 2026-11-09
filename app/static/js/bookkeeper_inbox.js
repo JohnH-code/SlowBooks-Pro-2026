@@ -45,7 +45,7 @@ const BookkeeperInbox = {
                 <h3 style="margin:0 0 4px;">${escapeHtml(f.title || f.file)}</h3>
                 <div style="font-size:12px; color:var(--text-muted); margin-bottom:8px;">
                     ${f.prepared ? `Prepared ${escapeHtml(String(f.prepared))} &middot; ` : ''}
-                    ${(f.source || []).map(s => `<a href="/api/bookkeeper/source/${encodeURIComponent(s)}" target="_blank" rel="noopener">${escapeHtml(s)}</a>`).join(' &middot; ') || 'no statement'}
+                    ${(f.source || []).map(s => this._link(f.file, s)).join(' &middot; ') || 'no statement'}
                 </div>`;
             if (f.error) {
                 html += `<p class="error">${escapeHtml(f.error)}</p></div>`;
@@ -117,7 +117,7 @@ const BookkeeperInbox = {
         const source = (this._files.find(f => f.file === file) || {}).source || [];
         const ok = !it.problems.length;
         openModal(`Reconcile ${escapeHtml(it.account || '')}`, `
-            ${source.length ? `<p style="font-size:12px;">Statement: ${source.map(s => `<a href="/api/bookkeeper/source/${encodeURIComponent(s)}" target="_blank" rel="noopener">${escapeHtml(s)}</a>`).join(' &middot; ')}</p>` : ''}
+            ${source.length ? `<p style="font-size:12px;">Statement: ${source.map(s => this._link(file, s)).join(' &middot; ')}</p>` : ''}
             <div class="form-grid">
               <div class="form-group"><label>Statement date</label><div>${it.statement_date ? formatDate(it.statement_date) : ''}</div></div>
               <div class="form-group"><label>Opening balance</label><div>${formatCurrency(it.opening_balance ?? it.beginning ?? 0)}</div></div>
@@ -145,6 +145,10 @@ const BookkeeperInbox = {
             await App.navigate('#/banking');
             BankingPage.showReconcileView(r.reconciliation_id);
         } catch (err) { toast(err.message, 'error'); }
+    },
+
+    _link(file, s) {
+        return `<a href="/api/bookkeeper/statement/${encodeURIComponent(file)}/${Number(s.n)}" target="_blank" rel="noopener">${escapeHtml(s.name)}</a>`;
     },
 
     _ready() {
@@ -204,7 +208,7 @@ const BookkeeperInbox = {
                  <strong>Total <span id="bk-total"></span></strong></div>`;
         openModal(`Review — ${this.KIND[it.kind] || it.kind}`, `
             ${notes ? `<ul style="margin:0 0 10px; padding-left:18px;">${notes}</ul>` : ''}
-            ${source.length ? `<p style="font-size:12px;">Statement: ${source.map(s => `<a href="/api/bookkeeper/source/${encodeURIComponent(s)}" target="_blank" rel="noopener">${escapeHtml(s)}</a>`).join(' &middot; ')}</p>` : ''}
+            ${source.length ? `<p style="font-size:12px;">Statement: ${source.map(s => this._link(file, s)).join(' &middot; ')}</p>` : ''}
             <form onsubmit="event.preventDefault(); BookkeeperInbox.enter()">
               <div class="form-grid">
                 <div class="form-group"><label for="bk-vendor">Vendor</label><select id="bk-vendor">${vendorOpts}</select></div>
