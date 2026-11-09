@@ -244,6 +244,17 @@ def plan(txns: list[dict], qtype: dict) -> dict:
 # ── making them ────────────────────────────────────────────────────────────
 
 
+def _addresses(db, customer) -> dict:
+    """The Bill To and Ship To an invoice brought over from QuickBooks
+    Desktop keeps (John's build): the customer's as imported from the
+    company's lists, as an invoice typed in Slowbooks keeps them. The
+    insert hook freezes only the name and country, so without this an
+    imported invoice printed no street."""
+    from app.services.sub_customers import invoice_addresses
+
+    return invoice_addresses(db, customer)
+
+
 class Maker:
     """Creates the documents as the import posts the transactions."""
 
@@ -335,6 +346,7 @@ class Maker:
             amount_paid=ZERO,
             balance_due=total,
             notes=(t["memo"] or None),
+            **_addresses(self.db, who),
         )
         self.db.add(inv)
         self.db.flush()
@@ -484,9 +496,10 @@ class Maker:
         if self.db.query(model.id).filter(model.notes.like(f"%{tag}%")).first():
             return  # brought over by an earlier upload
         if model is Invoice:
+            who = self.customer(_who(t, head))
             doc = Invoice(
                 invoice_number=self._invoice_number(t),
-                customer_id=self.customer(_who(t, head)).id,
+                customer_id=who.id,
                 status=InvoiceStatus.VOID,
                 date=t["date"],
                 due_date=_date(head["due"]) or t["date"],
@@ -498,6 +511,7 @@ class Maker:
                 amount_paid=ZERO,
                 balance_due=ZERO,
                 notes=words,
+                **_addresses(self.db, who),
             )
         else:
             doc = Bill(
@@ -535,6 +549,7 @@ class Maker:
                         {"num": "", "trans": f"{t['trans']}-{i}"}
                     ),
                     customer_id=self.customer(who).id,
+                    **_addresses(self.db, self.customer(who)),
                     status=InvoiceStatus.SENT,
                     date=t["date"],
                     due_date=t["date"],

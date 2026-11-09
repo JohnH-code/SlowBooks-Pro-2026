@@ -68,6 +68,7 @@
                 {% if company_city %}{{ company_city }}<br>{% endif %}
                 {% if company.company_phone %}{{ company.company_phone }}<br>{% endif %}
                 {% if company.company_email %}{{ company.company_email }}{% endif %}
+                {% if gst_number(company) %}{% if company.company_email %}<br>{% endif %}GST/HST No. {{ gst_number(company) }}{% endif %}
             </div>
         </div>
         <div class="invoice-title">

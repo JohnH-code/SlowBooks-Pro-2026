@@ -229,6 +229,22 @@ from app.services.addresses import city_line, country_line  # noqa: E402
 _jinja_env.globals["city_line"] = city_line
 _jinja_env.globals["country_line"] = country_line
 
+
+def gst_number(company) -> str:
+    """The GST/HST registration number a Canadian sales form shows (John's
+    build): the one under Sales Tax, else, for a company on the Canadian
+    system, the Company page's Tax ID (where a Canadian business number
+    with its RT account is often typed). Blank otherwise, so a US company's
+    EIN never prints on an invoice."""
+    company = company or {}
+    number = (company.get("hst_registration_number") or "").strip()
+    if not number and company.get("sales_tax_system") == "canada":
+        number = (company.get("company_tax_id") or "").strip()
+    return number
+
+
+_jinja_env.globals["gst_number"] = gst_number
+
 # Templates may call terms('Invoice'); a direct render without company
 # settings gets the business words. _render() overrides this per call.
 from app.services.terminology import Terms as _Terms  # noqa: E402
@@ -252,9 +268,32 @@ def _render(template_name: str, company_settings: dict, **context) -> str:
     # #108: only the analytics PDF and the new-hire report ever received it).
     if "company_logo_data_uri" not in context:
         context["company_logo_data_uri"] = _company_logo_data_uri(company_settings)
+    if "country_line" not in context and _home_is_canada(company_settings):
+        context["country_line"] = _canadian_country_line
     return template.render(
         company=company_settings, terms=terms_for(company_settings), **context
     )
+
+
+def _home_is_canada(company) -> bool:
+    """A Canadian company (John's build): on the Canadian sales tax system,
+    or its own address in Canada."""
+    company = company or {}
+    return company.get("sales_tax_system") == "canada" or (
+        (company.get("company_country") or "").strip().upper() in ("CA", "CANADA")
+    )
+
+
+def _canadian_country_line(country) -> str:
+    """country_line with Canada as home: a Canadian address prints no
+    country line, a US one prints "United States", as QuickBooks Canada
+    prints them."""
+    value = (country or "").strip()
+    if value.upper() in ("CA", "CAN", "CANADA"):
+        return ""
+    if value.upper() in ("US", "USA", "UNITED STATES", "UNITED STATES OF AMERICA"):
+        return "United States"
+    return country_line(value)
 
 
 def render_invoice_html(invoice, company_settings: dict) -> str:
