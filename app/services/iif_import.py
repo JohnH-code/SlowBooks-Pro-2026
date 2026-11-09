@@ -818,8 +818,13 @@ def _create_opening_balance_entry(db: Session, balances: list) -> dict:
 
 
 def _customer_fields(row: dict) -> dict:
-    """A CUST row's contact fields, as Customer takes them."""
-    a = _address(row)
+    """A CUST row's contact fields, as Customer takes them. QuickBooks
+    keeps a customer's bill-to address in BADDR1-5 and the ship-to in
+    SADDR1-5 (an older file may have ADDR1-5)."""
+    a = _address(row, "BADDR")
+    if not any(a.values()):
+        a = _address(row)
+    sh = _address(row, "SADDR")
     fields = dict(
         company=row.get("COMPANYNAME", "").strip() or None,
         email=row.get("EMAIL", "").strip() or None,
@@ -837,6 +842,16 @@ def _customer_fields(row: dict) -> dict:
     )
     if a["country"]:
         fields["bill_country"] = a["country"]
+    if any(sh.values()):
+        fields.update(
+            ship_address1=sh["street1"],
+            ship_address2=sh["street2"],
+            ship_city=sh["city"],
+            ship_state=sh["state"],
+            ship_zip=sh["zip"],
+        )
+        if sh["country"]:
+            fields["ship_country"] = sh["country"]
     return fields
 
 
@@ -2253,23 +2268,81 @@ def _import_estimate(
 # codes; a US ZIP (12345 or 12345-6789).
 _CA_POSTAL = re.compile(r"^[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d$")
 _US_ZIP = re.compile(r"^\d{5}(-\d{4})?$")
-_CA_PROVINCES = {
-    "AB",
-    "BC",
-    "MB",
-    "NB",
-    "NL",
-    "NS",
-    "NT",
-    "NU",
-    "ON",
-    "PE",
-    "QC",
-    "SK",
-    "YT",
+_PROVINCES = {
+    "alberta": "AB",
+    "british columbia": "BC",
+    "manitoba": "MB",
+    "new brunswick": "NB",
+    "newfoundland and labrador": "NL",
+    "newfoundland": "NL",
+    "nova scotia": "NS",
+    "northwest territories": "NT",
+    "nunavut": "NU",
+    "ontario": "ON",
+    "prince edward island": "PE",
+    "quebec": "QC",
+    "québec": "QC",
+    "saskatchewan": "SK",
+    "yukon": "YT",
 }
-_CITY_LINE = re.compile(
-    r"^(?P<city>.*?)[,\s]+(?P<state>[A-Za-z]{2})\.?\s+"
+_STATES = {
+    "alabama": "AL",
+    "alaska": "AK",
+    "arizona": "AZ",
+    "arkansas": "AR",
+    "california": "CA",
+    "colorado": "CO",
+    "connecticut": "CT",
+    "delaware": "DE",
+    "district of columbia": "DC",
+    "florida": "FL",
+    "georgia": "GA",
+    "hawaii": "HI",
+    "idaho": "ID",
+    "illinois": "IL",
+    "indiana": "IN",
+    "iowa": "IA",
+    "kansas": "KS",
+    "kentucky": "KY",
+    "louisiana": "LA",
+    "maine": "ME",
+    "maryland": "MD",
+    "massachusetts": "MA",
+    "michigan": "MI",
+    "minnesota": "MN",
+    "mississippi": "MS",
+    "missouri": "MO",
+    "montana": "MT",
+    "nebraska": "NE",
+    "nevada": "NV",
+    "new hampshire": "NH",
+    "new jersey": "NJ",
+    "new mexico": "NM",
+    "new york": "NY",
+    "north carolina": "NC",
+    "north dakota": "ND",
+    "ohio": "OH",
+    "oklahoma": "OK",
+    "oregon": "OR",
+    "pennsylvania": "PA",
+    "rhode island": "RI",
+    "south carolina": "SC",
+    "south dakota": "SD",
+    "tennessee": "TN",
+    "texas": "TX",
+    "utah": "UT",
+    "vermont": "VT",
+    "virginia": "VA",
+    "washington": "WA",
+    "west virginia": "WV",
+    "wisconsin": "WI",
+    "wyoming": "WY",
+}
+_CA_PROVINCES = set(_PROVINCES.values())
+_US_STATES = set(_STATES.values())
+_REGION_NAMES = sorted({**_PROVINCES, **_STATES}, key=len, reverse=True)
+_POSTAL_END = re.compile(
+    r"^(?P<rest>.*?)[,\s]+"
     r"(?P<zip>[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d|\d{5}(?:-\d{4})?)$"
 )
 _COUNTRY_LINE = {
@@ -2277,46 +2350,146 @@ _COUNTRY_LINE = {
     "ca": "CA",
     "usa": "US",
     "us": "US",
+    "u.s.a": "US",
     "united states": "US",
+    "united states of america": "US",
 }
+# other countries QuickBooks addresses name in a free line ("Wildey, St
+# Michael, Barbados"), and their postal codes on a line of their own
+_OTHER_COUNTRIES = {
+    "barbados": "BB",
+    "bahamas": "BS",
+    "bermuda": "BM",
+    "cayman islands": "KY",
+    "jamaica": "JM",
+    "mexico": "MX",
+    "united kingdom": "GB",
+    "england": "GB",
+    "france": "FR",
+    "germany": "DE",
+}
+_POSTAL_ONLY = re.compile(r"^[A-Za-z0-9]{2,4}[ -]?[A-Za-z0-9]{2,6}$")
 
 
-def _address(row: dict) -> dict:
+def _city_line(line: str):
+    """(city, province or state code, postal code) from "Oakville, ON  L6J
+    1P5", "Toronto ON M2N 1M6", "Vaughan, Ontario, L4K 0A4", "Richmond Hill
+    Ontario L4S2A3" or "Buffalo, New York 14202"; None if it isn't one."""
+    m = _POSTAL_END.match(line.strip())
+    if not m:
+        return None
+    rest = m.group("rest").strip().rstrip(",").strip()
+    zipcode = m.group("zip").upper()
+    if _CA_POSTAL.match(zipcode):
+        zipcode = zipcode.replace(" ", "")
+        zipcode = f"{zipcode[:3]} {zipcode[3:]}"
+    low = rest.lower()
+    for name in _REGION_NAMES:
+        if low.endswith(name) and (
+            len(low) == len(name) or low[-len(name) - 1] in ", "
+        ):
+            code = _PROVINCES.get(name) or _STATES[name]
+            city = rest[: len(rest) - len(name)].strip().rstrip(",").strip()
+            return city or None, code, zipcode
+    m2 = re.match(r"^(?P<city>.*?)[,\s]+(?P<st>[A-Za-z]{2})\.?$", rest)
+    if m2 and m2.group("st").upper() in (_CA_PROVINCES | _US_STATES):
+        city = m2.group("city").strip().rstrip(",").strip()
+        return city or None, m2.group("st").upper(), zipcode
+    return None
+
+
+def _foreign_line(line: str):
+    """(city, region, country code) from "Wildey, St Michael, Barbados";
+    None if the line names no country kept above."""
+    for name, code in _OTHER_COUNTRIES.items():
+        m = re.search(rf"[,\s]*\b{re.escape(name)}\.?$", line, re.IGNORECASE)
+        if m:
+            parts = [p.strip() for p in line[: m.start()].split(",") if p.strip()]
+            city = parts[0] if parts else None
+            region = ", ".join(parts[1:]) or None
+            return city, region, code
+    return None
+
+
+def _name_line(line: str, names: set):
+    """None if ``line`` isn't the contact's name; otherwise what the line
+    adds to it ("" if nothing). QuickBooks' first address line is who it
+    goes to: the name ("RE/MAX Premier Inc"), the name in full where the
+    list's name is cut short ("Dunlop Developments (Barrie) Inc."), or the
+    name and someone to attend ("Eshel Law Firm - Selvi Pavelendram",
+    "SBMB Law - attn Kim Simpson")."""
+    low = line.lower()
+    for name in sorted(names, key=len, reverse=True):
+        if not low.startswith(name):
+            continue
+        rest = line[len(name) :]
+        if rest and name[-1:].isalnum() and rest[0].isalnum():
+            rest = re.sub(r"^\w+", "", rest)  # the rest of a word cut short
+        rest = rest.strip(" .,-–:;").strip()
+        rest = re.sub(r"^(attn|attention|c/o)\b[.:]?\s*", "", rest, flags=re.I)
+        return rest.strip()
+    return None
+
+
+def _address(row: dict, prefix: str = "ADDR") -> dict:
     """A list row's address as Slowbooks keeps it (John's build).
 
-    QuickBooks keeps up to five free lines (ADDR1-ADDR5), and how they are
-    used varies: "Name / street / City, Prov  Postal" on one vendor,
-    "street / City, Prov  Postal" on the next. A first line that is the
-    name or company name is left off; a last line that is a country says
-    the country; the line that reads "City, PR  A1A 1A1" (or "City, ST
-    12345") gives city, province and postal code; the lines before it are
-    the street (a third street line joins the second)."""
-    lines = [row.get(f"ADDR{i}", "").strip().strip('"').strip() for i in range(1, 6)]
+    QuickBooks keeps up to five free lines (ADDR1-5 on a vendor, BADDR1-5
+    and SADDR1-5 on a customer), and how they are used varies: "Name /
+    street / City, Prov  Postal" on one, "street / City, Province, Postal /
+    Attn: …" on the next. A first line that is the name or company name is
+    left off; a line that is a country gives the country; the line that
+    reads as a city, province and postal code (or city, state and ZIP, or
+    a city and another country, its postal code on the next line) gives
+    those; every other line is the street, in order (a second and later
+    line join Address 2)."""
+    lines = [
+        row.get(f"{prefix}{i}", "").strip().strip('"').strip() for i in range(1, 6)
+    ]
     lines = [ln for ln in lines if ln]
     names = {
-        row.get(k, "").strip().lower() for k in ("NAME", "COMPANYNAME", "PRINTAS")
+        row.get(k, "").strip().strip('"').lower()
+        for k in ("NAME", "COMPANYNAME", "PRINTAS")
     } - {""}
-    if lines and lines[0].lower() in names:
-        lines = lines[1:]
+    attn = None
+    if lines:
+        attn = _name_line(lines[0], names)
+        if attn is not None:
+            lines = lines[1:]
     country = None
-    if lines and lines[-1].lower().strip(".") in _COUNTRY_LINE:
-        country = _COUNTRY_LINE[lines.pop().lower().strip(".")]
+    kept = []
+    for ln in lines:
+        key = ln.lower().strip(".").strip()
+        if key in _COUNTRY_LINE:
+            country = _COUNTRY_LINE[key]
+        elif key in _OTHER_COUNTRIES:
+            country = _OTHER_COUNTRIES[key]
+        else:
+            kept.append(ln)
+    lines = kept
     city = state = zipcode = None
     for i in range(len(lines) - 1, -1, -1):
-        m = _CITY_LINE.match(lines[i])
-        if m:
-            city = m.group("city").strip().rstrip(",") or None
-            state = m.group("state").upper()
-            zipcode = m.group("zip").upper()
-            if _CA_POSTAL.match(zipcode) and " " not in zipcode:
-                zipcode = f"{zipcode[:3]} {zipcode[3:]}"
+        found = _city_line(lines[i])
+        if found:
+            city, state, zipcode = found
             lines = lines[:i] + lines[i + 1 :]
             if country is None:
-                if _CA_POSTAL.match(zipcode) or state in _CA_PROVINCES:
-                    country = "CA"
-                elif _US_ZIP.match(zipcode):
-                    country = "US"
+                country = "CA" if state in _CA_PROVINCES else "US"
             break
+    else:
+        for i in range(len(lines) - 1, -1, -1):
+            found = _foreign_line(lines[i])
+            if found:
+                city, state, country = found
+                nxt = lines[i + 1] if i + 1 < len(lines) else ""
+                if nxt and _POSTAL_ONLY.match(nxt) and any(c.isdigit() for c in nxt):
+                    zipcode = nxt.upper()
+                    lines = lines[:i] + lines[i + 2 :]
+                else:
+                    lines = lines[:i] + lines[i + 1 :]
+                break
+    if attn:
+        lines.append(f"Attn: {attn}")
     return {
         "street1": lines[0] if lines else None,
         "street2": ", ".join(lines[1:]) or None,
@@ -2332,13 +2505,9 @@ def _parse_city_state_zip(s: str) -> tuple:
     city, state, zipcode = "", "", ""
     if not s:
         return city, state, zipcode
-    m = _CITY_LINE.match(s.strip())
-    if m:  # "Oakville, ON  L6J 1P5": the postal code is two words
-        return (
-            m.group("city").strip().rstrip(","),
-            m.group("state").upper(),
-            m.group("zip").upper(),
-        )
+    found = _city_line(s)
+    if found:  # "Oakville, ON  L6J 1P5": the postal code is two words
+        return found[0] or "", found[1], found[2]
 
     # Try "City, State ZIP" pattern
     if "," in s:
