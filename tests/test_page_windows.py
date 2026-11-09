@@ -193,3 +193,15 @@ def test_the_closing_handler_answers_none():
     src = inspect.getsource(desktop_launcher)
     assert "events.closing += lambda *_a: api.close_app_windows()\n" not in src
     assert "lambda *_a: (api.close_app_windows(), None)[1]" in src
+
+
+def test_home_redraws_when_its_window_comes_back():
+    """The import ran in its own window and the main window's Home stayed as
+    drawn for the empty company ($0 receivables, Checking / Savings)."""
+    from pathlib import Path
+
+    js = (
+        Path(__file__).resolve().parents[1] / "app/static/js/desktop_windows.js"
+    ).read_text(encoding="utf-8")
+    assert "window.addEventListener('focus', back);" in js
+    assert "if (!onHome() || dialogOpen()" in js
