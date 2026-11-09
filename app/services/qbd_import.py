@@ -1542,3 +1542,84 @@ def run_import(db: Session, bundle: dict) -> dict:
         imported_attachments=attached,
     )
     return result
+
+
+# ── attachments for a company already imported (John's build) ───────────────
+
+
+def attach_from_folder(db: Session, folder, amap: dict[str, str], apply: bool) -> dict:
+    """Attach QuickBooks' documents to a company that was imported without
+    them, straight from QuickBooks' own Attach folder on this computer
+    (Attach/<company>, or its Txn folder) and an attachment map (folder ->
+    Trans #). Each document goes onto its transaction's cheque, deposit,
+    invoice, bill or journal entry, as an import with the map would have
+    put it; one already there (same record, same file name) is skipped, so
+    it can be run again. ``apply`` False only counts."""
+    from pathlib import Path
+
+    from app.services import file_store
+    from app.services.safe_errors import DataProblem
+
+    root = Path(str(folder)).expanduser()
+    txn_dir = root if root.name.lower() == "txn" else root / "Txn"
+    if not txn_dir.is_dir():
+        raise DataProblem(f"No Txn folder in {root}")
+    known = _imported(db)
+    out = {
+        "folders": 0,
+        "attached": 0,
+        "skipped": 0,
+        "already": 0,
+        "not_found": [],
+        "missing_trans": [],
+        "unsupported": [],
+    }
+    for name, trans in sorted(amap.items()):
+        d = txn_dir / name
+        if not d.is_dir():
+            out["not_found"].append(name)
+            continue
+        if trans not in known:
+            out["missing_trans"].append(trans)
+            continue
+        out["folders"] += 1
+        tid, kind, doc_id = known[trans]
+        entity, by = _ATTACH_ENTITY.get(kind, ("journal_entry", "txn"))
+        if by == "doc" and doc_id:
+            tid = doc_id
+        for f in sorted(d.iterdir()):
+            if (
+                not f.is_file()
+                or f.name.startswith(".")
+                or f.name.lower() == "thumbs.db"
+            ):
+                continue
+            ext = f.suffix.lower()
+            if ext not in _ATTACH_TYPES:
+                out["unsupported"].append(f"{name}/{f.name}")
+                continue
+            if (
+                db.query(Attachment.id)
+                .filter(
+                    Attachment.entity_type == entity,
+                    Attachment.entity_id == tid,
+                    Attachment.filename == f.name,
+                )
+                .first()
+            ):
+                out["already"] += 1
+                continue
+            if apply:
+                file_store.add_attachment(
+                    db,
+                    entity_type=entity,
+                    entity_id=tid,
+                    filename=f.name,
+                    content_type=_ATTACH_TYPES[ext],
+                    data=f.read_bytes(),
+                )
+                db.flush()
+            out["attached"] += 1
+    if apply:
+        db.commit()
+    return out

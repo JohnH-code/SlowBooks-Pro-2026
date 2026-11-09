@@ -53,7 +53,42 @@ const MigrationPage = {
                     <button class="btn btn-danger" id="migration-import-btn" disabled onclick="MigrationPage.doImport()">Import</button>
                 </div>
                 <div id="migration-result" style="margin-top:12px; font-size:12px;"></div>
+            </div>
+            <div class="card" style="margin-top:16px;" data-write>
+                <h3 style="margin-top:0;">Attach QuickBooks documents to this company</h3>
+                <p style="font-size:12px; margin:6px 0 10px;">For a company already brought over from QuickBooks Desktop without its
+                    documents: the company's QuickBooks <strong>Attach</strong> folder on this computer and its
+                    <strong>attachment map</strong> (a CSV of Trans # and Folder). Each document goes onto the
+                    cheque, deposit, invoice, bill or journal entry it was attached to in QuickBooks; one already
+                    there is skipped, so it is safe to run again.</p>
+                <div class="form-group"><label for="qbd-attach-folder">Attach folder</label>
+                    <input id="qbd-attach-folder" placeholder="e.g. ~/DATA/Quickbooks data/Attach/Alderella Holdings Inc"></div>
+                <div class="form-group"><label for="qbd-attach-map">Attachment map (CSV)</label>
+                    <input type="file" id="qbd-attach-map" accept=".csv,.txt"></div>
+                <div class="form-actions" style="margin-top:8px;">
+                    <button class="btn btn-secondary" onclick="MigrationPage.attachFolder(false)">Check</button>
+                    <button class="btn btn-primary" onclick="MigrationPage.attachFolder(true)">Attach</button>
+                </div>
+                <div id="qbd-attach-result" style="margin-top:10px; font-size:12px;"></div>
             </div>`;
+    },
+
+    async attachFolder(apply) {
+        const out = document.getElementById('qbd-attach-result');
+        const folder = (document.getElementById('qbd-attach-folder')?.value || '').trim();
+        const file = document.getElementById('qbd-attach-map')?.files?.[0];
+        if (!folder || !file) { toast('Choose the Attach folder and the attachment map first.', 'error'); return; }
+        out.textContent = apply ? 'Attaching… (a large folder takes a few minutes)' : 'Checking…';
+        try {
+            const r = await API.post('/migration/qbd/attach-folder', { folder, map_csv: await file.text(), apply });
+            const extra = [];
+            if (r.already) extra.push(`${r.already} already attached`);
+            if (r.not_found.length) extra.push(`${r.not_found.length} folder(s) in the map not in the Attach folder`);
+            if (r.missing_trans.length) extra.push(`${r.missing_trans.length} Trans # not in this company`);
+            if (r.unsupported.length) extra.push(`${r.unsupported.length} file(s) of a kind Slowbooks doesn't keep (e.g. ${r.unsupported[0]})`);
+            out.innerHTML = `<strong>${apply ? 'Attached' : 'Will attach'} ${r.attached} document(s)</strong> to ${r.folders} transaction(s).`
+                + (extra.length ? `<br>${extra.map(escapeHtml).join('; ')}.` : '');
+        } catch (err) { out.textContent = ''; toast(err.message, 'error'); }
     },
 
     reset() {

@@ -23,6 +23,7 @@ from app.services import (
     xero_import,
     zoho_import,
 )
+from app.schemas.common import StrictModel
 from app.services.safe_errors import DataProblem
 from app.services.settings_service import set_setting
 from app.services.upload_limits import read_limited
@@ -380,3 +381,23 @@ async def migration_import(
         set_setting(db, "chart_setup_ready_at", date.today().isoformat())
         db.commit()
     return result
+
+
+class QbdAttachFolder(StrictModel):
+    folder: str  # QuickBooks' Attach/<company> folder (or its Txn folder)
+    map_csv: str  # the attachment map: Trans #, Folder
+    apply: bool = False
+
+
+@router.post("/qbd/attach-folder")
+def qbd_attach_folder(body: QbdAttachFolder, db: Session = Depends(get_db)):
+    """John's build: attach QuickBooks' documents to a company already
+    imported, from the Attach folder on this computer and an attachment
+    map. apply false counts only."""
+    amap, errors = qbd_import.parse_attach_map(body.map_csv)
+    if errors:
+        raise HTTPException(status_code=422, detail="; ".join(errors))
+    try:
+        return qbd_import.attach_from_folder(db, body.folder, amap, body.apply)
+    except DataProblem as e:
+        raise HTTPException(status_code=422, detail=e.user_text)
