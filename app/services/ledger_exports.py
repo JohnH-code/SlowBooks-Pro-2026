@@ -234,7 +234,8 @@ def account_transactions_csv(data: dict, company: str, words) -> str:
                 e.get("date", ""),
                 e.get("payee") or "",
                 e.get("reference") or "",
-                (e.get("description") or "") + (" (void)" if e.get("voided") else ""),
+                (e.get("memo") or e.get("description") or "")
+                + (" (void)" if e.get("voided") else ""),
                 e.get("source_type") or "",
                 _money(e["debit"]) if e.get("debit") else "",
                 _money(e["credit"]) if e.get("credit") else "",

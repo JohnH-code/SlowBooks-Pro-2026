@@ -525,6 +525,17 @@ def account_register(
                     and tl.description != payees.get(txn.id, "")
                     else (txn.description or tl.description or "")
                 ),
+                # John's build: the line's own memo, as QuickBooks shows it
+                # on an account's drill-down ("Fund HST due" rather than
+                # "Expense: ASH Real Estate"); "" when the line has none or
+                # it only repeats the payee or the description
+                "memo": (
+                    tl.description
+                    if tl.description
+                    and tl.description
+                    not in (payees.get(txn.id, ""), txn.description or "")
+                    else ""
+                ),
                 "payee": payees.get(txn.id, ""),
                 "reference": refs.get(txn.id, ""),
                 "debit": float(dr),
