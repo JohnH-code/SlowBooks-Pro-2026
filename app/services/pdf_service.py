@@ -270,9 +270,35 @@ def _render(template_name: str, company_settings: dict, **context) -> str:
         context["company_logo_data_uri"] = _company_logo_data_uri(company_settings)
     if "country_line" not in context and _home_is_canada(company_settings):
         context["country_line"] = _canadian_country_line
-    return template.render(
+    html = template.render(
         company=company_settings, terms=terms_for(company_settings), **context
     )
+    return _sized_logo(html, company_settings)
+
+
+# How big the logo prints (John's build): (max height, max width), the
+# width a limit only for a wide logo. Small is the size it always had.
+LOGO_SIZES = {
+    "small": ("60px", "200px"),
+    "medium": ("0.9in", "3in"),
+    "large": ("1.25in", "3.75in"),
+    "xlarge": ("1.6in", "4.25in"),
+}
+
+
+def _sized_logo(html: str, company) -> str:
+    """The forms' logo at the size chosen in Settings (invoice_logo_size):
+    a rule after each template's own, so every form with a company logo
+    takes it."""
+    size = ((company or {}).get("invoice_logo_size") or "small").strip()
+    if size not in LOGO_SIZES or size == "small" or "</head>" not in html:
+        return html
+    h, w = LOGO_SIZES[size]
+    rule = (
+        f"<style>.company-logo {{ max-height: {h} !important; "
+        f"max-width: {w} !important; height: auto; width: auto; }}</style>"
+    )
+    return html.replace("</head>", rule + "</head>", 1)
 
 
 def _home_is_canada(company) -> bool:

@@ -73,6 +73,8 @@ ENUM_SETTINGS = {
     "ask_password_on_start": frozenset({"true", "false"}),
     "invoice_show_logo": frozenset({"true", "false"}),
     "invoice_logo_only": frozenset({"true", "false"}),
+    # how big the logo prints (John's build)
+    "invoice_logo_size": frozenset({"small", "medium", "large", "xlarge"}),
     "class_warn_blank": frozenset({"true", "false"}),
     "new_lines_taxable": frozenset({"true", "false"}),
     "use_account_numbers": frozenset({"true", "false"}),

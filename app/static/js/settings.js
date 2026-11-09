@@ -498,6 +498,12 @@ const SettingsPage = {
                                     Logo only
                                 </label>
                                 <div id="invoice-logo-only-help" style="font-size:10px; color:var(--text-muted); margin-top:4px;">Print the logo without the company name heading on invoices, estimates, statements and receipts. Only applies when a logo is set.</div>
+                                <label for="invoice-logo-size" style="font-weight:normal; display:block; margin-top:8px;">Logo size when printed</label>
+                                <select id="invoice-logo-size" name="invoice_logo_size" data-write style="width:auto;">
+                                    ${[['small', 'Small (0.6 in tall, as before)'], ['medium', 'Medium (0.9 in tall)'], ['large', 'Large (1.25 in tall)'], ['xlarge', 'Extra large (1.6 in tall)']].map(([v, l]) =>
+                                        `<option value="${v}" ${(s.invoice_logo_size || 'small') === v ? 'selected' : ''}>${l}</option>`).join('')}
+                                </select>
+                                <div style="font-size:10px; color:var(--text-muted); margin-top:4px;">On invoices, estimates, statements, credit memos and the other printed forms. A wide logo stops at the width shown first.</div>
                             </div>` : ''}
                         </div>
                     </div>
