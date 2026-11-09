@@ -107,6 +107,39 @@
         return [v.name, v.address1, v.address2, cityLine].filter(Boolean).join('\n');
     }
 
+    // The Address box read back into a vendor's fields: the vendor's name on
+    // the first line is left off; the last line is "City, PR  A1A 1A1".
+    function addressFields(text, v) {
+        const lines = String(text || '').split('\n').map(l => l.trim()).filter(Boolean);
+        if (lines.length && v && lines[0].toLowerCase() === String(v.name || '').trim().toLowerCase()) lines.shift();
+        if (!lines.length) return null;
+        let city = '', state = '', zip = '';
+        if (lines.length > 1) {
+            const last = lines.pop();
+            const m = last.match(/^(.*?),\s*([A-Za-z]{2})\s+(.+)$/) || last.match(/^(.*?)\s+([A-Za-z]{2})\s+([A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d)$/);
+            if (m) { city = m[1].trim(); state = m[2].toUpperCase(); zip = m[3].trim(); } else city = last;
+        }
+        return { address1: lines[0] || '', address2: lines.slice(1).join(', '), city, state, zip };
+    }
+    const sameText = (a, b) => String(a || '').replace(/\s+/g, ' ').trim().toLowerCase() === String(b || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+    // An address changed on the cheque: QuickBooks asks whether the vendor's
+    // record should change too. Yes updates the vendor; No keeps the change
+    // on this cheque only. A one-time payee (not a vendor) is not asked.
+    ExpensesPage.qbAskVendorAddress = async function (vendorId, text) {
+        if (!vendorId || !/^\d+$/.test(String(vendorId))) return;
+        const v = (ExpensesPage._vendors || []).find(x => String(x.id) === String(vendorId));
+        if (!v || !String(text || '').trim() || sameText(text, vendorAddress(v))) return;
+        const fields = addressFields(text, v);
+        if (!fields) return;
+        if (!confirm(`You changed the address for ${v.name}.\n\nUpdate ${v.name}'s address in the Vendor list too?\n\nOK: update the vendor.   Cancel: this cheque only.`)) return;
+        try {
+            await API.put(`/vendors/${Number(v.id)}`, fields);
+            Object.assign(v, fields);
+            toast(`${v.name}'s address updated`);
+        } catch (err) { toast(`The cheque is saved with its address, but the vendor wasn't updated: ${err.message}`, 'error'); }
+    };
+
     // The bank or card the form is on: the title, the balance and the face.
     ExpensesPage.qbAccountChanged = function () {
         const form = $('#expense-form');

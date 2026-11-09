@@ -467,7 +467,11 @@ const ExpensesPage = {
             };
             // Write Cheques' Address box: kept with this cheque (John's build)
             const addrBox = document.getElementById('qb-address');
-            if (ExpensesPage._qbForm && addrBox) body.payee_address = addrBox.value;
+            if (ExpensesPage._qbForm && addrBox) {
+                body.payee_address = addrBox.value;
+                // changed from the vendor's record: update the vendor too?
+                if (ExpensesPage.qbAskVendorAddress) await ExpensesPage.qbAskVendorAddress(vendorId, addrBox.value);
+            }
             // a check number the bank account already has (#481)
             // an expense opened for editing (write_cheques.js) is saved in place
             const editId = ExpensesPage._editId;

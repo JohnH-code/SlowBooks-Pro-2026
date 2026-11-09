@@ -172,3 +172,30 @@ def test_write_cheques_lets_the_address_be_changed_and_sends_it():
     assert "body.payee_address = addrBox.value;" in (js / "expenses.js").read_text(
         encoding="utf-8"
     )
+
+
+def test_a_changed_address_asks_to_update_the_vendor():
+    from pathlib import Path
+
+    js = Path(__file__).resolve().parents[1] / "app" / "static" / "js"
+    wc = (js / "write_cheques.js").read_text(encoding="utf-8")
+    assert "ExpensesPage.qbAskVendorAddress = async function (vendorId, text)" in wc
+    assert "await API.put(`/vendors/${Number(v.id)}`, fields);" in wc
+    ex = (js / "expenses.js").read_text(encoding="utf-8")
+    assert "await ExpensesPage.qbAskVendorAddress(vendorId, addrBox.value);" in ex
+
+
+def test_the_vendor_takes_the_address_fields(client):
+    vid = _vendor(client)
+    r = client.put(
+        f"/api/vendors/{vid}",
+        json={
+            "address1": "Attn: Accounts",
+            "address2": "1 New Road",
+            "city": "Barrie",
+            "state": "ON",
+            "zip": "L4M 1A1",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert (r.json()["address2"], r.json()["city"]) == ("1 New Road", "Barrie")
