@@ -1560,10 +1560,18 @@ def attach_from_folder(db: Session, folder, amap: dict[str, str], apply: bool) -
     from app.services import file_store
     from app.services.safe_errors import DataProblem
 
-    root = Path(str(folder)).expanduser()
+    root = Path(str(folder).strip()).expanduser()
+    if not root.is_dir():
+        # "/DATA/Quickbooks data/…" typed for "~/DATA/Quickbooks data/…"
+        under_home = Path.home() / str(root).lstrip("/\\")
+        if under_home.is_dir():
+            root = under_home
     txn_dir = root if root.name.lower() == "txn" else root / "Txn"
     if not txn_dir.is_dir():
-        raise DataProblem(f"No Txn folder in {root}")
+        raise DataProblem(
+            f"No Txn folder in {root}. Type the Attach folder from your home "
+            "folder, e.g. ~/DATA/Quickbooks data/Attach/<company>."
+        )
     known = _imported(db)
     out = {
         "folders": 0,

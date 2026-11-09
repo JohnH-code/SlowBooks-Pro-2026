@@ -61,3 +61,16 @@ def test_a_folder_without_txn_is_refused(client, tmp_path):
     )
     assert r.status_code == 422
     assert qbd_import.parse_attach_map("x,y\n")[1]
+
+
+def test_a_folder_typed_from_the_top_of_the_disk_is_found_in_home(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "DATA" / "Attach" / "Co" / "Txn").mkdir(parents=True)
+    r = client.post(
+        "/api/migration/qbd/attach-folder",
+        json={"folder": "/DATA/Attach/Co", "map_csv": "Trans #,Folder\n1,a\n"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["not_found"] == ["a"]
