@@ -219,3 +219,11 @@ def test_a_folder_typed_from_the_top_of_the_disk_is_found_in_home(
     assert find_folder("/DATA/Alderella/Bookkeeper") == real
     assert find_folder("DATA/Alderella/Bookkeeper") == real
     assert find_folder("/nowhere/at/all") == Path("/nowhere/at/all")
+
+
+def test_each_row_shows_its_accounts_and_hst():
+    js = (JS / "bookkeeper_inbox.js").read_text(encoding="utf-8")
+    assert '<th scope="col">Account</th>' in js
+    assert '<th scope="col" class="amount">HST</th>' in js
+    assert "this._accountsOf(it)" in js and "this._hstOf(it)" in js
+    assert "No HST" in js

@@ -52,17 +52,18 @@ const BookkeeperInbox = {
                 continue;
             }
             html += `<div class="table-container"><table><thead><tr>
-                <th scope="col">Date</th><th scope="col">Vendor</th><th scope="col">What</th><th scope="col">No.</th>
-                <th scope="col" class="amount">Amount</th><th scope="col">Check</th><th scope="col"></th></tr></thead><tbody>`;
+                <th scope="col">Date</th><th scope="col">Vendor</th><th scope="col">What</th><th scope="col">Account</th>
+                <th scope="col" class="amount">Amount</th><th scope="col" class="amount">HST</th><th scope="col">Check</th><th scope="col"></th></tr></thead><tbody>`;
             for (const it of f.items) {
                 const flags = [...it.problems.map(p => `<span class="badge badge-rejected" title="${escapeHtml(p)}">Fix</span>`),
                     ...(it.questions.length ? [`<span class="badge badge-pending" title="${escapeHtml(it.questions.join('\n'))}">Question</span>`] : [])];
                 html += `<tr>
                     <td>${it.date ? formatDate(it.date) : ''}</td>
                     <td>${escapeHtml(it.vendor || '')}</td>
-                    <td>${escapeHtml(this.KIND[it.kind] || it.kind || '')}${it.kind === 'expense' && it.paid_from ? ` <span style="color:var(--text-muted);">(${escapeHtml(it.paid_from)})</span>` : ''}</td>
-                    <td>${escapeHtml(it.kind === 'bill_payment' ? (it.bill_number || '') : (it.number || ''))}</td>
+                    <td>${escapeHtml(this._what(it))}</td>
+                    <td>${escapeHtml(this._accountsOf(it))}</td>
                     <td class="amount">${formatCurrency(it.total || 0)}</td>
+                    <td class="amount">${this._hstOf(it)}</td>
                     <td>${flags.join(' ') || '<span style="color:var(--success, green);">Ready</span>'}</td>
                     <td style="white-space:nowrap;"><button class="btn btn-sm btn-primary" data-write data-file="${escapeHtml(f.file)}" data-item="${escapeHtml(it.id)}" onclick="BookkeeperInbox.review(this.dataset.file, this.dataset.item)">Review</button>
                         <button class="btn btn-sm btn-secondary" data-write data-destructive data-file="${escapeHtml(f.file)}" data-item="${escapeHtml(it.id)}" onclick="BookkeeperInbox.dismiss(this.dataset.file, this.dataset.item)">Dismiss</button></td>
@@ -71,6 +72,34 @@ const BookkeeperInbox = {
             html += '</tbody></table></div></div>';
         }
         return html;
+    },
+
+    // The accounts an item posts to, its tax line left out ("Meals",
+    // "Meals, Benefits, Promotion"); a payment's is the account it comes from.
+    _isTax: ln => /GST|HST|PST|QST|sales tax/i.test(ln.account || ''),
+    _accountsOf(it) {
+        if (it.kind === 'bill_payment') return `from ${it.paid_from || ''}`;
+        const names = [];
+        for (const ln of it.lines || []) if (!this._isTax(ln) && ln.account && !names.includes(ln.account)) names.push(ln.account);
+        return names.join(', ');
+    },
+
+    // The HST on an item, or "No HST" (a payment has none to show).
+    _hstOf(it) {
+        if (it.kind === 'bill_payment') return '';
+        const tax = (it.lines || []).filter(ln => this._isTax(ln)).reduce((s, ln) => s + (Number(ln.amount) || 0), 0);
+        return tax ? formatCurrency(Math.round(tax * 100) / 100) : '<span style="color:var(--text-muted);">No HST</span>';
+    },
+
+    // "Card charge" for an expense on a credit card account, "Cheque" for
+    // one from the bank; a bill or a payment says so.
+    _what(it) {
+        if (it.kind === 'bill') return `Bill ${it.number || ''}`.trim();
+        if (it.kind === 'bill_payment') return `Payment of ${it.bill_number || 'bill'}`;
+        const from = this._accounts.find(a => a.id === it.paid_from_id);
+        if (from && from.bank_kind === 'credit_card') return 'Card charge';
+        if ((it.lines || []).some(ln => ln.account_id && this._accounts.find(a => a.id === ln.account_id && a.bank_kind === 'credit_card'))) return `Card payment (${it.paid_from || ''})`;
+        return `Cheque (${it.paid_from || ''})`;
     },
 
     _ready() {
