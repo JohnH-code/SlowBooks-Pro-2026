@@ -80,6 +80,7 @@ const BookkeeperInbox = {
     _accountsOf(it) {
         if (it.kind === 'bill_payment') return `from ${it.paid_from || ''}`;
         if (it.kind === 'reconciliation') return it.account || '';
+        if (it.kind === 'hst_return') return 'GST/HST Payable';
         const names = [];
         for (const ln of it.lines || []) if (!this._isTax(ln) && ln.account && !names.includes(ln.account)) names.push(ln.account);
         return names.join(', ');
@@ -87,7 +88,7 @@ const BookkeeperInbox = {
 
     // The HST on an item, or "No HST" (a payment has none to show).
     _hstOf(it) {
-        if (it.kind === 'bill_payment' || it.kind === 'reconciliation') return '';
+        if (['bill_payment', 'reconciliation', 'hst_return'].includes(it.kind)) return '';
         const tax = (it.lines || []).filter(ln => this._isTax(ln)).reduce((s, ln) => s + (Number(ln.amount) || 0), 0);
         return tax ? formatCurrency(Math.round(tax * 100) / 100) : '<span style="color:var(--text-muted);">No HST</span>';
     },
@@ -95,6 +96,7 @@ const BookkeeperInbox = {
     // "Card charge" for an expense on a credit card account, "Cheque" for
     // one from the bank; a bill or a payment says so.
     _what(it) {
+        if (it.kind === 'hst_return') return `GST/HST return ${it.start ? formatDate(it.start) : ''} to ${it.end ? formatDate(it.end) : ''}`;
         if (it.kind === 'reconciliation') return `Reconcile to ${it.statement_date ? formatDate(it.statement_date) : 'statement'}`;
         if (it.kind === 'bill') return `Bill ${it.number || ''}`.trim();
         if (it.kind === 'bill_payment') return `Payment of ${it.bill_number || 'bill'}`;
@@ -147,6 +149,79 @@ const BookkeeperInbox = {
         } catch (err) { toast(err.message, 'error'); }
     },
 
+    // The quarter's return, line by line as NETFILE asks for it, with the
+    // late ITCs and the carry-forward (held back / claimed, both editable),
+    // then the payment once it's filed and paid.
+    reviewHst(file, it) {
+        this._open = { file, id: it.id, kind: it.kind, hst: it };
+        const money = v => formatCurrency(v || 0);
+        const row = (line, label, value, extra = '') => `<tr><td>${line}</td><td>${label}</td><td class="amount" ${extra}>${value}</td></tr>`;
+        openModal(`GST/HST return — ${formatDate(it.start)} to ${formatDate(it.end)}`, `
+            ${it.problems.length ? `<ul style="margin:0 0 8px; padding-left:18px;">${it.problems.map(p => `<li class="error">${escapeHtml(p)}</li>`).join('')}</ul>` : ''}
+            ${it.questions.length ? `<ul style="margin:0 0 8px; padding-left:18px;">${it.questions.map(q => `<li>${escapeHtml(q)}</li>`).join('')}</ul>` : ''}
+            <div class="table-container"><table><thead><tr><th scope="col">Line</th><th scope="col">For NETFILE</th><th scope="col" class="amount">Amount</th></tr></thead><tbody>
+              ${row('101', 'Sales and other revenue', money(it.line_101))}
+              ${row('103', 'GST/HST collected or collectible', money(it.line_103))}
+              ${row('105', 'Total GST/HST and adjustments', money(it.line_105))}
+              ${row('106', 'ITCs (see below)', `<strong id="hst-106">${money(it.line_106)}</strong>`)}
+              ${row('108', 'Total ITCs and adjustments', `<span id="hst-108">${money(it.line_108)}</span>`)}
+              ${row('109', 'Net tax', `<strong id="hst-109">${money(it.line_109)}</strong>`)}
+              ${row('115', 'Amount owing', `<strong id="hst-115">${money(it.line_115)}</strong>`)}
+            </tbody></table></div>
+            <h4 style="margin:14px 0 4px;">Line 106, ITCs</h4>
+            <div class="table-container"><table><tbody>
+              ${row('', 'ITCs in the books for the quarter', money(it.itc_period))}
+              ${row('', 'ITCs entered after the last return was filed', money(it.late_itc))}
+              <tr><td></td><td><label for="hst-claimed">Carried forward ITCs claimed</label> <span style="font-size:11px; color:var(--text-muted);">(${money(it.carry_before)} available)</span></td>
+                  <td class="amount"><input id="hst-claimed" type="number" step="0.01" min="0" value="${Number(it.claimed || 0).toFixed(2)}" oninput="BookkeeperInbox.hstRecalc()" style="width:120px; text-align:right;"></td></tr>
+              <tr><td></td><td><label for="hst-held">ITCs held back to carry forward</label></td>
+                  <td class="amount"><input id="hst-held" type="number" step="0.01" min="0" value="${Number(it.held || 0).toFixed(2)}" oninput="BookkeeperInbox.hstRecalc()" style="width:120px; text-align:right;"></td></tr>
+              ${row('', 'Carried forward after this return', `<span id="hst-carry">${money(it.carry_after)}</span>`)}
+            </tbody></table></div>
+            <p style="font-size:11px; color:var(--text-muted); margin:6px 0 0;">Suggested: hold back the smallest multiple of $5,000 that keeps the return payable; claim the largest multiple of $5,000 carried forward that keeps it payable. ITCs can be claimed within four years.</p>
+            <h4 style="margin:14px 0 4px;">Once it's filed and paid</h4>
+            <div class="form-grid">
+              <div class="form-group"><label for="hst-date">Date paid</label><input id="hst-date" type="date" value="${todayISO()}"></div>
+              <div class="form-group"><label for="hst-amount">Amount paid</label><input id="hst-amount" type="number" step="0.01" value="${Number(it.line_115 || 0).toFixed(2)}"></div>
+              <div class="form-group"><label for="hst-from">Paid from</label><select id="hst-from">${this._accounts.filter(a => a.bank_kind === 'bank').map(a => `<option ${a.name === 'RBC - Can $' ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('')}</select></div>
+              <div class="form-group"><label for="hst-ref">Confirmation no.</label><input id="hst-ref" placeholder="RBC's confirmation number"></div>
+            </div>
+            <div class="form-actions">
+              <button type="button" class="btn btn-secondary" onclick="closeModal()">Close</button>
+              <button type="button" class="btn btn-primary" data-write ${it.problems.length ? 'disabled' : ''} onclick="BookkeeperInbox.hstPaid()">Record payment</button>
+            </div>`, { wide: true });
+        document.getElementById('modal')?.classList.add('modal--wide');
+    },
+
+    hstRecalc() {
+        const it = (this._open || {}).hst;
+        if (!it) return;
+        const n = id => parseFloat(document.getElementById(id)?.value) || 0;
+        const r2 = x => Math.round(x * 100) / 100;
+        const l106 = r2(it.itc_period + it.late_itc + n('hst-claimed') - n('hst-held'));
+        const l109 = r2(it.line_103 - l106);
+        const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = formatCurrency(v); };
+        set('hst-106', l106); set('hst-108', l106); set('hst-109', l109); set('hst-115', Math.max(l109, 0));
+        set('hst-carry', r2(it.carry_before + n('hst-held') - n('hst-claimed')));
+        const amt = document.getElementById('hst-amount');
+        if (amt) amt.value = Math.max(l109, 0).toFixed(2);
+    },
+
+    async hstPaid() {
+        const { file, id } = this._open || {};
+        const v = x => document.getElementById(x)?.value;
+        try {
+            const r = await API.post(`/bookkeeper/inbox/${encodeURIComponent(file)}/${encodeURIComponent(id)}/hst-paid`, {
+                date: v('hst-date'), amount: parseFloat(v('hst-amount')) || 0, paid_from: v('hst-from'),
+                reference: (v('hst-ref') || '').trim() || null,
+                held: parseFloat(v('hst-held')) || 0, claimed: parseFloat(v('hst-claimed')) || 0,
+            });
+            closeModal();
+            toast(`GST/HST payment recorded. ITCs carried forward: ${formatCurrency(r.carry_forward)}`);
+            App.navigate('#/bookkeeper');
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
     _link(file, s) {
         return `<a href="/api/bookkeeper/statement/${encodeURIComponent(file)}/${Number(s.n)}" target="_blank" rel="noopener">${escapeHtml(s.name)}</a>`;
     },
@@ -154,7 +229,7 @@ const BookkeeperInbox = {
     _ready() {
         const out = [];
         for (const f of this._files) for (const it of f.items || []) {
-            if (it.kind !== 'reconciliation' && !it.problems.length && !it.questions.length) out.push([f.file, it]);
+            if (!['reconciliation', 'hst_return'].includes(it.kind) && !it.problems.length && !it.questions.length) out.push([f.file, it]);
         }
         return out;
     },
@@ -189,6 +264,7 @@ const BookkeeperInbox = {
         const it = this._find(file, id);
         if (!it) return;
         if (it.kind === 'reconciliation') return this.reviewReconciliation(file, it);
+        if (it.kind === 'hst_return') return this.reviewHst(file, it);
         this._open = { file, id, kind: it.kind, bill_id: it.bill_id };
         const vendorOpts = '<option value="">— pick a vendor —</option>' + this._vendors.map(v =>
             `<option value="${v.id}" ${v.id === it.vendor_id ? 'selected' : ''}>${escapeHtml(v.name)}</option>`).join('');

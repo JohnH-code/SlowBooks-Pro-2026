@@ -51,7 +51,7 @@ from app.services import file_store
 router = APIRouter(prefix="/api/bookkeeper", tags=["bookkeeper"])
 
 TO_REVIEW, DONE, DISMISSED = "To review", "Done", "Dismissed"
-KINDS = ("bill", "expense", "bill_payment", "reconciliation")
+KINDS = ("bill", "expense", "bill_payment", "reconciliation", "hst_return")
 _NAME = re.compile(r"^[^/\\]+$")
 _ATTACH_TYPE = {"bill": "bill", "expense": "expense", "bill_payment": "expense"}
 
@@ -146,6 +146,8 @@ def _resolve(db: Session, item: dict) -> dict:
     kind = item.get("kind")
     if kind == "reconciliation":
         return _resolve_reconciliation(db, item)
+    if kind == "hst_return":
+        return _resolve_hst(db, item)
     if kind not in KINDS:
         problems.append(f"Unknown kind {kind!r}")
     vendor = _by_name(db, Vendor, item.get("vendor"))
@@ -680,3 +682,224 @@ def reconcile(name: str, item_id: str, db: Session = Depends(get_db)):
     }
     _write(path, data)
     return {"reconciliation_id": recon.id, "filed": _settle(folder, path, data)}
+
+
+# ----------------------------------------------------------------------------
+# The quarterly GST/HST return (John's build).
+#
+#   {"id": "1", "kind": "hst_return", "start": "2026-10-01",
+#    "end": "2026-12-31",
+#    "previous": {"start": "2026-07-01", "end": "2026-09-30",
+#                 "itc_at_filing": "3049.04"},
+#    "carry_forward_opening": [{"period_end": "2026-06-30", "held": "10000.00"},
+#                              {"period_end": "2026-09-30", "claimed": "5000.00"}],
+#    "questions": []}
+#
+# Slowbooks works the return out when it is shown, from the ledger (the
+# GST/HST Return report's figures), and adds: the ITCs entered after the
+# previous return was filed (that period's ITCs now, less what they were
+# when it was filed), and ITCs carried forward. John never claims a
+# refund: when the ITCs exceed the tax, the smallest multiple of $5,000
+# that keeps the return payable is held back; when there's room, the
+# largest multiple of $5,000 of the carried-forward ITCs that keeps it
+# payable is claimed. Both are a suggestion he can change. Unclaimed ITCs
+# can be claimed within four years. The carry-forward list is kept in
+# the setting hst_itc_carryforward, seeded from the item the first time.
+# ----------------------------------------------------------------------------
+
+STEP = 5000.0
+CARRY_KEY = "hst_itc_carryforward"
+
+
+def _carry(db: Session, item: dict) -> list:
+    from app.services.settings_service import get_setting_raw
+
+    raw = get_setting_raw(db, CARRY_KEY)
+    if raw:
+        try:
+            rows = json.loads(raw)
+            if isinstance(rows, list):
+                return rows
+        except ValueError:
+            pass
+    rows = []
+    for r in item.get("carry_forward_opening") or []:
+        if isinstance(r, dict) and r.get("period_end"):
+            rows.append(
+                {
+                    "period_end": str(r["period_end"]),
+                    "held": _money(r.get("held")) or 0.0,
+                    "claimed": _money(r.get("claimed")) or 0.0,
+                }
+            )
+    return rows
+
+
+def _balance(rows: list) -> float:
+    return round(sum((r.get("held") or 0) - (r.get("claimed") or 0) for r in rows), 2)
+
+
+def _resolve_hst(db: Session, item: dict, held=None, claimed=None) -> dict:
+    from app.services.hst import gst_hst_return
+
+    problems = []
+    start, end = _as_date(item.get("start")), _as_date(item.get("end"))
+    out = {
+        "id": str(item.get("id")),
+        "kind": "hst_return",
+        "vendor": "Receiver General",
+        "date": item.get("end"),
+        "start": item.get("start"),
+        "end": item.get("end"),
+        "lines": [],
+        "questions": [str(q) for q in item.get("questions") or []],
+        "problems": problems,
+    }
+    if not start or not end or start > end:
+        problems.append("The return's period is missing")
+        return out
+    ret = gst_hst_return(db, start, end)
+    if not ret.get("enabled"):
+        problems.append("No GST/HST account is set up (Settings, Sales Tax)")
+        return out
+    late = 0.0
+    prev = item.get("previous") or {}
+    if prev.get("start") and prev.get("end") and prev.get("itc_at_filing") is not None:
+        then = _money(prev.get("itc_at_filing")) or 0.0
+        now = gst_hst_return(db, _as_date(prev["start"]), _as_date(prev["end"]))
+        late = round(float(now["line_106"]) - then, 2)
+    rows = _carry(db, item)
+    balance = _balance(rows)
+    collected = round(float(ret["line_103"]), 2)
+    itc = round(float(ret["line_106"]), 2)
+    before = round(collected - itc - late, 2)  # net tax before carry-forward
+    if held is None and claimed is None:
+        held = claimed = 0.0
+        if before < 0:
+            held = STEP * -(-(-before) // STEP)  # the smallest step >= the excess
+        elif balance > 0:
+            room = min(before, balance)
+            claimed = STEP * (room // STEP)
+            if claimed == 0 and balance < STEP and balance <= before:
+                claimed = balance  # the last of it
+    held, claimed = round(held or 0.0, 2), round(claimed or 0.0, 2)
+    if claimed > balance + 0.005:
+        problems.append(
+            f"Claiming {claimed:,.2f} carried forward, but only {balance:,.2f} is"
+        )
+    line106 = round(itc + late + claimed - held, 2)
+    line109 = round(collected - line106, 2)
+    if line109 < 0:
+        out["questions"].append(
+            f"This return would be a refund of {-line109:,.2f}; hold back more ITCs?"
+        )
+    out.update(
+        total=max(line109, 0.0),
+        line_101=round(float(ret["line_101"]), 2),
+        line_103=collected,
+        line_105=collected,
+        itc_period=itc,
+        late_itc=late,
+        held=held,
+        claimed=claimed,
+        line_106=line106,
+        line_108=line106,
+        line_109=line109,
+        line_114=max(-line109, 0.0),
+        line_115=max(line109, 0.0),
+        carry_before=balance,
+        carry_after=round(balance + held - claimed, 2),
+        carry_rows=rows,
+        ties=bool(ret.get("ties")),
+        registration_number=ret.get("registration_number") or "",
+    )
+    return out
+
+
+class HstPaid(StrictModel):
+    date: str
+    amount: float
+    paid_from: str  # account name
+    reference: Optional[str] = None
+    held: float = 0.0
+    claimed: float = 0.0
+
+
+@router.post("/inbox/{name}/{item_id}/hst-paid")
+def hst_paid(name: str, item_id: str, body: HstPaid, db: Session = Depends(get_db)):
+    """The return is filed and paid: enter the payment (Receiver General,
+    from the bank to GST/HST Payable, as John's past payments are), keep
+    the period's ITCs as they were when filed (for next quarter's late
+    ITCs) and the carry-forward list, and file the item away."""
+    from decimal import Decimal
+
+    from app.routes.expenses import create_expense
+    from app.schemas.expenses import ExpenseCreate
+    from app.services.hst import account_id as hst_account
+    from app.services.settings_service import set_setting
+
+    folder = _need_folder(db)
+    path = _in(folder, name)
+    data = _read(path)
+    item = _item(data, item_id)
+    if item.get("entered"):
+        raise HTTPException(status_code=409, detail="Already recorded")
+    got = _resolve_hst(db, item, held=body.held, claimed=body.claimed)
+    if got["problems"]:
+        raise HTTPException(status_code=400, detail="; ".join(got["problems"]))
+    vendor = _by_name(db, Vendor, "Receiver General")
+    bank = _by_name(db, Account, body.paid_from)
+    tax = hst_account(db)
+    if not bank or tax is None:
+        raise HTTPException(status_code=400, detail="Bank or GST/HST account not found")
+    amount = Decimal(str(round(body.amount, 2)))
+    expense_id = None
+    if amount > 0:
+        made = create_expense(
+            ExpenseCreate(
+                date=_as_date(body.date),
+                vendor_id=vendor.id if vendor else None,
+                payee=None if vendor else "Receiver General",
+                paid_from_account_id=bank.id,
+                amount=amount,
+                lines=[
+                    {
+                        "account_id": tax,
+                        "amount": amount,
+                        "description": f"GST/HST {got['start']} to {got['end']}",
+                    }
+                ],
+                reference=body.reference or None,
+                memo=f"GST/HST return to {got['end']}",
+            ),
+            db=db,
+            allow_duplicate_check_number=True,
+        )
+        expense_id = made.id if hasattr(made, "id") else made["id"]
+    rows = got["carry_rows"]
+    if body.held or body.claimed:
+        rows = rows + [
+            {
+                "period_end": got["end"],
+                "held": round(body.held, 2),
+                "claimed": round(body.claimed, 2),
+            }
+        ]
+    set_setting(db, CARRY_KEY, json.dumps(rows))
+    db.commit()
+    item["entered"] = {
+        "type": "hst_return",
+        "id": expense_id,
+        "on": date.today().isoformat(),
+        "itc_at_filing": got["itc_period"],
+        "line_106": got["line_106"],
+        "line_109": got["line_109"],
+        "held": round(body.held, 2),
+        "claimed": round(body.claimed, 2),
+    }
+    _write(path, data)
+    return {
+        "expense_id": expense_id,
+        "carry_forward": _balance(rows),
+        "filed": _settle(folder, path, data),
+    }

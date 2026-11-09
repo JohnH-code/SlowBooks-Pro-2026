@@ -354,3 +354,90 @@ def test_a_statement_kept_in_the_company_folder_is_shown_and_never_moved(
     assert (kept / "ALD - CAN $ Statement-4696 2026-11-30.pdf").is_file()
     month = folder / "Done" / date.today().strftime("%Y-%m")
     assert [p.name for p in month.iterdir()] == ["rbc.json"]
+
+
+def _hst(monkeypatch, by_period):
+    import app.services.hst as hst
+
+    def fake(db, start, end):
+        r = by_period[(start.isoformat(), end.isoformat())]
+        return {
+            "enabled": True,
+            "line_101": r[0],
+            "line_103": r[1],
+            "line_106": r[2],
+            "ties": True,
+            "registration_number": "",
+        }
+
+    monkeypatch.setattr(hst, "gst_hst_return", fake)
+
+
+def test_the_hst_return_claims_late_itcs_and_carries_forward_in_5000s(
+    monkeypatch, TestSession
+):
+    from app.routes.bookkeeper import _resolve_hst
+
+    _hst(
+        monkeypatch,
+        {
+            ("2026-07-01", "2026-09-30"): (87750.0, 11407.50, 3049.04),
+            ("2026-04-01", "2026-06-30"): (87750.0, 11407.50, 19989.46),
+        },
+    )
+    with TestSession() as db:
+        # Alderella's September 2026 return, as filed
+        r = _resolve_hst(
+            db,
+            {
+                "id": "1",
+                "kind": "hst_return",
+                "start": "2026-07-01",
+                "end": "2026-09-30",
+                "previous": {
+                    "start": "2026-04-01",
+                    "end": "2026-06-30",
+                    "itc_at_filing": "19541.61",
+                },
+                "carry_forward_opening": [
+                    {"period_end": "2026-06-30", "held": "10000"}
+                ],
+            },
+        )
+        assert (r["late_itc"], r["claimed"], r["held"]) == (447.85, 5000.0, 0.0)
+        assert (r["line_106"], r["line_109"], r["line_115"]) == (
+            8496.89,
+            2910.61,
+            2910.61,
+        )
+        assert r["carry_after"] == 5000.0 and not r["problems"]
+        # June's ITCs over the tax: hold back the smallest $5,000 step, never a refund
+        r = _resolve_hst(
+            db,
+            {
+                "id": "2",
+                "kind": "hst_return",
+                "start": "2026-04-01",
+                "end": "2026-06-30",
+            },
+        )
+        assert r["held"] == 10000.0 and r["line_109"] > 0
+        # a claim over the balance is refused
+        r = _resolve_hst(
+            db,
+            {
+                "id": "3",
+                "kind": "hst_return",
+                "start": "2026-07-01",
+                "end": "2026-09-30",
+            },
+            held=0,
+            claimed=6000,
+        )
+        assert r["problems"] == ["Claiming 6,000.00 carried forward, but only 0.00 is"]
+
+
+def test_the_hst_screen_is_there():
+    js = (JS / "bookkeeper_inbox.js").read_text(encoding="utf-8")
+    assert "reviewHst(file, it)" in js and "/hst-paid`" in js
+    assert "Record payment" in js
