@@ -876,6 +876,21 @@ def hst_paid(name: str, item_id: str, body: HstPaid, db: Session = Depends(get_d
             allow_duplicate_check_number=True,
         )
         expense_id = made.id if hasattr(made, "id") else made["id"]
+    # the return as filed, kept where John keeps his HST papers
+    report_path = None
+    try:
+        report_path = _save_hst_report(db, folder, item, got, body)
+    except OSError:
+        report_path = None
+    if report_path is not None and expense_id:
+        file_store.add_attachment(
+            db,
+            entity_type="expense",
+            entity_id=expense_id,
+            filename=report_path.name,
+            content_type="application/pdf",
+            data=report_path.read_bytes(),
+        )
     rows = got["carry_rows"]
     if body.held or body.claimed:
         rows = rows + [
@@ -901,5 +916,133 @@ def hst_paid(name: str, item_id: str, body: HstPaid, db: Session = Depends(get_d
     return {
         "expense_id": expense_id,
         "carry_forward": _balance(rows),
+        "report": str(report_path) if report_path else None,
         "filed": _settle(folder, path, data),
     }
+
+
+def _save_hst_report(db: Session, folder: Path, item: dict, got: dict, body) -> Path:
+    """The return as it was filed, as a PDF in the company's HST folder:
+    "HST/<Mon YYYY>/<Company> HST rpt - <Mon YYYY>.pdf" beside the
+    bookkeeper folder (the item may name another "report_folder", under
+    the company's folder), as John kept QuickBooks' report. A file
+    already there is kept; this one takes the next free name."""
+    from app.services.bank_register import money_text as m
+    from app.services.hst import gst_hst_return
+    from app.services.pdf_service import generate_report_pdf
+    from app.services.settings_service import get_all_settings
+
+    start, end = _as_date(got["start"]), _as_date(got["end"])
+    month = end.strftime("%b %Y")
+    company = folder.parent.resolve()
+    sub = str(item.get("report_folder") or f"HST/{month}").strip().strip("/")
+    dest = (company / sub).resolve()
+    if company not in dest.parents:
+        dest = company / "HST" / month
+    dest.mkdir(parents=True, exist_ok=True)
+    settings = get_all_settings(db)
+    short = ((settings.get("company_name") or "").split() or ["Company"])[0]
+    target = dest / f"{short} HST rpt - {month}.pdf"
+    n = 1
+    while target.exists():
+        target = dest / f"{short} HST rpt - {month} ({n}).pdf"
+        n += 1
+    period = f"{start.strftime('%b %d, %Y')} to {end.strftime('%b %d, %Y')}"
+    l106 = round(got["itc_period"] + got["late_itc"] + body.claimed - body.held, 2)
+    l109 = round(got["line_103"] - l106, 2)
+    lines = [
+        ("101", "Sales and other revenue", got["line_101"]),
+        ("103", "GST/HST collected or collectible", got["line_103"]),
+        ("104", "Adjustments to be added", 0),
+        ("105", "Total GST/HST and adjustments", got["line_105"]),
+        ("106", "ITCs for the period and unclaimed ITCs from previous periods", l106),
+        ("107", "Adjustments to be deducted", 0),
+        ("108", "Total ITCs and adjustments", l106),
+        ("109", "Net tax", l109),
+        ("114", "Refund claimed", max(-l109, 0)),
+        ("115", "Amount owing", max(l109, 0)),
+    ]
+    carry_after = round(got["carry_before"] + body.held - body.claimed, 2)
+    bn = got.get("registration_number") or settings.get("company_tax_id") or ""
+    paid = f"Paid {body.date} from {body.paid_from}"
+    if body.reference:
+        paid += f", confirmation {body.reference}"
+    sections = [
+        {
+            "title": "GST/HST Return",
+            "period": f"{period} · Business number {bn}",
+            "columns": ["Line", "Description", "Amount"],
+            "text_columns": 2,
+            "rows": [
+                {
+                    "cells": [a, b, m(c)],
+                    "style": "subtotal" if a in ("109", "115") else "",
+                }
+                for a, b, c in lines
+            ],
+            "note": f"{paid}: {m(body.amount)}.",
+        },
+        {
+            "title": "Line 106 — Input tax credits",
+            "period": period,
+            "columns": ["", "Amount"],
+            "rows": [
+                {"cells": ["ITCs in the books for the period", m(got["itc_period"])]},
+                {
+                    "cells": [
+                        "ITCs entered after the previous return was filed",
+                        m(got["late_itc"]),
+                    ]
+                },
+                {"cells": ["Carried-forward ITCs claimed", m(body.claimed)]},
+                {"cells": ["ITCs held back to carry forward", m(-body.held)]},
+                {"cells": ["Line 106", m(l106)], "style": "subtotal"},
+                {
+                    "cells": [
+                        "Carried forward before this return",
+                        m(got["carry_before"]),
+                    ]
+                },
+                {
+                    "cells": ["Carried forward after this return", m(carry_after)],
+                    "style": "subtotal",
+                },
+            ],
+        },
+    ]
+    detail = gst_hst_return(db, start, end).get("transactions") or []
+    for side, title in (
+        ("sale", "GST/HST collected"),
+        ("purchase", "Input tax credits"),
+        ("payment", "Payments and other"),
+    ):
+        rows = [d for d in detail if d.get("side") == side]
+        if not rows:
+            continue
+        sections.append(
+            {
+                "title": f"Detail — {title}",
+                "period": period,
+                "columns": ["Date", "Description", "Ref", "GST/HST"],
+                "text_columns": 3,
+                "rows": [
+                    {
+                        "cells": [
+                            d["date"],
+                            d["description"],
+                            d.get("reference") or "",
+                            m(d["tax"]),
+                        ]
+                    }
+                    for d in rows
+                ]
+                + [
+                    {
+                        "cells": ["Total", "", "", m(sum(d["tax"] for d in rows))],
+                        "style": "subtotal",
+                    }
+                ],
+            }
+        )
+    target.write_bytes(generate_report_pdf(sections, settings))
+    return target

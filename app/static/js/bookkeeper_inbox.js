@@ -217,7 +217,7 @@ const BookkeeperInbox = {
                 held: parseFloat(v('hst-held')) || 0, claimed: parseFloat(v('hst-claimed')) || 0,
             });
             closeModal();
-            toast(`GST/HST payment recorded. ITCs carried forward: ${formatCurrency(r.carry_forward)}`);
+            toast(`GST/HST payment recorded. ITCs carried forward: ${formatCurrency(r.carry_forward)}.${r.report ? ` The return is saved as ${r.report.split('/').slice(-3).join('/')}.` : ''}`);
             App.navigate('#/bookkeeper');
         } catch (err) { toast(err.message, 'error'); }
     },
