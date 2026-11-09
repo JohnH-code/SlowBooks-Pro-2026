@@ -222,3 +222,30 @@ def test_balance_sheet_report_matches_quickbooks(client):
     assert bs["total_assets"] == 4500
     assert bs["total_liabilities"] == 2000
     assert bs["total_equity"] == 2500
+
+
+def test_the_chart_is_quickbooks_own_after_the_import(
+    client, db_session, seed_accounts
+):
+    """John's build: Slowbooks' starting accounts that QuickBooks doesn't
+    have and nothing uses are taken out; the built-in ones the software
+    posts to by number are kept, inactive; every QuickBooks account stays,
+    the unused one included."""
+    data = client.post("/api/migration/qbd/import", files=_files()).json()
+    assert data["ok"], data["errors"]
+    assert any("Took out" in w for w in data["warnings"])
+    names = {a.name: a for a in db_session.query(Account).all()}
+    for qb in (
+        "Chequing",
+        "Shareholder loan",
+        "Rental income",
+        "Utilities",
+        "Old account",
+    ):
+        assert qb in names, qb
+    # a seeded account with nothing in it and no number the software needs
+    assert "Savings" not in names and "Owner's Draw" not in names
+    # the software's own Checking stays, out of the lists
+    assert names["Checking"].is_active is False
+    active = {n for n, a in names.items() if a.is_active}
+    assert "Chequing" in active and "Retained Earnings" in active

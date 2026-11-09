@@ -1075,6 +1075,52 @@ def _resolve_accounts(db: Session, specs: list[dict]):
     return plan, errors, notes
 
 
+def _tidy_starting_chart(db: Session, by_qb) -> str | None:
+    """After the import (John's build): Slowbooks' own starting accounts
+    that QuickBooks doesn't have and nothing uses are taken out, so the chart
+    is QuickBooks' own. Every QuickBooks account stays, used or not. A
+    built-in account the software posts to by number (1000 Checking, 2100
+    Credit Card, 4000 Service Income …) can't go: unused, it is made
+    inactive, out of the lists, and works as before if ever needed."""
+    from app.routes.accounts import _unused
+
+    from_qb = {a.id for a in by_qb.values() if a is not None}
+    db.flush()
+    delete, _keep = _unused(db)
+    gone = [a for a in delete if a.id not in from_qb]
+    by_id = {a.id: a for a in gone}
+
+    def depth(a):
+        d = 0
+        while a.parent_id in by_id:
+            a = by_id[a.parent_id]
+            d += 1
+        return d
+
+    for a in sorted(gone, key=depth, reverse=True):
+        db.delete(a)
+        db.flush()
+    # and those another setting points at (the fixed-asset types' 1500
+    # Equipment, 6810 Depreciation …) with nothing posted to them
+    posted = {i for (i,) in db.query(TransactionLine.account_id).distinct()}
+    hidden = [
+        a
+        for a in db.query(Account).filter(Account.is_active.is_(True))
+        if a.id not in from_qb and a.id not in posted
+    ]
+    hidden.sort(key=lambda a: (a.account_number or "", a.name))
+    for a in hidden:
+        a.is_active = False
+    db.flush()
+    if not gone and not hidden:
+        return None
+    said = f"Took out {len(gone)} of Slowbooks' starting accounts that QuickBooks doesn't have and nothing uses"
+    if hidden:
+        names = ", ".join(f"{a.account_number} {a.name}".strip() for a in hidden)
+        said += f"; made inactive the built-in ones the software keeps ({names})"
+    return said
+
+
 def _prepare(db: Session, bundle: dict) -> dict:
     errors: list[str] = []
     warnings: list[str] = []
@@ -1456,6 +1502,9 @@ def run_import(db: Session, bundle: dict) -> dict:
     hst_note = _set_up_hst(db, p["specs"], by_qb, p["txns"])
     if hst_note:
         result.setdefault("warnings", []).append(hst_note)
+    tidy_note = _tidy_starting_chart(db, by_qb)
+    if tidy_note:
+        result.setdefault("warnings", []).append(tidy_note)
     db.commit()
     result.update(
         imported_accounts=created,
