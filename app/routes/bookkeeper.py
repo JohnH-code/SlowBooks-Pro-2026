@@ -51,7 +51,7 @@ from app.services import file_store
 router = APIRouter(prefix="/api/bookkeeper", tags=["bookkeeper"])
 
 TO_REVIEW, DONE, DISMISSED = "To review", "Done", "Dismissed"
-KINDS = ("bill", "expense", "bill_payment")
+KINDS = ("bill", "expense", "bill_payment", "reconciliation")
 _NAME = re.compile(r"^[^/\\]+$")
 _ATTACH_TYPE = {"bill": "bill", "expense": "expense", "bill_payment": "expense"}
 
@@ -144,6 +144,8 @@ def _resolve(db: Session, item: dict) -> dict:
     amount) the screen must have fixed before it enters it."""
     problems = []
     kind = item.get("kind")
+    if kind == "reconciliation":
+        return _resolve_reconciliation(db, item)
     if kind not in KINDS:
         problems.append(f"Unknown kind {kind!r}")
     vendor = _by_name(db, Vendor, item.get("vendor"))
@@ -343,3 +345,304 @@ def dismiss(name: str, item_id: str, db: Session = Depends(get_db)):
     _item(data, item_id)["dismissed"] = date.today().isoformat()
     _write(path, data)
     return {"filed": _settle(folder, path, data)}
+
+
+# ----------------------------------------------------------------------------
+# A bank statement to reconcile (John's build).
+#
+#   {"id": "1", "kind": "reconciliation", "account": "RBC - Can $",
+#    "statement_date": "2026-11-30", "opening_balance": "38288.74",
+#    "closing_balance": "41020.11",
+#    "lines": [{"date": "2026-11-03", "description": "Cheque 1043",
+#               "amount": "-250.00", "cheque": "1043"}, ...]}
+#
+# Amounts as the statement shows them: money in positive, money out
+# negative. Each line is matched here, when the inbox is shown, against
+# the account's lines not yet in a completed reconciliation: same amount,
+# the cheque number when the statement gives one, the nearest date within
+# ten days. So an item entered after the agent ran (a service charge, a
+# deposit) matches as soon as it is in the books.
+# ----------------------------------------------------------------------------
+
+MATCH_DAYS = 10
+
+
+def _recon_candidates(db: Session, account: Account, through: date):
+    from app.models.transactions import Transaction, TransactionLine
+    from app.services.bank_register import is_debit_normal
+
+    from app.services.bank_register import references_for
+
+    rows = (
+        db.query(TransactionLine, Transaction)
+        .join(Transaction, TransactionLine.transaction_id == Transaction.id)
+        .filter(TransactionLine.account_id == account.id)
+        .filter(TransactionLine.reconciliation_id.is_(None))
+        .filter(Transaction.date <= through)
+        .order_by(Transaction.date, Transaction.id, TransactionLine.id)
+        .all()
+    )
+    refs = references_for(db, list({t.id: t for _, t in rows}.values()))
+    debit_normal = is_debit_normal(account)
+    out = []
+    for tl, txn in rows:
+        dr = float(tl.debit or 0)
+        cr = float(tl.credit or 0)
+        amount = round((dr - cr) if debit_normal else (cr - dr), 2)
+        out.append(
+            {
+                "line_id": tl.id,
+                "date": txn.date,
+                "amount": amount,
+                "reference": (refs.get(txn.id) or "").strip(),
+                "description": (txn.description or "").strip(),
+                "cleared": bool(tl.cleared),
+            }
+        )
+    return out
+
+
+def _as_date(text):
+    try:
+        return date.fromisoformat(str(text)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _match(statement_lines: list, candidates: list) -> tuple:
+    """Each statement line to one book line (amount, then cheque number,
+    then the nearest date); the statement lines left over; the book lines
+    left over (outstanding)."""
+    free = list(candidates)
+    matched, missing = [], []
+    for sl in statement_lines:
+        amount = _money(sl.get("amount"))
+        when = _as_date(sl.get("date"))
+        cheque = str(sl.get("cheque") or "").strip()
+        best, best_key = None, None
+        for c in free:
+            if amount is None or abs(c["amount"] - amount) > 0.005:
+                continue
+            days = abs((c["date"] - when).days) if when else 0
+            if days > MATCH_DAYS and not (cheque and c["reference"] == cheque):
+                continue
+            key = (0 if cheque and c["reference"] == cheque else 1, days)
+            if best_key is None or key < best_key:
+                best, best_key = c, key
+        if best:
+            free.remove(best)
+            matched.append((sl, best))
+        else:
+            missing.append(sl)
+    # A fee the bank took on the 1st, kept in the books on the last day of
+    # the month: the same amount up to 35 days away, once nothing nearer
+    # took it.
+    for sl in list(missing):
+        amount = _money(sl.get("amount"))
+        when = _as_date(sl.get("date"))
+        near = [
+            c
+            for c in free
+            if amount is not None
+            and abs(c["amount"] - amount) <= 0.005
+            and (when is None or abs((c["date"] - when).days) <= 35)
+        ]
+        if near:
+            c = min(near, key=lambda c: abs((c["date"] - when).days) if when else 0)
+            free.remove(c)
+            missing.remove(sl)
+            matched.append((sl, c))
+    # Several statement lines to one book entry: the month's bank fees
+    # ($2 + $6 + $25) kept as one "Royal Bank" entry of $33.00 on the last
+    # day of the month.
+    for c in list(free):
+        group = _group_for(c, missing)
+        if group:
+            free.remove(c)
+            for sl in group:
+                missing.remove(sl)
+                matched.append((sl, c))
+    return matched, missing, free
+
+
+def _group_for(c: dict, missing: list):
+    """Two to six of the statement lines left over, all within the window
+    of the book entry ``c``, that add up to it exactly; None if none do."""
+    from itertools import combinations
+
+    near = [
+        sl
+        for sl in missing
+        if _money(sl.get("amount")) is not None
+        and (
+            _as_date(sl.get("date")) is None
+            or abs((c["date"] - _as_date(sl.get("date"))).days) <= MATCH_DAYS + 21
+        )
+        and (_money(sl.get("amount")) > 0) == (c["amount"] > 0)
+    ][:14]
+    for size in range(2, min(6, len(near)) + 1):
+        for combo in combinations(near, size):
+            if abs(sum(_money(sl["amount"]) for sl in combo) - c["amount"]) < 0.005:
+                return list(combo)
+    return None
+
+
+def _resolve_reconciliation(db: Session, item: dict) -> dict:
+    from app.models.banking import Reconciliation, ReconciliationStatus
+
+    problems = []
+    account = _by_name(db, Account, item.get("account"))
+    when = _as_date(item.get("statement_date"))
+    opening = _money(item.get("opening_balance"))
+    closing = _money(item.get("closing_balance"))
+    lines = [ln for ln in item.get("lines") or [] if isinstance(ln, dict)]
+    out = {
+        "id": str(item.get("id")),
+        "kind": "reconciliation",
+        "vendor": item.get("account"),
+        "account": item.get("account"),
+        "account_id": account.id if account else None,
+        "date": item.get("statement_date"),
+        "statement_date": item.get("statement_date"),
+        "opening_balance": opening,
+        "closing_balance": closing,
+        "total": closing,
+        "lines": [],
+        "questions": [str(q) for q in item.get("questions") or []],
+        "problems": problems,
+        "matched": [],
+        "missing": [],
+        "outstanding": [],
+        "difference": None,
+    }
+    if not account:
+        problems.append(f"Account not found: {item.get('account') or '(none)'}")
+        return out
+    if not when or closing is None:
+        problems.append("The statement date or closing balance is missing")
+        return out
+    last = (
+        db.query(Reconciliation)
+        .filter(
+            Reconciliation.account_id == account.id,
+            Reconciliation.status == ReconciliationStatus.COMPLETED,
+        )
+        .order_by(Reconciliation.statement_date.desc(), Reconciliation.id.desc())
+        .first()
+    )
+    beginning = round(float(last.statement_balance), 2) if last else 0.0
+    if last and when <= last.statement_date:
+        problems.append(
+            f"{account.name} is already reconciled through {last.statement_date.isoformat()}"
+        )
+    if opening is not None and abs(opening - beginning) > 0.005:
+        problems.append(
+            f"The statement opens at {opening:,.2f} but the last reconciliation "
+            f"ended at {beginning:,.2f}"
+        )
+    open_one = (
+        db.query(Reconciliation)
+        .filter(
+            Reconciliation.account_id == account.id,
+            Reconciliation.status == ReconciliationStatus.IN_PROGRESS,
+        )
+        .first()
+    )
+    if open_one:
+        problems.append(
+            f"A reconciliation of {account.name} is already open (through "
+            f"{open_one.statement_date.isoformat()}); finish or drop it first"
+        )
+    matched, missing, outstanding = _match(lines, _recon_candidates(db, account, when))
+    cleared = round(
+        sum(c["amount"] for c in {c["line_id"]: c for _, c in matched}.values()), 2
+    )
+    difference = round(closing - (beginning + cleared), 2)
+    for sl in missing:
+        problems.append(
+            f"Not in the books: {sl.get('date')} {sl.get('description') or ''} "
+            f"{_money(sl.get('amount')) or 0:,.2f}".replace("  ", " ")
+        )
+    if not missing and abs(difference) > 0.005:
+        problems.append(f"Everything matched but it is out by {difference:,.2f}")
+    out.update(
+        matched=[
+            {
+                "date": c["date"].isoformat(),
+                "amount": c["amount"],
+                "line_id": c["line_id"],
+                "description": sl.get("description") or c["description"],
+            }
+            for sl, c in matched
+        ],
+        missing=[
+            {
+                "date": sl.get("date"),
+                "description": sl.get("description") or "",
+                "amount": _money(sl.get("amount")),
+            }
+            for sl in missing
+        ],
+        outstanding=[
+            {
+                "date": c["date"].isoformat(),
+                "amount": c["amount"],
+                "description": c["description"],
+                "reference": c["reference"],
+            }
+            for c in outstanding
+        ],
+        beginning=beginning,
+        cleared_total=cleared,
+        difference=difference,
+    )
+    return out
+
+
+@router.post("/inbox/{name}/{item_id}/reconcile")
+def reconcile(name: str, item_id: str, db: Session = Depends(get_db)):
+    """Start the reconciliation the statement gives, every matched line
+    ticked, for John to look over and finish on the reconcile screen.
+    Refused while anything on the statement isn't in the books or it
+    doesn't come to $0.00."""
+    from decimal import Decimal
+
+    from app.models.transactions import TransactionLine
+    from app.services import reconciliation as rc
+
+    folder = _need_folder(db)
+    path = _in(folder, name)
+    data = _read(path)
+    item = _item(data, item_id)
+    if item.get("entered"):
+        raise HTTPException(status_code=409, detail="Already started")
+    got = _resolve_reconciliation(db, item)
+    if got["problems"]:
+        raise HTTPException(status_code=400, detail="; ".join(got["problems"]))
+    recon = rc.start(
+        db,
+        got["account_id"],
+        _as_date(got["statement_date"]),
+        Decimal(str(got["closing_balance"])),
+    )
+    db.flush()
+    for m in got["matched"]:
+        line = db.get(TransactionLine, m["line_id"])
+        if line is not None and not line.cleared:
+            line.cleared = True
+    # a line ticked earlier but not on this statement stays for later
+    on_statement = {m["line_id"] for m in got["matched"]}
+    for c in _recon_candidates(
+        db, db.get(Account, got["account_id"]), recon.statement_date
+    ):
+        if c["cleared"] and c["line_id"] not in on_statement:
+            line = db.get(TransactionLine, c["line_id"])
+            line.cleared = False
+    db.commit()
+    item["entered"] = {
+        "type": "reconciliation",
+        "id": recon.id,
+        "on": date.today().isoformat(),
+    }
+    _write(path, data)
+    return {"reconciliation_id": recon.id, "filed": _settle(folder, path, data)}

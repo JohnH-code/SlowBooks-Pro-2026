@@ -79,6 +79,7 @@ const BookkeeperInbox = {
     _isTax: ln => /GST|HST|PST|QST|sales tax/i.test(ln.account || ''),
     _accountsOf(it) {
         if (it.kind === 'bill_payment') return `from ${it.paid_from || ''}`;
+        if (it.kind === 'reconciliation') return it.account || '';
         const names = [];
         for (const ln of it.lines || []) if (!this._isTax(ln) && ln.account && !names.includes(ln.account)) names.push(ln.account);
         return names.join(', ');
@@ -86,7 +87,7 @@ const BookkeeperInbox = {
 
     // The HST on an item, or "No HST" (a payment has none to show).
     _hstOf(it) {
-        if (it.kind === 'bill_payment') return '';
+        if (it.kind === 'bill_payment' || it.kind === 'reconciliation') return '';
         const tax = (it.lines || []).filter(ln => this._isTax(ln)).reduce((s, ln) => s + (Number(ln.amount) || 0), 0);
         return tax ? formatCurrency(Math.round(tax * 100) / 100) : '<span style="color:var(--text-muted);">No HST</span>';
     },
@@ -94,6 +95,7 @@ const BookkeeperInbox = {
     // "Card charge" for an expense on a credit card account, "Cheque" for
     // one from the bank; a bill or a payment says so.
     _what(it) {
+        if (it.kind === 'reconciliation') return `Reconcile to ${it.statement_date ? formatDate(it.statement_date) : 'statement'}`;
         if (it.kind === 'bill') return `Bill ${it.number || ''}`.trim();
         if (it.kind === 'bill_payment') return `Payment of ${it.bill_number || 'bill'}`;
         const from = this._accounts.find(a => a.id === it.paid_from_id);
@@ -102,10 +104,53 @@ const BookkeeperInbox = {
         return `Cheque (${it.paid_from || ''})`;
     },
 
+    // A bank statement: what matched, what's on the statement but not in
+    // the books (enter those first), what's in the books but not on the
+    // statement (outstanding), and the difference it would start at.
+    reviewReconciliation(file, it) {
+        this._open = { file, id: it.id, kind: it.kind };
+        const row = r => `<tr><td>${r.date ? formatDate(r.date) : ''}</td><td>${escapeHtml(r.description || '')}</td><td class="amount">${formatCurrency(r.amount || 0)}</td></tr>`;
+        const table = (title, rows, note) => rows.length ? `<h4 style="margin:14px 0 4px;">${title} (${rows.length})</h4>
+            ${note ? `<p style="font-size:12px; margin:0 0 4px; color:var(--text-muted);">${note}</p>` : ''}
+            <div class="table-container" style="max-height:220px; overflow:auto;"><table><thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col" class="amount">Amount</th></tr></thead>
+            <tbody>${rows.map(row).join('')}</tbody></table></div>` : '';
+        const source = (this._files.find(f => f.file === file) || {}).source || [];
+        const ok = !it.problems.length;
+        openModal(`Reconcile ${escapeHtml(it.account || '')}`, `
+            ${source.length ? `<p style="font-size:12px;">Statement: ${source.map(s => `<a href="/api/bookkeeper/source/${encodeURIComponent(s)}" target="_blank" rel="noopener">${escapeHtml(s)}</a>`).join(' &middot; ')}</p>` : ''}
+            <div class="form-grid">
+              <div class="form-group"><label>Statement date</label><div>${it.statement_date ? formatDate(it.statement_date) : ''}</div></div>
+              <div class="form-group"><label>Opening balance</label><div>${formatCurrency(it.opening_balance ?? it.beginning ?? 0)}</div></div>
+              <div class="form-group"><label>Closing balance</label><div>${formatCurrency(it.closing_balance || 0)}</div></div>
+              <div class="form-group"><label>Difference after matching</label><div><strong style="color:${Math.abs(it.difference || 0) < 0.005 ? 'var(--success, green)' : 'var(--danger, #b00)'};">${formatCurrency(it.difference || 0)}</strong></div></div>
+            </div>
+            ${it.problems.length ? `<ul style="margin:8px 0; padding-left:18px;">${it.problems.map(p => `<li class="error">${escapeHtml(p)}</li>`).join('')}</ul>` : ''}
+            ${it.questions.length ? `<ul style="margin:8px 0; padding-left:18px;">${it.questions.map(q => `<li>${escapeHtml(q)}</li>`).join('')}</ul>` : ''}
+            ${table('On the statement, not in the books', it.missing || [], 'Enter these first (the agent may have prepared them above in this inbox); they match as soon as they are in the books.')}
+            ${table('Matched', it.matched || [])}
+            ${table('In the books, not on the statement (outstanding)', it.outstanding || [])}
+            <div class="form-actions">
+              <button type="button" class="btn btn-secondary" onclick="closeModal()">Close</button>
+              <button type="button" class="btn btn-primary" data-write ${ok ? '' : 'disabled title="Fix the items above first"'} onclick="BookkeeperInbox.startReconciliation()">Start reconciliation</button>
+            </div>`, { wide: true });
+        document.getElementById('modal')?.classList.add('modal--wide');
+    },
+
+    async startReconciliation() {
+        const { file, id } = this._open || {};
+        try {
+            const r = await API.post(`/bookkeeper/inbox/${encodeURIComponent(file)}/${encodeURIComponent(id)}/reconcile`, {});
+            closeModal();
+            toast('Reconciliation started with the statement\'s items ticked. Check the difference is $0.00 and finish it.');
+            await App.navigate('#/banking');
+            BankingPage.showReconcileView(r.reconciliation_id);
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
     _ready() {
         const out = [];
         for (const f of this._files) for (const it of f.items || []) {
-            if (!it.problems.length && !it.questions.length) out.push([f.file, it]);
+            if (it.kind !== 'reconciliation' && !it.problems.length && !it.questions.length) out.push([f.file, it]);
         }
         return out;
     },
@@ -139,6 +184,7 @@ const BookkeeperInbox = {
     review(file, id) {
         const it = this._find(file, id);
         if (!it) return;
+        if (it.kind === 'reconciliation') return this.reviewReconciliation(file, it);
         this._open = { file, id, kind: it.kind, bill_id: it.bill_id };
         const vendorOpts = '<option value="">— pick a vendor —</option>' + this._vendors.map(v =>
             `<option value="${v.id}" ${v.id === it.vendor_id ? 'selected' : ''}>${escapeHtml(v.name)}</option>`).join('');

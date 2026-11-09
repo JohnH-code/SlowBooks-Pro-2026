@@ -227,3 +227,72 @@ def test_each_row_shows_its_accounts_and_hst():
     assert '<th scope="col" class="amount">HST</th>' in js
     assert "this._accountsOf(it)" in js and "this._hstOf(it)" in js
     assert "No HST" in js
+
+
+def _spend(client, accts, vid, day, amount, ref=None):
+    r = client.post(
+        "/api/expenses",
+        json={
+            "date": day,
+            "vendor_id": vid,
+            "paid_from_account_id": accts["1000"].id,
+            "amount": amount,
+            "reference": ref,
+            "lines": [{"account_id": accts["6400"].id, "amount": amount}],
+        },
+    )
+    assert r.status_code == 201, r.text
+
+
+def test_a_statement_is_matched_and_starts_a_reconciliation(
+    client, seed_accounts, folder, TestSession
+):
+    from app.models.banking import Reconciliation
+    from app.models.transactions import TransactionLine
+
+    vid = _vendor(client, "Staples")
+    _spend(client, seed_accounts, vid, "2026-11-03", 40.00, "1043")
+    _spend(client, seed_accounts, vid, "2026-11-05", 12.50)
+    _spend(client, seed_accounts, vid, "2026-11-28", 99.00)  # not cleared yet
+    item = {
+        "id": "1",
+        "kind": "reconciliation",
+        "account": "Checking",
+        "statement_date": "2026-11-30",
+        "opening_balance": "0.00",
+        "closing_balance": "-64.50",
+        "lines": [
+            {
+                "date": "2026-11-06",
+                "description": "Cheque 1043",
+                "amount": "-40.00",
+                "cheque": "1043",
+            },
+            {"date": "2026-11-05", "description": "Staples", "amount": "-12.50"},
+            {"date": "2026-11-30", "description": "Service charge", "amount": "-12.00"},
+        ],
+    }
+    _drop(folder, "rbc.json", [item])
+    (it,) = client.get("/api/bookkeeper/inbox").json()["files"][0]["items"]
+    assert len(it["matched"]) == 2 and len(it["outstanding"]) == 1
+    assert it["problems"] == ["Not in the books: 2026-11-30 Service charge -12.00"]
+    # refused until the service charge is in the books
+    r = client.post("/api/bookkeeper/inbox/rbc.json/1/reconcile")
+    assert r.status_code == 400
+    _spend(client, seed_accounts, vid, "2026-11-30", 12.00)
+    (it,) = client.get("/api/bookkeeper/inbox").json()["files"][0]["items"]
+    assert it["problems"] == [] and it["difference"] == 0
+    r = client.post("/api/bookkeeper/inbox/rbc.json/1/reconcile")
+    assert r.status_code == 200, r.text
+    rid = r.json()["reconciliation_id"]
+    s = client.get(f"/api/banking/reconciliations/{rid}/transactions").json()
+    assert abs(s["difference"]) < 0.005
+    assert sum(1 for t in s["transactions"] if t["reconciled"]) == 3
+    with TestSession() as db:
+        assert db.get(Reconciliation, rid).status.value == "in_progress"
+        assert (
+            db.query(TransactionLine)
+            .filter(TransactionLine.reconciliation_id == rid)
+            .count()
+            == 0
+        )
