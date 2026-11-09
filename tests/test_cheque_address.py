@@ -53,7 +53,8 @@ def test_the_address_typed_on_the_cheque_is_the_one_it_keeps(
     assert x["payee_address"].startswith("Snow Valley Resorts\nAttn: Accounts")
     data = register_check_data(db_session, x["id"])
     assert data["payee_block"][1] == "Attn: Accounts"
-    assert data["payee_address"][0] == "Attn: Accounts"
+    # as vendor_address_fields (#726) gives it: the payee's name first
+    assert data["payee_address"][:2] == ["Snow Valley Resorts", "Attn: Accounts"]
 
 
 def test_a_vendor_who_moves_does_not_change_a_cheque_already_written(
@@ -85,7 +86,7 @@ def test_a_cheque_from_before_keeps_printing_the_vendors_address(
     x = _cheque(client, seed_accounts, vid)  # no Address box sent
     assert x["payee_address"] is None
     data = register_check_data(db_session, x["id"])
-    assert "payee_block" not in data and data["payee_address"][0] == "2722 Line 4 North"
+    assert "payee_block" not in data and data["payee_address"][1] == "2722 Line 4 North"
 
 
 def test_an_edit_that_sends_no_address_keeps_the_one_it_had(client, seed_accounts):
@@ -148,7 +149,7 @@ def test_a_bill_payment_keeps_the_address_it_was_paid_to(
     db_session.commit()
     bp = db_session.get(BillPayment, pay.json()["id"])
     data = bill_payment_check_data(db_session, bp)
-    assert data["payee_address"][0] == "2722 Line 4 North"
+    assert data["payee_address"][1] == "2722 Line 4 North"
     # the voucher's line for the bill, as QuickBooks lists it
     line = data["details"][0]
     assert data["bill_columns"] is True

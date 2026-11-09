@@ -1116,7 +1116,9 @@ def _tidy_starting_chart(db: Session, by_qb) -> str | None:
         return None
     said = f"Took out {len(gone)} of Slowbooks' starting accounts that QuickBooks doesn't have and nothing uses"
     if hidden:
-        names = ", ".join(f"{a.account_number} {a.name}".strip() for a in hidden)
+        from app.services.account_label import label_for
+
+        names = ", ".join(label_for(a, db) for a in hidden)
         said += f"; made inactive the built-in ones the software keeps ({names})"
     return said
 

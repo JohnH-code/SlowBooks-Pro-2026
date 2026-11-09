@@ -44,7 +44,10 @@ def _kept_address(check_data: dict, text) -> None:
     prints as it was kept, whatever the vendor's record says now. Like
     vendor_address_fields (#726), the lines start with the payee's name."""
     lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
-    if not lines:
+    payee = (check_data.get("payee") or "").strip().lower()
+    # nothing kept, or only the payee's own name (a vendor with no address,
+    # #726): no address block
+    if not lines or (len(lines) == 1 and lines[0].lower() == payee):
         return
     check_data["payee_block"] = lines
     check_data["payee_address"] = lines
