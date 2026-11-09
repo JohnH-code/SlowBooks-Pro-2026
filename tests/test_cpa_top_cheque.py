@@ -84,3 +84,35 @@ def test_enter_bills_keeps_the_scans_tax_out_of_the_memo():
     ).read_text(encoding="utf-8")
     assert "if (active() && fieldKey === 'tax') return;" in js
     assert "if (active()) dropTaxNote();" in js
+
+
+def test_a_bill_payments_voucher_lists_each_bill_as_quickbooks_does():
+    html = _html(
+        bill_columns=True,
+        amount=Decimal("980.00"),
+        details=[
+            {
+                "description": "Bill #A-1",
+                "date": date(2026, 10, 1),
+                "ref": "A-1",
+                "original": Decimal("1000.00"),
+                "discount": Decimal("20.00"),
+                "amount": Decimal("980.00"),
+            },
+            {
+                "description": "Paid ahead (not applied to a bill)",
+                "amount": Decimal("0.00"),
+            },
+        ],
+    )
+    for words in (
+        "Original Amt.",
+        "Discount",
+        "Payment",
+        "2026-10-01",
+        "A-1",
+        "1,000.00",
+        "20.00",
+        "980.00",
+    ):
+        assert words in html, words

@@ -469,7 +469,7 @@ def test_books_from_before_2_9_get_the_default_asset_type_at_the_upgrade(tmp_pat
     assert script.get_revision("407d52f22d78").down_revision == "d7b3f9a1c5e2"
     # John's build: its own merge revision is the head, on top of 2.31.8's
     # (the transaction_lines indexes, #693)
-    assert "d7f3a9c1b5e2" in script.get_revision(script.get_heads()[0]).down_revision
+    assert "d7f3a9c1b5e2" in script.get_revision("a7b8c9d0e1f4").down_revision
     command.upgrade(cfg, "407d52f22d78")
     types, accounts = _after_upgrade(db)
     expense = accounts["Depreciation Expense"]

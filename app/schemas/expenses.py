@@ -46,6 +46,11 @@ class ExpenseCreate(StrictModel):
     lines: Optional[list[ExpenseLineIn]] = None
     reference: Optional[str] = Field(None, max_length=100)
     memo: Optional[str] = None
+    # Write Cheques' Address box as it stands (John's build): the payee and
+    # address the cheque prints, kept with this cheque. Left out, a new
+    # cheque prints the vendor's address as it is then, and an edited one
+    # keeps what it had.
+    payee_address: Optional[str] = Field(None, max_length=600)
     class_id: Optional[int] = None
     job_id: Optional[int] = None
     cost_code_id: Optional[int] = None
@@ -98,6 +103,7 @@ class ExpenseResponse(BaseModel):
     amount: float
     reference: str = ""
     memo: str = ""
+    payee_address: Optional[str] = None
     status: str = "recorded"  # "recorded" | "void"
     is_credit: bool = False
     printable: bool = False  # paid from a bank account and not void: Print Check

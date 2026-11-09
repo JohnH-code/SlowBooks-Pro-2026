@@ -50,8 +50,8 @@ def test_a_file_built_by_migrations_has_both_indexes(tmp_path):
     db = tmp_path / "fresh.db"
     cfg = _cfg(db)
     script = ScriptDirectory.from_config(cfg)
-    # John's build: its own merge revision is the head, on top of this one
-    assert REVISION in script.get_revision(script.get_heads()[0]).down_revision
+    # John's build: its own merge revision (a7b8c9d0e1f4) sits on top of this one
+    assert REVISION in script.get_revision("a7b8c9d0e1f4").down_revision
     assert script.get_revision(REVISION).down_revision == BEFORE
     command.upgrade(cfg, "head")
     indexes = _indexes(db)

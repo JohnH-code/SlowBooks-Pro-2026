@@ -159,6 +159,7 @@ def _serialize(
         # the memo typed on the expense, kept on its own (#648); a split's
         # debit lines carry their own (#599)
         memo=_memo_of(txn, credit_line),
+        payee_address=txn.payee_address,
         status="void" if voided else "recorded",
         printable=(
             not voided
@@ -656,6 +657,8 @@ def post_expense(
         )
         existing.source_id = vendor.id if vendor else None
         existing.memo = memo
+        if data.payee_address is not None:
+            existing.payee_address = _address_text(data.payee_address)
         db.flush()
         return existing
 
@@ -675,8 +678,15 @@ def post_expense(
     # the memo on its own (#648): "" when none was typed, which tells it
     # from an expense saved before the column existed
     txn.memo = memo
+    txn.payee_address = _address_text(data.payee_address)
     db.flush()
     return txn
+
+
+def _address_text(text) -> str | None:
+    """The Address box's lines, trimmed, blank ones dropped; None if empty."""
+    lines = [ln.strip() for ln in str(text or "").splitlines()]
+    return "\n".join(ln for ln in lines if ln) or None
 
 
 @router.post("/{expense_id}/replace", response_model=ExpenseResponse)

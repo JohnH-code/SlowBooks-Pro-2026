@@ -59,6 +59,9 @@ class Transaction(Base):
     # NULL is one saved before the column existed, whose memo is still read
     # off its bank line. Other documents leave it empty.
     memo = Column(Text, nullable=True)
+    # A cheque's payee and address as written on it (John's build): Write
+    # Cheques' Address box, one line each. NULL: the vendor's address now.
+    payee_address = Column(Text, nullable=True)
     source_type = Column(String(50), nullable=True)
     source_id = Column(Integer, nullable=True)  # FK to the source record
     # An import's own key for the row it came from (#663): what a second

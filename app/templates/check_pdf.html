@@ -116,11 +116,22 @@
             <div class="v s-date" style="top: {{ top + 0.48 }}in;">{{ check.date.strftime('%Y-%m-%d') if check.date else '' }}</div>
             {% if check.memo %}<div class="v s-memo" style="top: {{ top + 0.66 }}in;">{{ check.memo }}</div>{% endif %}
             <table class="v s-lines" style="top: {{ top + 0.85 }}in;">
+                {% if check.bill_columns %}
+                <thead><tr><th>Date</th><th>Ref. No.</th><th class="r">Original Amt.</th><th class="r">Discount</th><th class="r">Payment</th></tr></thead>
+                <tbody>
+                {% for d in check.details[:12] %}
+                <tr><td>{{ d.date.strftime('%Y-%m-%d') if d.date else '' }}</td><td>{{ d.ref if d.ref is defined else d.description }}</td>
+                    <td class="r">{{ '{:,.2f}'.format(d.original) if d.original is not none and d.original is defined else '' }}</td>
+                    <td class="r">{{ '{:,.2f}'.format(d.discount) if d.discount else '' }}</td>
+                    <td class="r">{{ '{:,.2f}'.format(d.amount) }}</td></tr>
+                {% endfor %}
+                {% else %}
                 <thead><tr><th>Description</th><th class="r">Amount</th></tr></thead>
                 <tbody>
                 {% for d in check.details[:12] %}
                 <tr><td>{{ d.description }}</td><td class="r">{{ '{:,.2f}'.format(d.amount) }}</td></tr>
                 {% endfor %}
+                {% endif %}
                 {% if check.details|length > 12 %}<tr><td>… and {{ check.details|length - 12 }} more</td><td></td></tr>{% endif %}
                 {% if not check.details %}<tr><td>Payment</td><td class="r">{{ '{:,.2f}'.format(check.amount) }}</td></tr>{% endif %}
                 </tbody>
@@ -167,7 +178,7 @@
             <div class="v c-date">{% for ch in (check.date.strftime('%Y%m%d') if check.date else '') %}<span>{{ ch }}</span>{% endfor %}</div>
             <div class="v c-words">{{ check.amount_words }} {{ '*' * 120 }}</div>
             <div class="v c-amount">**{{ '{:,.2f}'.format(check.amount) }}</div>
-            <div class="v c-payee">{{ check.payee }}{% for l in (check.payee_address or [])[:3] %}<br>{{ l }}{% endfor %}</div>
+            <div class="v c-payee">{% if check.payee_block %}{% for l in check.payee_block[:4] %}{% if not loop.first %}<br>{% endif %}{{ l }}{% endfor %}{% else %}{{ check.payee }}{% for l in (check.payee_address or [])[:3] %}<br>{{ l }}{% endfor %}{% endif %}</div>
             {% if check.memo %}<div class="v c-memo">Memo: {{ check.memo }}</div>{% endif %}
             {{ cpa_stub(check, 3.5) }}
             {{ cpa_stub(check, 7.0) }}

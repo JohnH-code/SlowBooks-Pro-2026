@@ -38,6 +38,18 @@ router = APIRouter(prefix="/api/checks", tags=["checks"])
 REGISTER_CHECK_SOURCES = ("bank_entry", "expense")
 
 
+def _kept_address(check_data: dict, text) -> None:
+    """The payee and address the cheque was written with (John's build):
+    Write Cheques' Address box, or a bill payment's vendor as paid. It
+    prints as it was kept, whatever the vendor's record says now."""
+    lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+    if not lines:
+        return
+    check_data["payee_block"] = lines
+    payee = (check_data.get("payee") or "").strip().lower()
+    check_data["payee_address"] = lines[1:] if lines[0].lower() == payee else lines
+
+
 def register_check_data(db: Session, txn_id: int) -> dict:
     """The check behind a register entry or an expense (discussion #354):
     money out of a bank account, payee from the vendor or the entry, the
@@ -129,7 +141,7 @@ def register_check_data(db: Session, txn_id: int) -> dict:
             )
             if line
         ]
-    return {
+    check_data = {
         "account_name": bank_line.account.name if bank_line.account else "",
         "payee": payee,
         "payee_address": address,
@@ -139,6 +151,8 @@ def register_check_data(db: Session, txn_id: int) -> dict:
         "memo": "" if memo == payee else cheque_memo(memo),
         "details": details,
     }
+    _kept_address(check_data, txn.payee_address)
+    return check_data
 
 
 def bill_payment_check_data(db: Session, bp: BillPayment) -> dict:
@@ -156,7 +170,9 @@ def bill_payment_check_data(db: Session, bp: BillPayment) -> dict:
     if bp.pay_from_account_id:
         acct = db.get(Account, bp.pay_from_account_id)
         check_data["account_name"] = acct.name if acct else ""
-    if vendor is not None:
+    if bp.payee_address:
+        _kept_address(check_data, bp.payee_address)
+    elif vendor is not None:
         from app.services.addresses import city_line
 
         check_data["payee_address"] = [
@@ -168,6 +184,15 @@ def bill_payment_check_data(db: Session, bp: BillPayment) -> dict:
             )
             if line
         ]
+    # each bill as QuickBooks' voucher lists it (John's build): its date and
+    # the vendor's invoice number, the bill's gross amount, the early-payment
+    # discount taken on it, and what this cheque pays
+    from app.routes.bill_payments import _discounts
+
+    taken: dict = {}
+    for d in _discounts(db, bp):
+        taken[d.bill_id] = taken.get(d.bill_id, Decimal("0")) + Decimal(str(d.amount))
+    check_data["bill_columns"] = True
     for alloc in bp.allocations:
         bill = db.query(Bill).filter(Bill.id == alloc.bill_id).first()
         check_data["details"].append(
@@ -175,6 +200,10 @@ def bill_payment_check_data(db: Session, bp: BillPayment) -> dict:
                 "description": (
                     f"Bill #{bill.bill_number}" if bill else f"Bill #{alloc.bill_id}"
                 ),
+                "date": bill.date if bill else None,
+                "ref": (bill.bill_number if bill else str(alloc.bill_id)) or "",
+                "original": bill.total if bill else None,
+                "discount": taken.pop(alloc.bill_id, Decimal("0")),
                 "amount": alloc.amount,
             }
         )

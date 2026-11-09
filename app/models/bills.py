@@ -169,6 +169,9 @@ class BillPayment(Base):
     exchange_rate = Column(Numeric(18, 8), nullable=True)
     transaction_id = Column(Integer, ForeignKey("transactions.id"), nullable=True)
     is_voided = Column(Boolean, default=False, nullable=False)
+    # The vendor's address as it stood when paid (John's build), for the
+    # cheque: one line each. NULL: the vendor's address now.
+    payee_address = Column(Text, nullable=True)
     # Construction (#553): paid to a Sub whose certificate of insurance had
     # expired, by explicit override; the note says which certificate.
     coi_override = Column(

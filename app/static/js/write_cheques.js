@@ -368,7 +368,8 @@
             }
             const addr = $('#qb-address');
             const vendor = (ExpensesPage._vendors || []).find(v => v.id === x.vendor_id);
-            if (addr) addr.value = vendor ? vendorAddress(vendor) : (x.payee || '');
+            // the address this cheque was written with, if it kept one
+            if (addr) addr.value = x.payee_address || (vendor ? vendorAddress(vendor) : (x.payee || ''));
         }
         const isTax = l => ExpensesPage._canada && l.account_id === ExpensesPage._hstAccount;
         const lines = (x.lines || []).filter(l => !isTax(l));
@@ -504,7 +505,7 @@
                     <div class="qb-cheque-words"><span id="qb-amount-words"></span><span class="qb-dollars-word">Dollars</span></div>
                     <div class="qb-cheque-address">
                         <label for="qb-address">Address</label>
-                        <textarea id="qb-address" rows="4" readonly tabindex="-1" title="From the vendor's record"></textarea>
+                        <textarea id="qb-address" class="qb-address-box" rows="4" title="Printed on the cheque. Filled in from the vendor's record; change it for this cheque only — the vendor's record is not changed."></textarea>
                     </div>
                     <div class="qb-cheque-memo"><label for="qb-memo">Memo</label>
                         <input id="qb-memo" name="memo" maxlength="500"></div>

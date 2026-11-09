@@ -680,8 +680,8 @@ def test_the_migration_seeds_the_list_from_the_terms_in_use(tmp_path):
     cfg.set_main_option("script_location", str(ROOT / "migrations"))
     cfg.attributes["database_url"] = "sqlite:///" + db.as_posix()
     script = ScriptDirectory.from_config(cfg)
-    # John's build: its own merge revision is the head, on top of this one
-    assert "d7f3a9c1b5e2" in script.get_revision(script.get_heads()[0]).down_revision
+    # John's build: its own merge revision (a7b8c9d0e1f4) sits on top of this one
+    assert "d7f3a9c1b5e2" in script.get_revision("a7b8c9d0e1f4").down_revision
     assert script.get_revision("e5c1a7d3f9b2").down_revision == "95209e8d293c"
 
     command.upgrade(cfg, "95209e8d293c")

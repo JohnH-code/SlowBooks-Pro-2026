@@ -89,6 +89,23 @@ def get_bill_payment(bill_payment_id: int, db: Session = Depends(get_db)):
     return resp
 
 
+def _vendor_address_text(vendor) -> str | None:
+    """The vendor's name and address as they stand, one line each (John's
+    build): kept on the payment, so its cheque prints the address it was
+    paid to even after the vendor moves."""
+    if vendor is None:
+        return None
+    from app.services.addresses import city_line
+
+    lines = [
+        vendor.name,
+        vendor.address1,
+        vendor.address2,
+        city_line(vendor.city, vendor.state, vendor.zip),
+    ]
+    return "\n".join(ln.strip() for ln in lines if ln and ln.strip()) or None
+
+
 def _validated(db: Session, payment: BillPayment) -> BillPaymentResponse:
     """The payment as the screens read it, its class named (#686)."""
     resp = BillPaymentResponse.model_validate(payment)
@@ -251,6 +268,7 @@ def create_bill_payment(
         coi_override=coi_note is not None,
         coi_override_note=coi_note,
         class_id=data.class_id,
+        payee_address=_vendor_address_text(vendor),
     )
     db.add(payment)
     db.flush()

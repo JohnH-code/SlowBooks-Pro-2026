@@ -465,6 +465,9 @@ const ExpensesPage = {
                 class_id: classIdFromForm(form),
                 job_id: jobIdFromForm(form),
             };
+            // Write Cheques' Address box: kept with this cheque (John's build)
+            const addrBox = document.getElementById('qb-address');
+            if (ExpensesPage._qbForm && addrBox) body.payee_address = addrBox.value;
             // a check number the bank account already has (#481)
             // an expense opened for editing (write_cheques.js) is saved in place
             const editId = ExpensesPage._editId;
