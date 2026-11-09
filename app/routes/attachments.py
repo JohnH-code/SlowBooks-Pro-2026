@@ -49,6 +49,10 @@ _ENTITY_TYPE_DIRS = {
     # The deposit slip, the cheque copy or the letter that came with a
     # deposit (QuickBooks keeps these on the deposit too).
     "deposit": "deposit",
+    # John's build: the cheque received with a customer payment, the
+    # remittance with a bill payment (QuickBooks keeps both on the payment).
+    "payment": "payment",
+    "bill_payment": "bill_payment",
 }
 
 # Whitelist of MIME types we accept for attachments. An attachment is served

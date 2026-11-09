@@ -449,6 +449,8 @@ _ATTACH_ENTITY = {
     "deposit": ("deposit", "txn"),
     "invoice": ("invoice", "doc"),
     "bill": ("bill", "doc"),
+    "payment": ("payment", "doc"),
+    "bill_payment": ("bill_payment", "doc"),
 }
 _TAG = re.compile(re.escape(REF_PREFIX) + r"(\S+)$")
 
