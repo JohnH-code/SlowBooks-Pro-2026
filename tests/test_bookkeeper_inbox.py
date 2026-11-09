@@ -205,3 +205,17 @@ def test_the_screen_is_there():
     index = (Path(__file__).resolve().parents[1] / "index.html").read_text()
     assert "/static/js/bookkeeper_inbox.js" in index
     assert 'href="#/bookkeeper"' in index
+
+
+def test_a_folder_typed_from_the_top_of_the_disk_is_found_in_home(
+    tmp_path, monkeypatch
+):
+    from app.routes.bookkeeper import find_folder
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    real = tmp_path / "DATA" / "Alderella" / "Bookkeeper"
+    real.mkdir(parents=True)
+    assert find_folder("~/DATA/Alderella/Bookkeeper") == real
+    assert find_folder("/DATA/Alderella/Bookkeeper") == real
+    assert find_folder("DATA/Alderella/Bookkeeper") == real
+    assert find_folder("/nowhere/at/all") == Path("/nowhere/at/all")

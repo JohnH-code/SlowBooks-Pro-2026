@@ -62,7 +62,22 @@ def _folder(db: Session) -> Optional[Path]:
     text = text.strip()
     if not text:
         return None
-    return Path(text).expanduser()
+    return find_folder(text)
+
+
+def find_folder(text: str) -> Path:
+    """The folder as typed, or, when that isn't there, the same path under
+    the home folder: "/data/alderella/bookkeeper" or "data/alderella/..."
+    typed for "~/DATA/Alderella/Bookkeeper". A Mac's disk ignores case, so
+    that is all it takes. The path as typed comes back when neither is
+    there, so the screen can say what it looked for."""
+    path = Path(text.strip()).expanduser()
+    if path.is_dir():
+        return path
+    under_home = Path.home() / str(path).lstrip("/\\")
+    if under_home.is_dir():
+        return under_home
+    return path
 
 
 def _need_folder(db: Session) -> Path:

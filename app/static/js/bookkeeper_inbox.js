@@ -33,7 +33,7 @@ const BookkeeperInbox = {
                 <p>Set it in <a href="#/settings">Settings</a>, Company: <em>Bookkeeper folder</em>.</p></div>`;
         }
         if (box.exists === false) {
-            return html + `<div class="empty-state"><p>The bookkeeper folder <code>${escapeHtml(box.folder)}</code> isn't there.</p></div>`;
+            return html + `<div class="empty-state"><p>The bookkeeper folder <code>${escapeHtml(box.folder)}</code> isn't there.</p><p style="font-size:12px;">In <a href="#/settings">Settings</a>, Company, type it from your home folder, e.g. <code>~/DATA/Alderella/Bookkeeper</code>.</p></div>`;
         }
         const open = this._files.filter(f => f.error || f.items.length);
         if (!open.length) {
