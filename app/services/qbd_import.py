@@ -1075,6 +1075,31 @@ def _resolve_accounts(db: Session, specs: list[dict]):
     return plan, errors, notes
 
 
+def _canadian_countries(db: Session) -> None:
+    """A Canadian company's names come over as Canada (John's build): the
+    lists carry no country, and Slowbooks' own default is US. Only an
+    address whose ZIP code is a US one keeps US."""
+    from app.services.iif_import import _US_ZIP
+    from app.services.settings_service import get_setting_raw
+
+    # the GST/HST set-up above has only just made it Canadian, and the
+    # session doesn't autoflush: write it out before reading it back
+    db.flush()
+    if (get_setting_raw(db, "sales_tax_system") or "") != "canada":
+        return
+    from app.models.contacts import Customer, Vendor
+
+    for v in db.query(Vendor).filter(Vendor.country == "US"):
+        if not (v.zip and _US_ZIP.match(v.zip)):
+            v.country = "CA"
+    for c in db.query(Customer):
+        if c.bill_country == "US" and not (c.bill_zip and _US_ZIP.match(c.bill_zip)):
+            c.bill_country = "CA"
+        if c.ship_country == "US" and not (c.ship_zip and _US_ZIP.match(c.ship_zip)):
+            c.ship_country = "CA"
+    db.flush()
+
+
 def _tidy_starting_chart(db: Session, by_qb) -> str | None:
     """After the import (John's build): Slowbooks' own starting accounts
     that QuickBooks doesn't have and nothing uses are taken out, so the chart
@@ -1504,6 +1529,7 @@ def run_import(db: Session, bundle: dict) -> dict:
     hst_note = _set_up_hst(db, p["specs"], by_qb, p["txns"])
     if hst_note:
         result.setdefault("warnings", []).append(hst_note)
+    _canadian_countries(db)
     tidy_note = _tidy_starting_chart(db, by_qb)
     if tidy_note:
         result.setdefault("warnings", []).append(tidy_note)

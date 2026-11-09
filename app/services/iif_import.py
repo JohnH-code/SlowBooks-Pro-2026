@@ -13,6 +13,7 @@
 # ============================================================================
 
 import logging
+import re
 from datetime import datetime, date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
@@ -818,26 +819,25 @@ def _create_opening_balance_entry(db: Session, balances: list) -> dict:
 
 def _customer_fields(row: dict) -> dict:
     """A CUST row's contact fields, as Customer takes them."""
-    # Parse ADDR4 "City, State ZIP" pattern
-    addr4 = row.get("ADDR4", "").strip()
-    city, state, zipcode = "", "", ""
-    if addr4:
-        city, state, zipcode = _parse_city_state_zip(addr4)
-    return dict(
+    a = _address(row)
+    fields = dict(
         company=row.get("COMPANYNAME", "").strip() or None,
         email=row.get("EMAIL", "").strip() or None,
         phone=row.get("PHONE1", "").strip() or None,
         mobile=row.get("PHONE2", "").strip() or None,
-        bill_address1=row.get("ADDR2", "").strip() or None,
-        bill_address2=row.get("ADDR3", "").strip() or None,
-        bill_city=city or None,
-        bill_state=state or None,
-        bill_zip=zipcode or None,
+        bill_address1=a["street1"],
+        bill_address2=a["street2"],
+        bill_city=a["city"],
+        bill_state=a["state"],
+        bill_zip=a["zip"],
         terms=row.get("TERMS", "").strip() or "Net 30",
         tax_id=row.get("TAXID", "").strip() or None,
         credit_limit=_parse_decimal(row.get("LIMIT", "")) or None,
         is_active=True,
     )
+    if a["country"]:
+        fields["bill_country"] = a["country"]
+    return fields
 
 
 def import_customers(db: Session, rows: list, sub_customers: bool = False) -> dict:
@@ -933,22 +933,19 @@ def import_vendors(db: Session, rows: list) -> dict:
                 sp.rollback()
                 continue
 
-            addr4 = row.get("ADDR4", "").strip()
-            city, state, zipcode = "", "", ""
-            if addr4:
-                city, state, zipcode = _parse_city_state_zip(addr4)
-
+            a = _address(row)
             vend = Vendor(
                 name=name,
-                company=row.get("ADDR1", "").strip() or None,
+                company=row.get("COMPANYNAME", "").strip() or None,
                 email=row.get("EMAIL", "").strip() or None,
                 phone=row.get("PHONE1", "").strip() or None,
                 fax=row.get("PHONE2", "").strip() or None,
-                address1=row.get("ADDR2", "").strip() or None,
-                address2=row.get("ADDR3", "").strip() or None,
-                city=city or None,
-                state=state or None,
-                zip=zipcode or None,
+                address1=a["street1"],
+                address2=a["street2"],
+                city=a["city"],
+                state=a["state"],
+                zip=a["zip"],
+                **({"country": a["country"]} if a["country"] else {}),
                 terms=row.get("TERMS", "").strip() or "Net 30",
                 tax_id=row.get("TAXID", "").strip() or None,
                 is_active=True,
@@ -2252,11 +2249,96 @@ def _import_estimate(
     return estimate
 
 
+# A Canadian postal code (A1A 1A1) and the provinces' and territories'
+# codes; a US ZIP (12345 or 12345-6789).
+_CA_POSTAL = re.compile(r"^[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d$")
+_US_ZIP = re.compile(r"^\d{5}(-\d{4})?$")
+_CA_PROVINCES = {
+    "AB",
+    "BC",
+    "MB",
+    "NB",
+    "NL",
+    "NS",
+    "NT",
+    "NU",
+    "ON",
+    "PE",
+    "QC",
+    "SK",
+    "YT",
+}
+_CITY_LINE = re.compile(
+    r"^(?P<city>.*?)[,\s]+(?P<state>[A-Za-z]{2})\.?\s+"
+    r"(?P<zip>[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d|\d{5}(?:-\d{4})?)$"
+)
+_COUNTRY_LINE = {
+    "canada": "CA",
+    "ca": "CA",
+    "usa": "US",
+    "us": "US",
+    "united states": "US",
+}
+
+
+def _address(row: dict) -> dict:
+    """A list row's address as Slowbooks keeps it (John's build).
+
+    QuickBooks keeps up to five free lines (ADDR1-ADDR5), and how they are
+    used varies: "Name / street / City, Prov  Postal" on one vendor,
+    "street / City, Prov  Postal" on the next. A first line that is the
+    name or company name is left off; a last line that is a country says
+    the country; the line that reads "City, PR  A1A 1A1" (or "City, ST
+    12345") gives city, province and postal code; the lines before it are
+    the street (a third street line joins the second)."""
+    lines = [row.get(f"ADDR{i}", "").strip().strip('"').strip() for i in range(1, 6)]
+    lines = [ln for ln in lines if ln]
+    names = {
+        row.get(k, "").strip().lower() for k in ("NAME", "COMPANYNAME", "PRINTAS")
+    } - {""}
+    if lines and lines[0].lower() in names:
+        lines = lines[1:]
+    country = None
+    if lines and lines[-1].lower().strip(".") in _COUNTRY_LINE:
+        country = _COUNTRY_LINE[lines.pop().lower().strip(".")]
+    city = state = zipcode = None
+    for i in range(len(lines) - 1, -1, -1):
+        m = _CITY_LINE.match(lines[i])
+        if m:
+            city = m.group("city").strip().rstrip(",") or None
+            state = m.group("state").upper()
+            zipcode = m.group("zip").upper()
+            if _CA_POSTAL.match(zipcode) and " " not in zipcode:
+                zipcode = f"{zipcode[:3]} {zipcode[3:]}"
+            lines = lines[:i] + lines[i + 1 :]
+            if country is None:
+                if _CA_POSTAL.match(zipcode) or state in _CA_PROVINCES:
+                    country = "CA"
+                elif _US_ZIP.match(zipcode):
+                    country = "US"
+            break
+    return {
+        "street1": lines[0] if lines else None,
+        "street2": ", ".join(lines[1:]) or None,
+        "city": city,
+        "state": state,
+        "zip": zipcode,
+        "country": country,
+    }
+
+
 def _parse_city_state_zip(s: str) -> tuple:
     """Parse 'City, State ZIP' string into components."""
     city, state, zipcode = "", "", ""
     if not s:
         return city, state, zipcode
+    m = _CITY_LINE.match(s.strip())
+    if m:  # "Oakville, ON  L6J 1P5": the postal code is two words
+        return (
+            m.group("city").strip().rstrip(","),
+            m.group("state").upper(),
+            m.group("zip").upper(),
+        )
 
     # Try "City, State ZIP" pattern
     if "," in s:
