@@ -40,6 +40,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import time
@@ -1073,13 +1074,92 @@ def _safe_temp_filename(title: str, suffix: str) -> str:
 
 def _saved_document_roots() -> tuple[Path, ...]:
     """The folders the app saves into when asked to: Documents/SlowBooks Pro
-    (its Reports and Documents), and the app-data folders a refused
-    Documents write falls back to."""
+    (its Reports and Documents), the app-data folders a refused
+    Documents write falls back to, and (John's build) the viewing folder
+    a PDF is shown from."""
     return (
         (_documents_dir() / "SlowBooks Pro").resolve(),
         _fallback_reports_dir().resolve(),
         _fallback_reports_dir("Documents").resolve(),
+        _viewing_dir().resolve(),
     )
+
+
+def _viewing_dir() -> Path:
+    """John's build: where a PDF is kept while it is shown (a report, an
+    invoice) — the app's own data folder, cleared of anything over a day
+    old as a new one is written, as Print's working copies are. Nothing
+    lands in the user's folders unless they press Save…"""
+    return get_data_dir() / "viewing"
+
+
+def _write_for_viewing(name: str, data: bytes) -> Path:
+    folder = _viewing_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    cutoff = time.time() - 86400
+    for old in folder.iterdir():
+        try:
+            if old.stat().st_mtime < cutoff:
+                if old.is_dir():
+                    shutil.rmtree(old, ignore_errors=True)
+                else:
+                    old.unlink()
+        except OSError:
+            pass
+    sub_dir = folder / secrets.token_hex(4)
+    sub_dir.mkdir()
+    dest = sub_dir / name
+    dest.write_bytes(data)
+    return dest
+
+
+_SAVE_FOLDER_FILE = "save-folder.txt"
+
+
+def _any_window():
+    """The first open pywebview window, to hang a Save panel on."""
+    try:
+        import webview
+
+        return webview.windows[0] if webview.windows else None
+    except Exception:
+        return None
+
+
+def _last_save_folder() -> Path:
+    """The folder the last Save… went to (John's build), else Documents."""
+    try:
+        text = (get_data_dir() / _SAVE_FOLDER_FILE).read_text(encoding="utf-8")
+        folder = Path(text.strip())
+        if folder.is_dir():
+            return folder
+    except OSError:
+        pass
+    return _documents_dir()
+
+
+def _remember_save_folder(folder: Path) -> None:
+    try:
+        (get_data_dir() / _SAVE_FOLDER_FILE).write_text(str(folder), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _save_dialog(window, name: str):
+    """A native Save panel opened on the last folder used; the chosen path,
+    or None when it is dismissed."""
+    import webview
+
+    chosen = window.create_file_dialog(
+        webview.SAVE_DIALOG,
+        directory=str(_last_save_folder()),
+        save_filename=name,
+    )
+    if not chosen:
+        return None
+    path = Path(chosen[0] if isinstance(chosen, (list, tuple)) else chosen)
+    _remember_save_folder(path.parent)
+    return path
 
 
 def _openable_pdf(path) -> Path | None:
@@ -1245,12 +1325,12 @@ _VIEWER_PAGE = Template("""<!DOCTYPE html>
 <body>
 <div class="bar" role="toolbar" aria-label="$name">
   <span class="name">$name</span>
-  <span class="where" title="$path">Saved in $where</span>
+  <span class="where">Not saved — Save… keeps a copy where you choose</span>
   <span class="note" id="note" role="status"></span>
   <button type="button" id="print-doc" disabled>Print</button>
   <button type="button" id="open-in-app" disabled
           title="Print it, or save a copy somewhere else, from there">$open_label</button>
-  <button type="button" id="show-in-folder" disabled>Show in folder</button>
+  <button type="button" id="save-copy" disabled>Save…</button>
 </div>
 <iframe src="$src" title="$name"></iframe>
 <script>
@@ -1267,7 +1347,7 @@ _VIEWER_PAGE = Template("""<!DOCTYPE html>
   function ready() {
     document.getElementById('print-doc').disabled = false;
     document.getElementById('open-in-app').disabled = false;
-    document.getElementById('show-in-folder').disabled = false;
+    document.getElementById('save-copy').disabled = false;
   }
   document.getElementById('print-doc').addEventListener('click', function () {
     call('print_document');
@@ -1275,16 +1355,23 @@ _VIEWER_PAGE = Template("""<!DOCTYPE html>
   document.getElementById('open-in-app').addEventListener('click', function () {
     call('open_in_default_app');
   });
-  document.getElementById('show-in-folder').addEventListener('click', function () {
-    call('show_in_folder');
-  });
+  function saveCopy() {
+    var api = window.pywebview && window.pywebview.api;
+    if (!api || !api.save_copy) { note.textContent = 'Not available in this window.'; return; }
+    note.textContent = '';
+    api.save_copy().then(function (r) {
+      if (r && r.success) note.textContent = 'Saved to ' + r.path;
+      else if (r && !r.cancelled) note.textContent = (r && r.error) || 'That did not work.';
+    });
+  }
+  document.getElementById('save-copy').addEventListener('click', saveCopy);
   document.addEventListener('keydown', function (e) {
     if ((e.metaKey || e.ctrlKey) && e.key === 'p') {
       e.preventDefault();
       call('print_document');
     } else if ((e.metaKey || e.ctrlKey) && e.key === 's') {
       e.preventDefault();
-      call('open_in_default_app');
+      saveCopy();
     }
   });
   if (window.pywebview && window.pywebview.api && window.pywebview.api.open_in_default_app) ready();
@@ -1331,6 +1418,26 @@ class DocumentViewerApi:
 
     def __init__(self, path):
         self._path = str(path)
+        self._window = None
+
+    def save_copy(self) -> dict:
+        """John's build: keep a copy where the user chooses, through a
+        native Save panel opened on the last folder used."""
+        target = _openable_pdf(self._path)
+        if target is None:
+            return {"success": False, "error": "This PDF is no longer here."}
+        if self._window is None:
+            return {"success": False, "error": "no window"}
+        try:
+            chosen = _save_dialog(self._window, target.name)
+            if chosen is None:
+                return {"success": False, "cancelled": True}
+            if chosen.suffix.lower() != ".pdf":
+                chosen = chosen.with_suffix(".pdf")
+            shutil.copyfile(target, chosen)
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+        return {"success": True, "path": str(chosen)}
 
     def open_in_default_app(self) -> dict:
         target = _openable_pdf(self._path)
@@ -1558,24 +1665,25 @@ class PickerApi:
             name = _safe_temp_filename(stem, ".pdf")
             # an attachment says it is a document (the page knows); anything
             # else is sorted by the name the server gave it
-            dest, note = _save_report(
-                name, data, _given_folder(folder) or _folder_for(name)
-            )
-            # The PDF under a toolbar (Open in the PDF app, Show in folder);
+            # John's build: shown, not saved — a working copy in the app's
+            # own data folder; the viewer's Save… keeps one where the user
+            # chooses
+            dest = _write_for_viewing(name, data)
+            # The PDF under a toolbar (Print, Open in the PDF app, Save…);
             # the bare PDF if the page can't be written.
             try:
-                url, api = _write_viewer(dest, title).as_uri(), DocumentViewerApi(dest)
+                api = DocumentViewerApi(dest)
+                url = _write_viewer(dest, title).as_uri()
             except OSError:
                 url, api = dest.as_uri(), None
-            webview.create_window(
+            shown = webview.create_window(
                 title or "SlowBooks Pro 2026", url, js_api=api, zoomable=True
             )
+            if api is not None:
+                api._window = shown
         except Exception as exc:
             return {"success": False, "error": str(exc)}
-        result = {"success": True, "path": str(dest)}
-        if note:
-            result["note"] = note
-        return result
+        return {"success": True, "viewing": True}
 
     def print_document_pdf(
         self, title: str, base64_data: str, folder: str = ""
@@ -1622,11 +1730,21 @@ class PickerApi:
             data = base64.b64decode(base64_data)
             given = Path(str(title or ""))
             suffix = given.suffix if given.suffix else ".txt"
-            dest, note = _save_report(
-                _safe_temp_filename(given.stem, suffix),
-                data,
-                _given_folder(folder) or "Reports",
-            )
+            name = _safe_temp_filename(given.stem, suffix)
+            note = None
+            # John's build: ask where, with the Mac's Save panel, opened on
+            # the last folder used; Documents/SlowBooks Pro only without a
+            # window to ask from
+            window = self._window or _any_window()
+            if window is not None:
+                dest = _save_dialog(window, name)
+                if dest is None:
+                    return {"success": False, "cancelled": True}
+                dest.write_bytes(data)
+            else:
+                dest, note = _save_report(
+                    name, data, _given_folder(folder) or "Reports"
+                )
         except Exception as exc:
             return {"success": False, "error": str(exc)}
         result = {"success": True, "path": str(dest)}

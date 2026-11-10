@@ -68,25 +68,32 @@ def _open(title):
     ],
 )
 def test_a_saved_pdf_is_named_once_and_filed_by_kind(home, title, saved):
+    """John's build: a PDF is shown, not saved. It is written, under the
+    same name, to the app's own viewing folder, and nothing lands in
+    Documents/SlowBooks Pro until the user presses Save… in the viewer."""
     root, windows = home
     result = _open(title)
-    assert result["success"], result
-    expected = root / "Documents" / "SlowBooks Pro" / saved
-    assert Path(result["path"]) == expected
-    assert expected.read_bytes() == b"%PDF-1.7 test"
-    assert "-pdf" not in expected.name
+    assert result == {"success": True, "viewing": True}, result
+    [shown] = (root.parent / "data" / "viewing").glob("*/*")
+    assert shown.name == Path(saved).name
+    assert shown.read_bytes() == b"%PDF-1.7 test"
+    assert "-pdf" not in shown.name
+    assert not (root / "Documents" / "SlowBooks Pro").exists()
     # the window shows it under the viewer's toolbar (test_desktop_pdf_viewer)
     viewer = Path(url2pathname(urlparse(windows[0][1]).path))
-    assert f'<iframe src="{expected.as_uri()}"' in viewer.read_text(encoding="utf-8")
+    assert f'<iframe src="{shown.as_uri()}"' in viewer.read_text(encoding="utf-8")
 
 
 def test_the_show_in_folder_bridge_accepts_the_documents_folders(home, monkeypatch):
     import desktop_launcher
 
     monkeypatch.setattr(desktop_launcher.subprocess, "Popen", lambda *a, **k: None)
-    result = _open("Invoice_1002.pdf")
+    root, _ = home
+    saved = root / "Documents" / "SlowBooks Pro" / "Documents" / "Invoice_1002.pdf"
+    saved.parent.mkdir(parents=True)
+    saved.write_bytes(b"%PDF")
     api = desktop_launcher.PickerApi(3001)
-    assert api.reveal_path(result["path"]) == {"success": True}
+    assert api.reveal_path(str(saved)) == {"success": True}
     fallback = desktop_launcher._fallback_reports_dir("Documents") / "Invoice_1.pdf"
     fallback.parent.mkdir(parents=True)
     fallback.write_bytes(b"%PDF")

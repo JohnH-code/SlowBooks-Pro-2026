@@ -141,6 +141,8 @@
             } else if (typeof toast === 'function') {
                 toast(message);
             }
+        } else if (result && result.cancelled) {
+            // the Save panel was dismissed: nothing to say (John's build)
         } else if (typeof toast === 'function') {
             toast('Could not save the file: ' + ((result && result.error) || 'unknown error'), 'error');
         }
@@ -342,7 +344,7 @@
                         toast(message);
                     }
                 } else if (result && result.error && typeof toast === 'function') {
-                    toast('Could not save the PDF: ' + result.error, 'error');
+                    toast('Could not open the PDF: ' + result.error, 'error');
                 }
             } else {
                 bridgeMissing('save the PDF');

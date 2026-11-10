@@ -1,8 +1,9 @@
 """The desktop app's PDF window has Open in <the PDF app> and Show in folder
 (explore 2.17.3 integration, I23; macbase1 F24).
 
-Save PDF writes the file to Documents/SlowBooks Pro/{Documents|Reports}
-and shows it in a window of its own, which had no Save or Print on macOS
+Save PDF wrote the file to Documents/SlowBooks Pro/{Documents|Reports}
+(John's build: it is now only shown, from the app's data folder, and Save…
+keeps a copy where the user chooses) and showed it in a window of its own, which had no Save or Print on macOS
 (Cmd+S did nothing); only a toast in the main window said where the file
 was. The window now shows the PDF under a toolbar: Open in <the program the
 system opens a PDF with> — Preview, Edge, Acrobat: it has Print and Save —
@@ -138,7 +139,12 @@ def test_show_in_folder_shows_the_windows_file(home, launched, monkeypatch):
 
 def test_the_bridge_takes_no_path_from_the_page():
     public = [n for n in vars(dl.DocumentViewerApi) if not n.startswith("_")]
-    assert sorted(public) == ["open_in_default_app", "print_document", "show_in_folder"]
+    assert sorted(public) == [
+        "open_in_default_app",
+        "print_document",
+        "save_copy",
+        "show_in_folder",
+    ]
     for name in public:
         code = getattr(dl.DocumentViewerApi, name).__code__
         assert code.co_argcount == 1, name  # self only
@@ -170,8 +176,8 @@ def _page(window):
 
 def test_the_pdf_window_carries_the_toolbar(home, windows, monkeypatch):
     monkeypatch.setattr(dl, "_default_pdf_app", lambda pdf: "Preview")
-    result = _open_pdf("Invoice_1002.pdf")
-    saved = Path(result["path"])
+    assert _open_pdf("Invoice_1002.pdf") == {"success": True, "viewing": True}
+    [saved] = (home.parent / "data" / "viewing").glob("*/Invoice_1002.pdf")
     [window] = windows
     args, kwargs = window
     assert args[0] == "Invoice_1002.pdf"
@@ -180,9 +186,10 @@ def test_the_pdf_window_carries_the_toolbar(home, windows, monkeypatch):
     page = _page(window)
     assert f'<iframe src="{saved.as_uri()}"' in page
     assert ">Open in Preview</button>" in page
-    assert ">Show in folder</button>" in page
-    assert "call('open_in_default_app')" in page and "call('show_in_folder')" in page
-    assert f"Saved in {saved.parent}" in page
+    # John's build: shown, not saved — Save… keeps a copy where you choose
+    assert ">Save…</button>" in page and ">Show in folder</button>" not in page
+    assert "call('open_in_default_app')" in page and "api.save_copy()" in page
+    assert "Not saved" in page
     # the window's bridge is bound to the file it shows
     api = kwargs["js_api"]
     assert isinstance(api, dl.DocumentViewerApi)
@@ -209,9 +216,10 @@ def test_without_a_viewer_page_the_pdf_still_opens(home, windows, monkeypatch):
         raise PermissionError("read-only data folder")
 
     monkeypatch.setattr(dl, "_write_viewer", refused)
-    result = _open_pdf("Invoice_1002.pdf")
+    _open_pdf("Invoice_1002.pdf")
     [(args, kwargs)] = windows
-    assert args[1] == Path(result["path"]).as_uri()
+    [shown] = (home.parent / "data" / "viewing").glob("*/Invoice_1002.pdf")
+    assert args[1] == shown.as_uri()
     assert kwargs["js_api"] is None
 
 
@@ -248,16 +256,16 @@ def test_the_toolbar_works(tmp_path):
     got = json.loads(out.stdout)
     assert got["before_ready"] == [True, True]  # until the bridge is there
     assert got["after_ready"] == [False, False]
-    assert got["note_after_show"] == ""
+    assert got["note_after_show"] == "Saved to /Users/j/Documents/x.pdf"
     assert got["note_after_open"] == "No app opens PDFs on this computer."
     assert got["prevented"] == 2  # Cmd+P and Cmd+S, not Cmd+X
     assert got["print_ready"]
-    # Cmd+P prints; Cmd+S opens the PDF app (to save a copy)
+    # Cmd+P prints; Cmd+S is Save… (John's build)
     assert got["calls"] == [
-        "show_in_folder",
+        "save_copy",
         "open_in_default_app",
         "print_document",
-        "open_in_default_app",
+        "save_copy",
     ]
 
 
@@ -284,29 +292,78 @@ def test_print_shows_the_print_dialog(home, launched, monkeypatch):
     assert launched[-1][:3] == ["open", "-a", "Preview"]
 
 
-def test_an_attachment_is_saved_with_the_documents(home, windows):
-    """A file someone attached (a W-4, a receipt) is a document, whatever its
-    own name: it went to .../Reports beside the P&L (macbase1, 2.18.0 round
-    6) while invoices go to .../Documents."""
+def test_an_attachment_is_shown_and_saved_only_where_asked(home, windows, monkeypatch):
+    """John's build: an attachment opened as a PDF is shown from the viewing
+    folder like any other; a file saved from the page goes where the Save
+    panel says, and without a window to ask from, to .../Documents as
+    before."""
     pdf = base64.b64encode(b"%PDF-1.7 w4").decode()
     got = dl.PickerApi(3001).open_document_pdf("W-4.pdf", pdf, "Documents")
-    assert (
-        Path(got["path"]).parent == home / "Documents" / "SlowBooks Pro" / "Documents"
-    )
+    assert got == {"success": True, "viewing": True}
+    assert list((home.parent / "data" / "viewing").glob("*/W-4.pdf"))
+    assert not (home / "Documents" / "SlowBooks Pro").exists()
+
+    monkeypatch.setattr(dl, "_any_window", lambda: None)
     saved = dl.PickerApi(3001).save_document_file(
         "receipt.jpg", base64.b64encode(b"JPEG").decode(), "Documents"
     )
     assert (
         Path(saved["path"]).parent == home / "Documents" / "SlowBooks Pro" / "Documents"
     )
-    # anything else is sorted as before, and a folder the app doesn't save
-    # into is not taken from the page
-    report = dl.PickerApi(3001).open_document_pdf("Profit_and_Loss.pdf", pdf)
-    assert Path(report["path"]).parent.name == "Reports"
     export = dl.PickerApi(3001).save_document_file(
         "customers.csv", base64.b64encode(b"Name").decode(), "../../elsewhere"
     )
     assert Path(export["path"]).parent.name == "Reports"
+
+
+class _Window:
+    def __init__(self, answer):
+        self.answer, self.asked = answer, []
+
+    def create_file_dialog(self, kind, **kw):
+        self.asked.append(kw)
+        return self.answer
+
+
+@pytest.fixture
+def save_panel(monkeypatch):
+    monkeypatch.setitem(sys.modules, "webview", types.SimpleNamespace(SAVE_DIALOG=30))
+
+
+def test_save_copies_the_pdf_where_the_user_chooses(home, save_panel, tmp_path):
+    shown = dl._write_for_viewing("Invoice_1002.pdf", b"%PDF-1.7 inv")
+    folder = tmp_path / "Clients"
+    folder.mkdir()
+    api = dl.DocumentViewerApi(shown)
+    api._window = _Window([str(folder / "Invoice 1002")])
+    got = api.save_copy()
+    assert got == {"success": True, "path": str(folder / "Invoice 1002.pdf")}
+    assert (folder / "Invoice 1002.pdf").read_bytes() == b"%PDF-1.7 inv"
+    # the panel opened on Documents, under the PDF's own name
+    assert api._window.asked == [
+        {"directory": str(home / "Documents"), "save_filename": "Invoice_1002.pdf"}
+    ]
+    # and next time it opens on the folder used last
+    api._window = _Window(None)
+    assert api.save_copy() == {"success": False, "cancelled": True}
+    assert api._window.asked[0]["directory"] == str(folder)
+
+
+def test_a_dismissed_save_panel_saves_nothing(home, save_panel, monkeypatch):
+    monkeypatch.setattr(dl, "_any_window", lambda: _Window(None))
+    got = dl.PickerApi(3001).save_document_file(
+        "customers.csv", base64.b64encode(b"Name").decode()
+    )
+    assert got == {"success": False, "cancelled": True}
+    assert not (home / "Documents" / "SlowBooks Pro").exists()
+
+
+def test_old_viewing_copies_are_cleared(home):
+    first = dl._write_for_viewing("a.pdf", b"%PDF")
+    os.utime(first.parent, (0, 0))
+    dl._write_for_viewing("b.pdf", b"%PDF")
+    assert not first.exists()
+    assert [p.name for p in (home.parent / "data" / "viewing").glob("*/*")] == ["b.pdf"]
 
 
 def test_print_keeps_no_copy_in_the_users_folders(
