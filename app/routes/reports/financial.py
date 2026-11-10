@@ -2939,7 +2939,7 @@ def _account_transactions_section(data: dict, t, numbered: bool = True) -> dict:
                     e.get("date", ""),
                     (e.get("payee") or "")[:40],
                     (
-                        (e.get("description") or "")
+                        (e.get("memo") or e.get("description") or "")
                         + (" (void)" if e.get("voided") else "")
                     )[:60],
                     _money(e["debit"]) if e.get("debit") else "",
@@ -2975,7 +2975,7 @@ def _account_transactions_section(data: dict, t, numbered: bool = True) -> dict:
     return {
         "title": f"Account detail — {head}",
         "period": period,
-        "columns": ["Date", "Payee", "Description", "Debit", "Credit", "Running"],
+        "columns": ["Date", "Payee", "Memo", "Debit", "Credit", "Running"],
         "rows": rows,
         "note": data.get("basis_note"),
     }

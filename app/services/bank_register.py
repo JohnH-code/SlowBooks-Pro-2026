@@ -536,6 +536,17 @@ def account_register(
                     and tl.description != payees.get(txn.id, "")
                     else (txn.description or tl.description or "")
                 ),
+                # the line's own memo, as QuickBooks shows it
+                # on an account's drill-down ("Fund quarterly tax" rather than
+                # "Expense: Harbor Supply"); "" when the line has none or
+                # it only repeats the payee or the description
+                "memo": (
+                    tl.description
+                    if tl.description
+                    and tl.description
+                    not in (payees.get(txn.id, ""), txn.description or "")
+                    else ""
+                ),
                 "payee": payees.get(txn.id, ""),
                 "reference": refs.get(txn.id, ""),
                 "debit": float(dr),

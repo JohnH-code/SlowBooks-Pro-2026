@@ -763,7 +763,7 @@ const ReportsPage = {
                     <td>${formatDate(e.date)}</td>
                     <td>${escapeHtml(e.payee || '')}</td>
                     <td>${escapeHtml(e.reference || '')}</td>
-                    <td>${escapeHtml(e.description || '')}</td>
+                    <td>${escapeHtml(e.memo || e.description || '')}</td>
                     <td>${src}${e.voided ? ' <span class="badge badge-void" style="text-decoration:none;">void</span>' : ''}${TxnEdit.button(e)}</td>
                     <td class="amount">${e.debit > 0 ? formatCurrency(e.debit) : ''}</td>
                     <td class="amount">${e.credit > 0 ? formatCurrency(e.credit) : ''}</td>
@@ -788,7 +788,7 @@ const ReportsPage = {
                 </p>${ReportsPage._basisNote(data)}
                 <div class="table-container"><table>
                     <thead><tr>
-                        <th scope="col">Date</th><th scope="col">Payee</th><th scope="col">Ref</th><th scope="col">Description</th><th scope="col">Source</th>
+                        <th scope="col">Date</th><th scope="col">Payee</th><th scope="col">Ref</th><th scope="col">Memo</th><th scope="col">Source</th>
                         <th scope="col" class="amount">Debit</th><th scope="col" class="amount">Credit</th><th scope="col" class="amount">Running</th>
                         <th scope="col" aria-label="Cleared" title="✓ cleared · R reconciled">✓</th>
                     </tr></thead>
