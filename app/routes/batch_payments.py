@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.schemas.common import StrictModel
+from app.schemas.common import StrictModel, WholeCents
 from typing import Optional
 
 from app.database import get_db
@@ -22,6 +22,7 @@ from app.services.accounting import (
 )
 from app.services import cash_basis
 from app.services.closing_date import check_closing_date
+from app.services.undeposited_funds import refuse_inactive_deposit_account
 
 router = APIRouter(prefix="/api/batch-payments", tags=["batch_payments"])
 
@@ -29,7 +30,8 @@ router = APIRouter(prefix="/api/batch-payments", tags=["batch_payments"])
 class BatchAllocation(StrictModel):
     customer_id: int
     invoice_id: int
-    amount: float
+    # Whole cents only (#747), judged on the decimal sent before the float.
+    amount: WholeCents("An allocation amount", float)
 
 
 class BatchPaymentCreate(StrictModel):
@@ -63,6 +65,8 @@ def create_batch_payment(data: BatchPaymentCreate, db: Session = Depends(get_db)
 
     if not data.allocations:
         raise HTTPException(status_code=400, detail="No allocations provided")
+    # not into an account deactivated in the chart (#741)
+    refuse_inactive_deposit_account(db, data.deposit_to_account_id)
     if any(Decimal(str(a.amount)) <= 0 for a in data.allocations):
         raise HTTPException(
             status_code=400, detail="Allocation amounts must be positive"

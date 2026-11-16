@@ -17,7 +17,9 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.accounts import Account
 from app.models.contacts import Vendor
+from app.models.items import Item
 from app.models.memorized import (
     KIND_BILL,
     KIND_EXPENSE,
@@ -39,6 +41,7 @@ from app.schemas.memorized import (
 from app.services import scheduler
 from app.services.accounting import compute_line_totals
 from app.services.payment_terms import picked_term_id, retie
+from app.services.purchase_posting import _line_label, refuse_control_account
 from app.services.memorized_service import (
     OccurrenceTaken,
     amount_of,
@@ -84,14 +87,26 @@ def _response(
     return resp
 
 
-def _check_with_books(db: Session, data: MemorizedCreate) -> None:
+def _check_with_books(
+    db: Session, data: MemorizedCreate, kept_accounts: frozenset = frozenset()
+) -> None:
     """What the schema cannot know: the vendor exists, a bill adds up to
     more than $0.00 (a template that did not made $0.00 documents, as
-    recurring invoices once did), a journal entry's accounts and cost
-    types exist."""
+    recurring invoices once did), a bill line posts to no control (#785;
+    `kept_accounts`, an edit's, are the ones the template's lines were
+    already saved on), a journal entry's accounts and cost types exist."""
     if data.kind == KIND_BILL:
         if not db.query(Vendor).filter(Vendor.id == data.vendor_id).first():
             raise HTTPException(status_code=404, detail="Vendor not found")
+        for n, ln in enumerate(data.lines, 1):
+            if not ln.account_id or ln.account_id in kept_accounts:
+                continue
+            item = db.get(Item, ln.item_id) if ln.item_id else None
+            if item is not None and item.track_inventory:
+                continue  # a stocked item posts to Inventory, as on a bill
+            acct = db.get(Account, ln.account_id)
+            if acct is not None:
+                refuse_control_account(acct, _line_label(n, ln.description))
         lines = [ln.as_bill_line() for ln in data.lines]
         if compute_line_totals(lines, data.tax_rate)[2] <= 0:
             raise HTTPException(
@@ -173,6 +188,7 @@ def _write_lines(db: Session, mem: MemorizedTransaction, lines) -> None:
                 item_id=line.item_id if mem.kind == KIND_BILL else None,
                 quantity=line.quantity if mem.kind == KIND_BILL else None,
                 rate=line.rate if mem.kind == KIND_BILL else None,
+                use_tax=line.use_tax if mem.kind == KIND_BILL else None,
                 debit=line.debit if mem.kind in (KIND_JOURNAL, KIND_EXPENSE) else None,
                 credit=line.credit if mem.kind == KIND_JOURNAL else None,
                 tax_code=line.tax_code if mem.kind == KIND_EXPENSE else None,
@@ -335,6 +351,7 @@ def update_memorized(mem_id: int, data: MemorizedUpdate, db: Session = Depends(g
                 "item_id": ln.item_id,
                 "quantity": None if ln.quantity is None else float(ln.quantity),
                 "rate": None if ln.rate is None else float(ln.rate),
+                "use_tax": ln.use_tax,
                 "debit": ln.debit or 0,
                 "credit": ln.credit or 0,
                 "tax_code": ln.tax_code,
@@ -365,7 +382,9 @@ def update_memorized(mem_id: int, data: MemorizedUpdate, db: Session = Depends(g
         ) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    _check_with_books(db, checked)
+    _check_with_books(
+        db, checked, frozenset(ln.account_id for ln in mem.lines if ln.account_id)
+    )
 
     terms_before = mem.terms
     for key in _HEADER_FIELDS:

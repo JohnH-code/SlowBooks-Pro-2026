@@ -14,14 +14,20 @@
  * a total, and $0.00 documents were saved (2.17.3 exploratory, W-M1 / F14).
  */
 const SalesLines = {
-    // Half up to the cent. Shifting by exponent avoids binary drift:
-    // 1.005 * 100 is 100.49999... in floating point, Number('1.005e2') is 100.5.
+    // To the cent, half away from zero, as the server's _q rounds: -2.005
+    // is -2.01, never -2.00. The size is rounded and the sign put back, so a
+    // negative half goes away from zero (Math.round(-200.5) is -200). The
+    // value is read to 15 significant digits, all a double holds, and the
+    // point is moved in that decimal text rather than by multiplying: 1.005
+    // * 100 is 100.49999... in floating point, and 0.3 * 2.15 is
+    // 0.6449999999999999, which is 0.645 to 15 digits and so $0.65 (#783).
     cents(x) {
         const n = Number(x) || 0;
-        const a = Math.abs(n);
-        const shifted = Number(`${a}e2`);
-        const r = Number.isFinite(shifted) ? Math.round(shifted) : Math.round(a * 100);
-        return (n < 0 ? -1 : 1) * Number(`${r}e-2`);
+        if (!Number.isFinite(n)) return n;
+        const [digits, exp] = Math.abs(n).toPrecision(15).split('e');
+        const r = Math.round(Number(`${digits}e${Number(exp || 0) + 2}`));
+        const back = Number(`${r}e-2`); // NaN past 1e21, where r's text has an exponent
+        return (n < 0 && r ? -1 : 1) * (Number.isFinite(back) ? back : r / 100);
     },
 
     // Fill a line from the item picked in its .line-item select: description,
@@ -303,6 +309,13 @@ const InvoicesPage = {
             `<tr><td>${escapeHtml(l.description || '')}</td><td class="amount">${l.quantity}</td>
              <td class="amount">${SalesLines.rate(l.rate, inv.currency)}</td><td class="amount">${money(l.amount)}</td></tr>`
         ).join('');
+        // A pay application that only releases retainage posts no lines (#751):
+        // name the release, and drop the $0.00 subtotal, tax and total rows.
+        const releaseOnly = !!inv.release_only;  // the server's one test of it
+        if (releaseOnly) {
+            linesHtml = `<tr><td>Retainage release${inv.pay_application_number ? `, ${escapeHtml(inv.pay_application_number)}` : ''}</td><td class="amount">1</td>
+             <td class="amount">${money(inv.retainage_released)}</td><td class="amount">${money(inv.retainage_released)}</td></tr>`;
+        }
 
         openModal(`${T('Invoice')} #${inv.invoice_number}`, `
             ${InvoicesPage.logoOptionHtml(settings)}
@@ -320,12 +333,12 @@ const InvoicesPage = {
                 <tbody>${linesHtml}</tbody>
             </table></div>
             <div class="invoice-totals">
-                <div class="total-row"><span class="label">Subtotal</span><span class="value">${money(inv.subtotal)}</span></div>
+                ${releaseOnly ? '' : `<div class="total-row"><span class="label">Subtotal</span><span class="value">${money(inv.subtotal)}</span></div>
                 <div class="total-row"><span class="label">Tax</span><span class="value">${money(inv.tax_amount)}</span></div>
-                <div class="total-row grand-total"><span class="label">Total</span><span class="value">${money(inv.total)}</span></div>
+                <div class="total-row grand-total"><span class="label">Total</span><span class="value">${money(inv.total)}</span></div>`}
                 ${Number(inv.retainage_held) ? `<div class="total-row"><span class="label">Retainage withheld this period</span><span class="value">-${money(inv.retainage_held)}</span></div>` : ''}
-                ${Number(inv.retainage_released) ? `<div class="total-row"><span class="label">Retainage released</span><span class="value">${money(inv.retainage_released)}</span></div>` : ''}
-                ${(Number(inv.retainage_held) || Number(inv.retainage_released)) ? `<div class="total-row"><span class="label">Current payment due</span><span class="value">${money((Number(inv.total) - Number(inv.retainage_held) + Number(inv.retainage_released)).toFixed(2))}</span></div>` : ''}
+                ${Number(inv.retainage_released) && !releaseOnly ? `<div class="total-row"><span class="label">Retainage released</span><span class="value">${money(inv.retainage_released)}</span></div>` : ''}
+                ${(Number(inv.retainage_held) || Number(inv.retainage_released)) && !(releaseOnly && inv.status === 'void') ? `<div class="total-row"><span class="label">Current payment due</span><span class="value">${money((Number(inv.total) - Number(inv.retainage_held) + Number(inv.retainage_released)).toFixed(2))}</span></div>` : ''}
                 <div class="total-row"><span class="label">Paid</span><span class="value">${money(inv.amount_paid)}</span></div>
                 <div class="total-row grand-total"><span class="label">Balance Due</span><span class="value">${money(inv.balance_due)}</span></div>
             </div>

@@ -13,6 +13,10 @@ from app.models.change_orders import (  # noqa: F401 — registers the tables
     ChangeOrder,
     ChangeOrderLine,
 )
+from app.models.field_tickets import (  # noqa: F401 — registers the tables
+    FieldTicket,
+    FieldTicketLine,
+)
 from app.models.preferences import UserPreference  # noqa: F401 — registers the table
 from app.models.cost_codes import CostCode  # noqa: F401 — registers the table
 from app.models.job_costing import (  # noqa: F401 — registers the tables
@@ -222,3 +226,9 @@ from app.models.pay_applications import PayApplication  # noqa: E402,F401
 from app.models.pay_applications import PayApplicationLine  # noqa: E402,F401
 from app.models.lien_waivers import LienWaiver  # noqa: E402,F401
 from app.models.job_deposits import JobDeposit  # noqa: E402,F401
+from app.models.collections import (  # noqa: F401 — registers the tables
+    CustomerStatement,
+    InvoiceReminder,
+    InvoiceReminderRule,
+)
+from app.models.bank_check_details import BankCheckDetails  # noqa: E402,F401

@@ -94,11 +94,15 @@ const ExpensesPage = {
         await Nonprofit.loadFunds();
         // Expense and cost-of-goods accounts: materials are bought against
         // 5100 Materials Cost as often as against an expense (W-L18).
-        const expenseAccts = PurchaseAccounts.filter(accounts);
-        // A cheque can go to any account, as QuickBooks' Write Cheques
-        // allows: a loan, an advance, a card it pays off. The expense and
-        // cost-of-goods accounts come first, the rest under Other.
-        ExpensesPage._expenseAccounts = expenseAccts.concat(accounts.filter(a => !expenseAccts.includes(a) && a.is_active !== false));
+        const expenseAccts = PurchaseAccounts.withBalanceSheet(accounts);  // and the balance-sheet accounts (#766)
+        // John's build: a cheque can go to any account, as QuickBooks' Write
+        // Cheques allows: a loan, an advance, a card it pays off. The expense
+        // and cost-of-goods accounts come first, the rest under Other; not
+        // the four control accounts the server refuses on a purchase line
+        // (#785: Accounts Receivable, Accounts Payable, Undeposited Funds,
+        // Inventory).
+        const refused = a => a.is_control && ['1100', '2000', '1200', '1300'].includes(String(a.account_number || ''));
+        ExpensesPage._expenseAccounts = expenseAccts.concat(accounts.filter(a => !expenseAccts.includes(a) && a.is_active !== false && !refused(a)));
         const paidFrom = ExpensesPage.paidFromAccounts(accounts);
         const acctOpt = a => `<option value="${a.id}">${accountLabel(a)}</option>`;
         const checking = opts.card
@@ -181,6 +185,12 @@ const ExpensesPage = {
             vendor.value = ExpensesPage.PAYEE;
         }
         $('#expense-lines').innerHTML = '';
+        // Keep every saved line's account in the picker, even one outside the
+        // active Expense/COGS list (a bank, liability or equity split such as
+        // mortgage principal or escrow, or an account since made inactive),
+        // so Void and Replace preselects it (#745).
+        ExpensesPage._expenseAccounts = PurchaseAccounts.withBalanceSheet(
+            ExpensesPage._accounts, ...(x.lines || []).map(l => l.account_id));
         (x.lines || []).forEach(l => ExpensesPage.addLine(l));
         if (!(x.lines || []).length) ExpensesPage.addLine();
         ExpensesPage.recalc();

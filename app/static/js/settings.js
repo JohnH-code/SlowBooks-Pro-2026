@@ -141,6 +141,64 @@ const SettingsPage = {
         if (box && fields) fields.hidden = !box.checked;
     },
 
+    // Make Deposits' destination (#734, #735): a labelled picker of the
+    // chart's active bank accounts, blank for none (the list's first, as
+    // before), and a labelled box per bank account for the list it offers,
+    // none ticked for every one. A saved id that is no longer an active bank
+    // account stays selected (or ticked) and named, so Save says what is
+    // wrong instead of dropping it. String concatenation, like
+    // _payrollAccountsHtml.
+    _depositAccountsHtml(s, accounts) {
+        const all = Array.isArray(accounts) ? accounts : [];
+        const banks = all.filter(a => a.bank_kind === 'bank' && a.is_active !== false);
+        const sel = String(s.default_deposit_account_id || '');
+        let h = '<div class="form-grid">';
+        h += '<div class="form-group full-width"><label for="settings-default-deposit-account">Default deposit account</label>';
+        h += '<select name="default_deposit_account_id" id="settings-default-deposit-account" data-no-search aria-describedby="settings-default-deposit-account-help">';
+        h += '<option value=""' + (sel ? '' : ' selected') + '>None: the first bank account on the list</option>';
+        let matched = false;
+        for (const a of banks) {
+            const isSel = String(a.id) === sel;
+            if (isSel) matched = true;
+            h += '<option value="' + Number(a.id) + '"' + (isSel ? ' selected' : '') + '>' + escapeHtml(accountWords(a)) + '</option>';
+        }
+        if (sel && !matched) {
+            const gone = all.find(a => String(a.id) === sel);
+            h += '<option value="' + escapeHtml(sel) + '" selected>(unavailable) ' + escapeHtml(gone ? accountWords(gone) : '#' + sel) + '</option>';
+        }
+        h += '</select>';
+        h += '<div id="settings-default-deposit-account-help" style="font-size:10px; color:var(--text-muted); margin-top:4px;">';
+        h += 'Make Deposits opens on this account. On Receive Payment and Enter Sales Receipt it is the first bank account under Undeposited Funds in Deposit To, which still starts on Undeposited Funds. When accounts are ticked below, it must be one of them.';
+        h += '</div></div>';
+        let chosen = [];
+        try { chosen = JSON.parse(s.deposit_account_ids || '[]'); } catch (err) { chosen = []; }
+        chosen = (Array.isArray(chosen) ? chosen : []).map(String);
+        const ticked = new Set(chosen);
+        h += '<fieldset class="form-group full-width" aria-describedby="settings-deposit-accounts-help" style="border:0; padding:0; margin:0;">';
+        h += '<legend style="font-weight:700; font-size:11px; padding:0;">Deposit into these accounts</legend>';
+        const box = (id, words) => '<label style="display:block; font-weight:normal;">'
+            + '<input type="checkbox" name="deposit-account:' + escapeHtml(id) + '" data-deposit-account="' + escapeHtml(id) + '"'
+            + (ticked.has(id) ? ' checked' : '') + ' style="width:auto; vertical-align:middle; margin-right:6px;">'
+            + escapeHtml(words) + '</label>';
+        for (const a of banks) h += box(String(Number(a.id)), accountWords(a));
+        for (const id of chosen) {
+            if (banks.some(a => String(a.id) === id)) continue;
+            const gone = all.find(a => String(a.id) === id);
+            h += box(id, '(unavailable) ' + (gone ? accountWords(gone) : '#' + id));
+        }
+        if (!banks.length && !chosen.length) h += '<div style="font-size:11px; color:var(--text-muted);">The chart has no active bank account.</div>';
+        h += '<div id="settings-deposit-accounts-help" style="font-size:10px; color:var(--text-muted); margin-top:4px;">';
+        h += 'Make Deposits, and Deposit To on Receive Payment and Enter Sales Receipt, offer only the accounts ticked here; none ticked offers every bank account. An account left off is still in the chart, its register and the reports, and a deposit already made into it keeps it.';
+        h += '</div></fieldset>';
+        h += '</div>';
+        return h;
+    },
+
+    // the ticked Deposit into these accounts boxes (#735), as the list to save
+    _depositAccountsToSave(boxes) {
+        return boxes.filter(b => b.checked).map(b => parseInt(b.getAttribute('data-deposit-account'), 10)).filter(n => n > 0);
+    },
+
     // Where a pay run posts (#620): one picker per piece, the seeded default
     // first and named ("Default (1000 Checking)"). The choices come from
     // GET /settings/payroll-accounts, filtered by the same rule the save
@@ -375,10 +433,12 @@ const SettingsPage = {
             SettingsPage.loadCompanyFile();
             SettingsPage.loadLegacyFiles();
             SettingsPage.loadEmailTemplates();
+            SettingsPage.loadReminderRules();
             SettingsPage.loadInvoiceMessages();
             if (Terms.isNonprofit()) SettingsPage.loadInvoiceMessages('giving_statement');
             SettingsPage.loadPaymentTerms();
             SettingsPage.loadAiConfig();
+            SettingsPage.loadCheckBankDetails();
             SettingsPage.loadClasses();
             SettingsPage.loadCostCodes();
             SettingsPage.loadCostTypes();
@@ -442,6 +502,12 @@ const SettingsPage = {
                         <div class="form-group full-width"><label for="bookkeeper-folder">Bookkeeper folder</label>
                             <input id="bookkeeper-folder" name="bookkeeper_folder" placeholder="e.g. ~/DATA/Alderella/Bookkeeper" aria-describedby="bookkeeper-folder-help" value="${escapeHtml(s.bookkeeper_folder || '')}">
                             <div id="bookkeeper-folder-help" style="font-size:10px; color:var(--text-muted); margin-top:4px;">Where the agent bookkeeper leaves what it prepared (its "To review" folder) for the Bookkeeper Inbox. Blank: no inbox.</div></div>
+                        ${s.company_type === 'construction' ? `<div class="form-group"><label for="company-license">Contractor license #</label>
+                            <input id="company-license" name="company_license" value="${escapeHtml(s.company_license || '')}">
+                            <div style="font-size:10px; color:var(--text-muted); margin-top:4px;">Printed in the header of the estimate PDF.</div></div>
+                        <div class="form-group full-width"><label for="estimate-terms">Default estimate terms, inclusions and exclusions</label>
+                            <textarea id="estimate-terms" name="estimate_terms" rows="5">${escapeHtml(s.estimate_terms || '')}</textarea>
+                            <div style="font-size:10px; color:var(--text-muted); margin-top:4px;">A new estimate starts with this text; edit it on any estimate. It prints above the acceptance block on the owner's PDF.</div></div>` : ''}
                         <div class="form-group full-width"><label for="company-type">Company Type</label>
                             <select id="company-type" name="company_type" data-prev="${s.company_type === 'nonprofit' ? 'nonprofit' : (s.company_type === 'construction' ? 'construction' : 'business')}" onchange="SettingsPage.changeCompanyType(this)">
                                 <option value="business" ${(s.company_type !== 'nonprofit' && s.company_type !== 'construction') ? 'selected' : ''}>Business</option>
@@ -523,6 +589,11 @@ const SettingsPage = {
                             <input name="default_tax_rate" type="number" min="0" max="100" step="0.0001"
                                 title="A percent from 0 to 100, up to four decimal places: 8.875 means 8.875%"
                                 value="${escapeHtml(SettingsPage._ratePercent(s.default_tax_rate))}"></div>
+                        ${s.company_type === 'construction' ? `<div class="form-group"><label for="use-tax-rate">Use tax rate (%)</label>
+                            <input id="use-tax-rate" name="use_tax_rate" type="number" min="0" max="100" step="0.0001"
+                                title="What material bills on a job whose contractor pays the tax accrue to Use Tax Payable. Blank: the default tax rate."
+                                placeholder="the default tax rate"
+                                value="${escapeHtml(s.use_tax_rate ? SettingsPage._ratePercent(s.use_tax_rate) : '')}"></div>` : ''}
                         <div class="form-group full-width"><label for="new-lines-taxable">New lines and items are taxable</label>
                             <select id="new-lines-taxable" name="new_lines_taxable" aria-describedby="new-lines-taxable-help">
                                 <option value="true" ${s.new_lines_taxable !== 'false' ? 'selected' : ''}>Yes: a new line's Tax box starts ticked, and a new item is taxable</option>
@@ -754,6 +825,14 @@ const SettingsPage = {
                     ${SettingsPage._payrollAccountsHtml(payrollAccounts)}
                 </div>
 
+                <div class="settings-section" data-group="connections" id="settings-deposits" role="group" aria-labelledby="settings-h-deposits">
+                    <h3 id="settings-h-deposits">Deposits</h3>
+                    <div style="font-size:10px; color:var(--text-muted); margin-bottom:8px;">
+                        Where Make Deposits puts the money. A deposit or a payment already saved keeps its own account.
+                    </div>
+                    ${SettingsPage._depositAccountsHtml(s, accounts)}
+                </div>
+
                 <div class="settings-section" data-group="connections" role="group" aria-labelledby="settings-h-online-payments">
                     <h3 id="settings-h-online-payments">Online Payments</h3>
                     <div style="font-size:10px; color:var(--text-muted); margin-bottom:8px;">
@@ -890,6 +969,35 @@ const SettingsPage = {
                         <div class="form-group"><label>Grace Days</label>
                             <input name="late_fee_grace_days" type="number" min="0" step="1" value="${escapeHtml(s.late_fee_grace_days || '15')}"></div>
                     </div>
+                </div>
+
+                <div class="settings-section" data-group="sales" id="settings-collections" role="group" aria-labelledby="settings-h-collections">
+                    <h3 id="settings-h-collections">Collections</h3>
+                    <div style="font-size:10px; color:var(--text-muted); margin-bottom:8px;">
+                        Reminders go to a customer's email when an ${T('invoice')} is coming due or is overdue. Run them from the <a href="#/collections">Collections</a> page, or let SlowBooks Pro send them for you.
+                    </div>
+                    <div class="form-grid">
+                        <div class="form-group"><label for="invoice-reminders-auto">Send reminders automatically</label>
+                            <select name="invoice_reminders_auto" id="invoice-reminders-auto" data-no-search onchange="SettingsPage.previewAutoReminders(this)">
+                                <option value="false" ${s.invoice_reminders_auto !== 'true' ? 'selected' : ''}>Off</option>
+                                <option value="true" ${s.invoice_reminders_auto === 'true' ? 'selected' : ''}>On</option>
+                            </select>
+                            <div style="font-size:10px; color:var(--text-muted); margin-top:4px;">Once a day, when SlowBooks Pro is opened. Needs email set up.
+                                ${s.invoice_reminders_last_run ? `Last ran ${escapeHtml(formatDate(s.invoice_reminders_last_run))}.` : ''}</div></div>
+                        <div class="form-group"><label for="invoice-reminders-billed-sub-to">Remind about a sub-${T('customer').toLowerCase()} billed with its parent</label>
+                            <select name="invoice_reminders_billed_sub_to" id="invoice-reminders-billed-sub-to" data-no-search>
+                                <option value="property" ${(s.invoice_reminders_billed_sub_to || 'property') === 'property' ? 'selected' : ''}>The parent (whose account it is billed to)</option>
+                                <option value="tenant" ${s.invoice_reminders_billed_sub_to === 'tenant' ? 'selected' : ''}>The sub-${T('customer').toLowerCase()} itself</option>
+                                <option value="both" ${s.invoice_reminders_billed_sub_to === 'both' ? 'selected' : ''}>Both</option>
+                            </select>
+                            <div style="font-size:10px; color:var(--text-muted); margin-top:4px;">A tenant billed with its property, say. Whoever is written to must have an email and not be opted out.</div></div>
+                    </div>
+                    <h4 id="settings-h-reminder-rules" style="margin:12px 0 4px; font-size:12px;">Reminder rules</h4>
+                    <div style="font-size:10px; color:var(--text-muted); margin-bottom:8px;">
+                        Days from due: negative is before the due date, 0 is the day, positive is after. Each ${T('invoice')} gets one email per run: the latest rule it has reached.
+                        Placeholders: {{ customer_name }} {{ invoice_number }} {{ invoice_label }} {{ balance_due }} {{ due_date }} {{ days_overdue }} {{ company_name }}
+                    </div>
+                    <div id="reminder-rules-list"></div>
                 </div>
 
                 <div class="settings-section" data-group="email" role="group" aria-labelledby="settings-h-email-templates">
@@ -1062,7 +1170,7 @@ const SettingsPage = {
                             <div style="font-size:10px; color:var(--text-muted); margin-top:4px;">Pre-printed stock already carries the "Pay to the order of", memo and signature lines. Choose it to print only the values — payee, amount, amount in words, date and memo — in their places, with no labels, lines or borders. The two stubs are unchanged either way.</div>
                         </div>
                         <div class="form-group full-width"><label for="settings-check-position">Check Position</label>
-                            <select name="check_position" id="settings-check-position" aria-describedby="settings-check-position-help">
+                            <select name="check_position" id="settings-check-position" aria-describedby="settings-check-position-help" onchange="SettingsPage.checkFieldSizesFollowPosition(this.value)">
                                 <option value="bottom" ${s.check_position !== 'top' ? 'selected' : ''}>Check at the bottom (stub, stub, check)</option>
                                 <option value="top" ${s.check_position === 'top' ? 'selected' : ''}>Check on top (check, voucher, voucher)</option>
                             </select>
@@ -1076,9 +1184,45 @@ const SettingsPage = {
                             <input name="check_nudge_y_in" type="number" min="-0.5" max="0.5" step="0.01"
                                 title="Inches, -0.5 to 0.5, in 0.01 steps"
                                 value="${escapeHtml(s.check_nudge_y_in || '0')}"></div>
+                        ${SettingsPage._checkFieldLayoutHtml(s.check_field_layout, s.check_position)}
+                        <div class="form-group full-width">
+                            <div style="display:flex; align-items:center; gap:6px; font-size:12px;">
+                                <input type="checkbox" id="settings-check-blank-stock" name="check_blank_stock" value="true" data-bool aria-describedby="settings-check-blank-stock-help" style="width:auto; margin:0;" ${s.check_blank_stock === 'true' ? 'checked' : ''}>
+                                <label for="settings-check-blank-stock" style="font-weight:normal; margin:0;">Print on blank check stock</label>
+                            </div>
+                            <div id="settings-check-blank-stock-help" style="font-size:10px; color:var(--text-muted); margin-top:4px;">Prints everything a pre-printed check carries: the company logo, name and address, the bank's name and city, the check number and the MICR line with the routing, account and check numbers, taken from the bank account's details below. The labels, lines and borders print as on plain stock, and every field stays where it prints today. A bank reads the MICR line only when it is printed with MICR toner.</div>
+                            <div style="display:flex; align-items:center; gap:6px; font-size:12px; margin-top:6px;">
+                                <input type="checkbox" id="settings-check-micr-amount" name="check_micr_amount" value="true" data-bool aria-describedby="settings-check-micr-amount-help" style="width:auto; margin:0;" ${s.check_micr_amount === 'true' ? 'checked' : ''}>
+                                <label for="settings-check-micr-amount" style="font-weight:normal; margin:0;">Encode the amount in the MICR line</label>
+                            </div>
+                            <div id="settings-check-micr-amount-help" style="font-size:10px; color:var(--text-muted); margin-top:4px;">The amount field at the right end of the MICR line is normally encoded by the bank where the check is deposited. Turn this on to print it yourself, so the amount cannot be changed without it showing.</div>
+                        </div>
+                        <div class="form-group full-width" id="settings-check-bank-details" role="group" aria-labelledby="settings-check-bank-details-h">
+                            <div id="settings-check-bank-details-h" style="font-weight:bold; font-size:12px; margin-bottom:4px;">Bank account details for blank stock</div>
+                            <div style="font-size:10px; color:var(--text-muted); margin-bottom:6px;">Each bank account you write checks on keeps its own details. They are saved with their own button, apart from the settings above.</div>
+                            <div class="form-grid">
+                                <div class="form-group full-width"><label for="check-bank-account">Bank account</label>
+                                    <select id="check-bank-account" data-admin onchange="SettingsPage.loadCheckBankDetails()">${SettingsPage._checkBankOptions(accounts)}</select></div>
+                                <div class="form-group"><label for="check-bank-name">Bank name</label>
+                                    <input id="check-bank-name" data-admin maxlength="100" placeholder="First Prairie Bank"></div>
+                                <div class="form-group"><label for="check-bank-city">Bank city and state</label>
+                                    <input id="check-bank-city" data-admin maxlength="100" placeholder="Joliet, IL"></div>
+                                <div class="form-group"><label for="check-bank-routing">Routing number</label>
+                                    <input id="check-bank-routing" data-admin maxlength="9" inputmode="numeric" placeholder="9 digits"></div>
+                                <div class="form-group"><label for="check-bank-account-number">Account number</label>
+                                    <input id="check-bank-account-number" data-admin maxlength="17" inputmode="numeric" autocomplete="off" aria-describedby="check-bank-account-number-help">
+                                    <div id="check-bank-account-number-help" style="font-size:10px; color:var(--text-muted); margin-top:2px;"></div></div>
+                                <div class="form-group"><label for="check-bank-fraction">Fractional routing number (optional)</label>
+                                    <input id="check-bank-fraction" data-admin maxlength="30" placeholder="70-1234/719"></div>
+                                <div class="form-group full-width" data-write>
+                                    <!-- an administrator's save (the route sits under /api/settings): hidden from everyone else, like Remove logo -->
+                                    <button type="button" class="btn btn-sm btn-secondary" data-admin data-write onclick="SettingsPage.saveCheckBankDetails()">Save bank account details</button>
+                                </div>
+                            </div>
+                        </div>
                         <div class="form-group full-width">
                             <button type="button" class="btn btn-sm btn-secondary" onclick="SettingsPage.testPrintCheck()">Print a test check</button>
-                            <div style="font-size:10px; color:var(--text-muted); margin-top:4px;">Prints a sample check with placeholder values on plain paper. Hold it against your check stock to see how far to nudge the values left/right (horizontal) or up/down (vertical); a positive nudge moves them right and down. The test print uses the stock, check position and nudges as set here, saved or not.</div>
+                            <div style="font-size:10px; color:var(--text-muted); margin-top:4px;">Prints a sample check with placeholder values on plain paper. Hold it against your check stock to see how far to nudge the values left/right (horizontal) or up/down (vertical); a positive nudge moves them right and down. The test print uses the stock, check position, nudges, field layout and blank-stock choices as set here, saved or not; on blank stock it prints sample bank details, never a saved account's.</div>
                         </div>
                     </div>
                 </div>
@@ -1145,7 +1289,11 @@ const SettingsPage = {
                         change settings or restore a backup. Tick
                         <em>Can make backups</em> for a program that takes a backup
                         before it writes (an import tool); the token may then make,
-                        list and download this company's backups. A revoked token
+                        list and download this company's backups. A bookkeeper token
+                        can also be let <em>run payroll</em> (pay runs, tax forms,
+                        benefits, deductions, and employees added and edited, never
+                        deleted, with no portal logins, bank accounts or documents)
+                        or <em>import</em> (the migration imports). A revoked token
                         stays revoked: make a new one instead.
                     </p>
                     <div id="api-token-reveal" style="display:none; margin-bottom:12px; padding:10px; border:1px solid var(--qb-gold); border-radius:4px; background:rgba(224,158,36,0.08); font-size:12px;">
@@ -1160,14 +1308,20 @@ const SettingsPage = {
                         <div class="form-group"><label>Label</label>
                             <input id="token-new-label" autocomplete="off" placeholder="e.g. claude-code, receipt-service"></div>
                         <div class="form-group"><label>Role</label>
-                            <select id="token-new-role">
+                            <select id="token-new-role" onchange="SettingsPage.tokenGrantsFollowRole()">
                                 <option value="readonly">Read-only — reports and lookups</option>
                                 <option value="accountant">Accountant — reads everything, posts journal entries</option>
                                 <option value="bookkeeper">Bookkeeper — daily books, no admin</option>
                             </select></div>
                         <div class="form-group"><label style="font-weight:normal;">
-                            <input type="checkbox" id="token-new-backups" name="token_new_allow_backups" style="width:auto; vertical-align:middle; margin-right:6px;">
+                            <input type="checkbox" id="token-new-backups" style="width:auto; vertical-align:middle; margin-right:6px;">
                             Can make backups (make, list and download; never restore)</label></div>
+                        <div class="form-group"><label style="font-weight:normal;">
+                            <input type="checkbox" id="token-new-payroll" disabled style="width:auto; vertical-align:middle; margin-right:6px;">
+                            Can run payroll (bookkeeper only; no deletes, portal logins, bank accounts or documents)</label></div>
+                        <div class="form-group"><label style="font-weight:normal;">
+                            <input type="checkbox" id="token-new-imports" disabled style="width:auto; vertical-align:middle; margin-right:6px;">
+                            Can import (bookkeeper only; the migration imports)</label></div>
                     </div>
                     <button type="button" class="btn btn-primary" onclick="SettingsPage.createApiToken()">Create Token</button>
                 </div>
@@ -1452,7 +1606,9 @@ const SettingsPage = {
                     ? (st.desktop_key
                         ? 'Turning it on makes a recovery key, shown once, and your sign-in unlocks the books from then on.'
                         : 'A key is set, so encryption can be turned on.')
-                    : 'To turn it on, set COMPANY_FILE_ENCRYPTION_SECRET where SlowBooks Pro starts, then start it again.');
+                    : 'This is a server, so there is nobody at the window to unlock the file: to turn it on, set COMPANY_FILE_ENCRYPTION_SECRET '
+                      + 'in the server\'s .env file (C:\\ProgramData\\SlowBooksPro\\.env on a Windows server started with --serve-lan; the Docker .env otherwise), '
+                      + 'stop and start SlowBooks Pro, and come back here. The Encrypting the company file guide has the steps.');
             actions.innerHTML = `<button type="button" class="btn btn-primary" ${st.can_turn_on ? '' : 'disabled'} onclick="SettingsPage.confirmEncryption(true)">Turn on…</button>`;
         }
         SettingsPage._showSection(section, true);
@@ -1472,25 +1628,47 @@ const SettingsPage = {
     },
 
     _nameConfirmField(company) {
+        // The name to type sits under the box as text, not only as a
+        // placeholder that disappears, and the check below says when what
+        // was typed is not it yet (Discussion #750: a user saw a grey button
+        // and a field that "did nothing").
         return `<div class="form-group">
                     <label for="encryption-company-name">Company name</label>
                     <input type="text" id="encryption-company-name" name="company_name" autocomplete="off" required
-                        placeholder="${escapeHtml(company)}"
+                        placeholder="${escapeHtml(company)}" aria-describedby="encryption-name-help"
                         oninput="SettingsPage._encryptionFormCheck(this.form)">
+                    <div id="encryption-name-help" style="font-size:11px; color:var(--text-muted); margin-top:2px;">Exactly as Settings shows it: <strong>${escapeHtml(company)}</strong>.</div>
                 </div>`;
     },
 
     // Submit opens once the name matches and, where the form asks for it,
-    // the password is typed.
+    // the password is typed; the help line under the name says where it
+    // stands.
     _encryptionFormCheck(form) {
-        const named = form.company_name.value.trim().toLowerCase() === SettingsPage._encryptionName;
+        const typed = form.company_name.value.trim();
+        const named = typed.toLowerCase() === SettingsPage._encryptionName;
         const pw = form.querySelector('[name=password]');
+        const help = form.querySelector('#encryption-name-help');
+        if (help) {
+            const shown = `<strong>${escapeHtml(SettingsPage._encryptionCompany || '')}</strong>`;
+            if (!typed) {
+                help.style.color = 'var(--text-muted)';
+                help.innerHTML = `Exactly as Settings shows it: ${shown}.`;
+            } else if (named) {
+                help.style.color = 'var(--text-muted)';
+                help.innerHTML = 'Matches.';
+            } else {
+                help.style.color = 'var(--text-danger)';
+                help.innerHTML = `Not the same yet. Type it exactly as Settings shows it: ${shown}.`;
+            }
+        }
         form.querySelector('button[type=submit]').disabled = !(named && (!pw || pw.value.length > 0));
     },
 
     async confirmEncryption(enable) {
         const company = await SettingsPage._companyNameNow();
         SettingsPage._encryptionName = company.trim().toLowerCase();
+        SettingsPage._encryptionCompany = company.trim();
         const st = SettingsPage._companyFile || {};
         const desktopKey = enable && st.desktop_key;
         // Turn off proves the administrator the way Turn on does (the
@@ -1517,10 +1695,13 @@ const SettingsPage = {
                 <p style="margin:0 0 8px;">Nobody else should be using the company while this runs. Type the company's name to confirm.</p>
                 ${SettingsPage._nameConfirmField(company)}
                 ${asksPassword ? `<div class="form-group">
-                    <label for="encryption-password">Your password</label>
+                    <label for="encryption-password">Your sign-in password</label>
                     <input type="password" id="encryption-password" name="password" autocomplete="current-password" required
+                        aria-describedby="encryption-password-help"
                         oninput="SettingsPage._encryptionFormCheck(this.form)">
-                    ${desktopKey ? '<div style="font-size:11px; color:var(--text-muted); margin-top:2px;">The key is wrapped for it, so your sign-in unlocks the books.</div>' : ''}
+                    <div id="encryption-password-help" style="font-size:11px; color:var(--text-muted); margin-top:2px;">${desktopKey
+                        ? 'The password you signed in with, not a new one: SlowBooks Pro makes the recovery key for you and shows it once. Your sign-in unlocks the books from then on.'
+                        : 'The password you signed in with.'}</div>
                 </div>` : ''}
                 <div class="form-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -1713,8 +1894,11 @@ const SettingsPage = {
                 <td style="font-family:var(--font-mono); font-size:10px;">${escapeHtml(t.token_hint)}&hellip;</td>
                 <td>${escapeHtml(t.role)}${t.refused ? `<div style="font-size:10px;color:var(--text-danger)">no longer accepted: tokens can't be administrators. Revoke it and make a bookkeeper, accountant or read-only token (tick Can make backups if it makes backups). Settings, payroll and HR need an administrator signed in.</div>` : ''}</td>
                 <td>${t.is_active
-                    ? `<input type="checkbox" name="token-backups:${t.id}" aria-label="${escapeHtml(t.label)} can make backups" style="width:auto;" ${t.allow_backups ? 'checked' : ''} onchange="SettingsPage.updateApiToken(${t.id}, {allow_backups: this.checked})">`
+                    ? `<input type="checkbox" aria-label="${escapeHtml(t.label)} can make backups" style="width:auto;" ${t.allow_backups ? 'checked' : ''} onchange="SettingsPage.updateApiToken(${t.id}, {allow_backups: this.checked})">`
                     : (t.allow_backups ? 'Yes' : 'No')}</td>
+                ${['payroll', 'imports'].map(k => `<td>${t.is_active && t.role === 'bookkeeper'
+                    ? `<input type="checkbox" aria-label="${escapeHtml(t.label)} can ${k === 'payroll' ? 'run payroll' : 'import'}" style="width:auto;" ${t['allow_' + k] ? 'checked' : ''} onchange="SettingsPage.updateApiToken(${t.id}, {allow_${k}: this.checked})">`
+                    : (t['allow_' + k] ? 'Yes' : 'No')}</td>`).join('')}
                 <td>${t.last_used_at ? formatDate(t.last_used_at) : '—'}</td>
                 <td>${t.is_active
                     ? `<button type="button" class="btn btn-sm btn-secondary" onclick="if (confirm('Revoke this token? A revoked token stays revoked.')) SettingsPage.updateApiToken(${t.id}, {is_active: false})" aria-label="Revoke ${escapeHtml(t.label)}">Revoke</button>`
@@ -1722,10 +1906,22 @@ const SettingsPage = {
                 </td>
             </tr>`).join('');
             $('#api-token-list').innerHTML = `<div class="table-container"><table>
-                <thead><tr><th scope="col">Label</th><th scope="col">Token</th><th scope="col">Role</th><th scope="col">Backups</th><th scope="col">Last used</th><th scope="col"></th></tr></thead>
+                <thead><tr><th scope="col">Label</th><th scope="col">Token</th><th scope="col">Role</th><th scope="col">Backups</th><th scope="col">Payroll</th><th scope="col">Imports</th><th scope="col">Last used</th><th scope="col"></th></tr></thead>
                 <tbody>${rows}</tbody></table></div>`;
             SettingsPage._showSection(section, true);
         } catch (e) { /* non-admin or pre-upgrade server: section stays hidden */ }
+    },
+
+    // Payroll and imports are a bookkeeper token's only (#755): the boxes
+    // clear and lock for any other role, so the form can't ask for them.
+    tokenGrantsFollowRole() {
+        const book = $('#token-new-role').value === 'bookkeeper';
+        for (const id of ['#token-new-payroll', '#token-new-imports']) {
+            const box = $(id);
+            if (!box) continue;
+            box.disabled = !book;
+            if (!book) box.checked = false;
+        }
     },
 
     async createApiToken() {
@@ -1734,11 +1930,15 @@ const SettingsPage = {
                 label: $('#token-new-label').value.trim(),
                 role: $('#token-new-role').value,
                 allow_backups: $('#token-new-backups').checked,
+                allow_payroll: $('#token-new-payroll').checked,
+                allow_imports: $('#token-new-imports').checked,
             });
             $('#api-token-secret').textContent = created.token;
             $('#api-token-reveal').style.display = '';
             $('#token-new-label').value = '';
             $('#token-new-backups').checked = false;
+            $('#token-new-payroll').checked = false;
+            $('#token-new-imports').checked = false;
             toast('Token created — press Copy below, it will not be shown again');
             SettingsPage.loadApiTokens();
         } catch (err) { toast(err.message, 'error'); }
@@ -1938,7 +2138,7 @@ const SettingsPage = {
     async showProviderPayout(provider, label) {
         const accounts = await API.get('/accounts?bank=1&active_only=true').catch(() => []);
         const opts = (Array.isArray(accounts) ? accounts : [])
-            .map(a => `<option value="${a.id}">${escapeHtml(accountLabel(a))}</option>`).join('');
+            .map(a => `<option value="${a.id}">${accountLabel(a)}</option>`).join('');
         const today = new Date().toISOString().slice(0, 10);
         openModal(`Record ${escapeHtml(label)} payout`, `
             <form onsubmit="SettingsPage.submitProviderPayout(event, '${provider}')">
@@ -2004,6 +2204,12 @@ const SettingsPage = {
             const hidden = SettingsPage._hiddenMenuToSave(menuBoxes);
             data.hidden_menu = JSON.stringify(hidden);
             for (const key of Object.keys(data)) if (key.startsWith('show-menu:')) delete data[key];
+        }
+        // Deposit into these accounts (#735), as a list; the boxes are not form fields
+        const depositBoxes = typeof e.target.querySelectorAll === 'function' ? [...e.target.querySelectorAll('input[data-deposit-account]')] : [];
+        for (const key of Object.keys(data)) if (key.startsWith('deposit-account:')) delete data[key];
+        if (depositBoxes.length || 'default_deposit_account_id' in data) {
+            data.deposit_account_ids = JSON.stringify(SettingsPage._depositAccountsToSave(depositBoxes));
         }
         const btn = document.getElementById('settings-save-btn');
         if (btn) btn.disabled = true;
@@ -2717,6 +2923,97 @@ const SettingsPage = {
         return SettingsPage._messages;
     },
 
+    // Switching the automatic run on: show who gets an email on the first run
+    // before the setting is saved (review of #654). Turning rules on for a
+    // company with old open invoices sends the firmest reminder on each one.
+    async previewAutoReminders(select) {
+        if (!select || select.value !== 'true') return;
+        const back = () => { select.value = 'false'; SettingsPage._updateDirty(); };
+        let summary;
+        try { summary = await CollectionsPage.dueSummary(); } catch (err) { toast(err.message, 'error'); return; }
+        const n = summary.due.items.length;
+        if (!n) { toast('Nothing is due today. Once saved, the first automatic run sends whatever is due when SlowBooks Pro next opens.', 'info'); return; }
+        openModal('Reminders the first run will send', `
+            <p>The first automatic run, the next time SlowBooks Pro opens after you save, emails <strong>${n}</strong> reminder${n === 1 ? '' : 's'}:</p>
+            ${summary.html}
+            <p style="font-size:11px; color:var(--text-muted);">To hold any of them back, turn reminders off on that ${T('customer').toLowerCase()} first, or send them yourself from Collections and review the result.</p>
+            <div class="form-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeModal()">Leave it off</button>
+                <button type="button" class="btn btn-primary" onclick="closeModal({ chosen: true })">Keep it on</button>
+            </div>`, {
+            // Only "Keep it on" keeps it on: ×, Escape, Leave it off and a page
+            // change all put the switch back (W-131, the 2.31.10 gate).
+            onClose: (kept) => { if (!kept) back(); },
+        });
+        SettingsPage._autoPreviewCancel = back;
+    },
+    _autoPreviewCancel() {},
+
+    // Reminder rules (#653). The rows sit inside the Settings form, so the
+    // controls carry no name (nothing here is sent to PUT /api/settings) and
+    // Enter is held back in the single-line boxes. Writes are an
+    // administrator's: every control is data-admin data-write.
+    _rules: [],
+
+    async loadReminderRules() {
+        const el = $('#reminder-rules-list');
+        if (!el) return;
+        // A stubbed API (the admin-controls probe) may answer with no list
+        try { const got = await API.get('/collections/rules'); SettingsPage._rules = Array.isArray(got) ? got : []; } catch (e) {
+            el.innerHTML = `<div style="font-size:11px; color:var(--text-muted);">${escapeHtml(e.message)}</div>`;
+            return;
+        }
+        const rows = SettingsPage._rules.map(r => SettingsPage._ruleRowHtml(r)).join('');
+        el.innerHTML = `<div class="table-container"><table>
+            <thead><tr><th scope="col">Days from due</th><th scope="col">Enabled</th><th scope="col">Subject</th><th scope="col">Body</th><th scope="col">Actions</th></tr></thead>
+            <tbody>${rows}${SettingsPage._ruleRowHtml(null)}</tbody></table></div>`;
+    },
+
+    // One editable row; `r` null is the blank Add rule row
+    _ruleRowHtml(r) {
+        const id = r ? r.id : 'new';
+        const f = (part) => `id="rule-${part}-${id}"`;
+        const guard = `onkeydown="if (event.key === 'Enter') event.preventDefault()"`;
+        return `<tr data-rule="${id}">
+            <td><input type="number" step="1" style="width:70px" ${f('days')} ${guard} data-admin data-write aria-label="Days from due"
+                value="${r ? r.days_from_due : ''}" placeholder="e.g. 7">
+                ${r ? `<div style="font-size:10px; color:var(--text-muted);">${escapeHtml(r.label)}</div>` : ''}</td>
+            <td><input type="checkbox" ${f('enabled')} data-admin data-write aria-label="Enabled" ${!r || r.enabled ? 'checked' : ''}></td>
+            <td><input type="text" maxlength="500" style="width:100%" ${f('subject')} ${guard} data-admin data-write aria-label="Subject" value="${escapeHtml(r ? r.subject : '')}"></td>
+            <td><textarea rows="4" style="width:100%" ${f('body')} data-admin data-write aria-label="Body">${escapeHtml(r ? r.body : '')}</textarea></td>
+            <td class="actions">
+                <button type="button" class="btn btn-sm btn-primary" data-admin data-write onclick="SettingsPage.saveReminderRule(${r ? r.id : 'null'})">${r ? 'Save' : 'Add rule'}</button>
+                ${r ? `<button type="button" class="btn btn-sm btn-secondary" data-destructive data-admin data-write onclick="SettingsPage.deleteReminderRule(${r.id})">Delete</button>` : ''}
+            </td></tr>`;
+    },
+
+    async saveReminderRule(id) {
+        const key = id === null ? 'new' : id;
+        const days = $(`#rule-days-${key}`).value;
+        if (days === '' || !Number.isInteger(Number(days))) { toast('Enter the days from due as a whole number', 'error'); return; }
+        const body = {
+            days_from_due: parseInt(days, 10),
+            enabled: $(`#rule-enabled-${key}`).checked,
+            subject: $(`#rule-subject-${key}`).value,
+            body: $(`#rule-body-${key}`).value,
+        };
+        try {
+            if (id === null) await API.post('/collections/rules', body);
+            else await API.put(`/collections/rules/${id}`, body);
+            toast('Reminder rule saved');
+            SettingsPage.loadReminderRules();
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
+    async deleteReminderRule(id) {
+        if (!confirm('Delete this reminder rule?')) return;
+        try {
+            await API.del(`/collections/rules/${id}`);
+            toast('Reminder rule deleted');
+            SettingsPage.loadReminderRules();
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
     async loadInvoiceMessages() {
         // kind via arguments so the no-arg call (invoices) reads unchanged
         const kind = arguments.length ? arguments[0] : 'invoice';
@@ -2936,17 +3233,188 @@ const SettingsPage = {
     },
 
     // Opens a sample check PDF in a new tab (#440) with the stock, check
-    // position (#727) and nudge as they stand in the form — saved or not — so a nudge can be tried
+    // position (#727), nudge and field layout (#749) as they stand in the form — saved or not — so a nudge can be tried
     // before it is saved.
     testPrintCheck() {
         const form = document.getElementById('settings-form');
         const params = new URLSearchParams();
-        for (const name of ['check_stock', 'check_position', 'check_nudge_x_in', 'check_nudge_y_in']) {
+        for (const name of ['check_stock', 'check_position', 'check_nudge_x_in', 'check_nudge_y_in', 'check_blank_stock', 'check_micr_amount', 'check_field_layout']) {
             const el = form && form.querySelector(`[name="${name}"]`);
-            if (el) params.set(name, el.value);
+            if (el) params.set(name, el.type === 'checkbox' ? (el.checked ? 'true' : 'false') : el.value);
         }
         const qs = params.toString();
         window.open('/api/checks/test-print' + (qs ? `?${qs}` : ''), '_blank');
+    },
+
+    // ----- the check face's per-field layout (#749) ---------------------
+    // One row per field, each moved, sized and bolded on its own. The row's
+    // inputs carry no name; what they hold is kept, as the JSON the server
+    // stores (only what differs from today's face), in the hidden
+    // check_field_layout field, which the form saves and the test print sends.
+    // [key, label, size it prints at today, bold today, size with the check
+    // on top where that differs]
+    CHECK_LAYOUT_FIELDS: [
+        ['payee', 'Payee', '12', true],
+        ['payee_address', 'Payee address', '9', false],
+        ['date', 'Date', '10', false],
+        ['amount', 'Amount in figures', '14', true, '12'],
+        ['amount_words', 'Amount in words', '9', false],
+        ['memo', 'Memo', '8', false],
+    ],
+
+    _parseCheckLayout(text) {
+        if (!text) return {};
+        try {
+            const v = JSON.parse(text);
+            return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+        } catch (e) { return {}; }
+    },
+
+    // The layout as the server stores it: fields and attributes in name
+    // order, only those set; "" for none.
+    _checkLayoutJson(layout) {
+        const out = {};
+        for (const field of Object.keys(layout).sort()) {
+            const attrs = layout[field] || {};
+            const kept = {};
+            for (const a of Object.keys(attrs).sort()) {
+                if (attrs[a] !== undefined && attrs[a] !== null && attrs[a] !== '') kept[a] = attrs[a];
+            }
+            if (Object.keys(kept).length) out[field] = kept;
+        }
+        return Object.keys(out).length ? JSON.stringify(out) : '';
+    },
+
+    // `position` is the saved Check Position: a field that prints at
+    // another size with the check on top shows that size as its hint.
+    _checkFieldLayoutHtml(stored, position) {
+        const layout = SettingsPage._parseCheckLayout(stored);
+        const num = v => (typeof v === 'number' && isFinite(v) ? String(v) : '');
+        const rows = SettingsPage.CHECK_LAYOUT_FIELDS.map(([key, label, bottomSize, bold, topSize]) => {
+            const size = position === 'top' && topSize ? topSize : bottomSize;
+            const sizes = topSize ? ` data-size-bottom="${bottomSize}" data-size-top="${topSize}" data-label="${label}"` : '';
+            const a = layout[key] || {};
+            const on = typeof a.bold === 'boolean' ? a.bold : bold;
+            const id = 'check-field-' + key.replace(/_/g, '-');
+            return `<tr>
+                <th scope="row" id="${id}-h" style="text-align:left; font-weight:normal;">${label}</th>
+                <td><input type="number" id="${id}-x" data-check-field="${key}" data-attr="x" data-admin min="-1" max="1" step="0.01" placeholder="0" style="width:70px;"
+                    aria-label="${label} left/right offset (in)" value="${num(a.x)}" oninput="SettingsPage.syncCheckFieldLayout()"></td>
+                <td><input type="number" id="${id}-y" data-check-field="${key}" data-attr="y" data-admin min="-1" max="1" step="0.01" placeholder="0" style="width:70px;"
+                    aria-label="${label} up/down offset (in)" value="${num(a.y)}" oninput="SettingsPage.syncCheckFieldLayout()"></td>
+                <td><input type="number" id="${id}-size" data-check-field="${key}" data-attr="size" data-admin min="6" max="18" step="0.1" placeholder="${size}"${sizes} style="width:70px;"
+                    aria-label="${label} text size (pt), today ${size}" value="${num(a.size)}" oninput="SettingsPage.syncCheckFieldLayout()"></td>
+                <td style="text-align:center;"><input type="checkbox" id="${id}-bold" data-check-field="${key}" data-attr="bold" data-default="${bold}" data-admin style="width:auto; margin:0;"
+                    aria-label="${label} bold" ${on ? 'checked' : ''} onchange="SettingsPage.syncCheckFieldLayout()"></td>
+            </tr>`;
+        }).join('');
+        return `<div class="form-group full-width" id="settings-check-fields" role="group" aria-labelledby="settings-check-fields-h">
+                            <h4 id="settings-check-fields-h" style="margin:4px 0; font-size:12px;">Field layout</h4>
+                            <div id="settings-check-fields-help" style="font-size:10px; color:var(--text-muted); margin-bottom:6px;">Move, size or bold one field of the check without moving the others, for stock whose boxes do not all sit where the check prints them. Left/right and up/down are inches from where the field prints today (-1 to 1; a positive offset moves it right and down), on top of the nudges. Size is in points (6 to 18); empty prints today's size. A field keeps its baseline as its size changes. It applies to the check at the bottom and on top and to every stock.</div>
+                            <input type="hidden" name="check_field_layout" id="settings-check-field-layout" value="${escapeHtml(SettingsPage._checkLayoutJson(layout))}">
+                            <table class="data-table" style="font-size:11px; width:auto;" aria-describedby="settings-check-fields-help">
+                                <thead><tr><th scope="col">Field</th><th scope="col">Left/right (in)</th><th scope="col">Up/down (in)</th><th scope="col">Size (pt)</th><th scope="col">Bold</th></tr></thead>
+                                <tbody>${rows}</tbody>
+                            </table>
+                            <div style="margin-top:6px;" data-write>
+                                <button type="button" class="btn btn-sm btn-secondary" data-admin data-write onclick="SettingsPage.resetCheckFieldLayout()">Reset field layout to defaults</button>
+                            </div>
+                        </div>`;
+    },
+
+    // Check Position changed: the Size hint (and its spoken "today") of a
+    // field whose size depends on it follows, 14 at the bottom and 12 on top
+    // for the amount in figures. The stored layout is untouched.
+    checkFieldSizesFollowPosition(position) {
+        document.querySelectorAll('#settings-check-fields [data-size-top]').forEach(el => {
+            const size = el.getAttribute(position === 'top' ? 'data-size-top' : 'data-size-bottom');
+            el.setAttribute('placeholder', size);
+            el.setAttribute('aria-label', `${el.getAttribute('data-label')} text size (pt), today ${size}`);
+        });
+    },
+
+    // The table's inputs, as the hidden field's JSON: blank offsets and
+    // sizes and a Bold box left at today's weight are left out.
+    syncCheckFieldLayout() {
+        const hidden = document.getElementById('settings-check-field-layout');
+        if (!hidden) return;
+        const layout = {};
+        document.querySelectorAll('#settings-check-fields [data-check-field]').forEach(el => {
+            const field = el.getAttribute('data-check-field');
+            const attr = el.getAttribute('data-attr');
+            let v;
+            if (attr === 'bold') {
+                if (el.checked === (el.getAttribute('data-default') === 'true')) return;
+                v = el.checked;
+            } else {
+                const t = String(el.value || '').trim();
+                if (t === '') return;
+                // what is not a number is sent as typed, so saving says why
+                v = isFinite(Number(t)) ? Number(t) : t;
+                if (v === 0 && attr !== 'size') return;
+            }
+            (layout[field] = layout[field] || {})[attr] = v;
+        });
+        hidden.value = SettingsPage._checkLayoutJson(layout);
+    },
+
+    // Every field back where it prints today: offsets and sizes empty, Bold
+    // at today's weight. Saved with Save Settings like the rest.
+    resetCheckFieldLayout() {
+        document.querySelectorAll('#settings-check-fields [data-check-field]').forEach(el => {
+            if (el.getAttribute('data-attr') === 'bold') el.checked = el.getAttribute('data-default') === 'true';
+            else el.value = '';
+        });
+        SettingsPage.syncCheckFieldLayout();
+        SettingsPage._updateDirty();
+    },
+
+    // ----- a bank account's details for blank check stock (#739) --------
+    // Saved on their own (PUT /api/settings/check-bank-details/<id>), not with the
+    // settings form: the fields carry no name, so the form leaves them out.
+
+    _checkBankOptions(accounts) {
+        const banks = (Array.isArray(accounts) ? accounts : [])
+            .filter(a => a.bank_kind === 'bank' && a.is_active !== false);
+        if (!banks.length) return '<option value="">No bank accounts yet</option>';
+        return banks.map(a => `<option value="${a.id}">${escapeHtml(accountLabel(a))}</option>`).join('');
+    },
+
+    async loadCheckBankDetails() {
+        const pick = document.getElementById('check-bank-account');
+        if (!pick || !pick.value) return;
+        try {
+            const d = await API.get(`/settings/check-bank-details/${pick.value}`);
+            document.getElementById('check-bank-name').value = d.bank_name || '';
+            document.getElementById('check-bank-city').value = d.bank_city_state || '';
+            document.getElementById('check-bank-routing').value = d.routing_number || '';
+            document.getElementById('check-bank-fraction').value = d.fractional_routing || '';
+            const number = document.getElementById('check-bank-account-number');
+            number.value = '';
+            number.placeholder = d.has_account_number ? `Ends in ${d.account_number_last_four}` : 'Digits and dashes';
+            document.getElementById('check-bank-account-number-help').textContent = d.has_account_number
+                ? 'Saved. Leave it empty to keep it, or type a new one to replace it.'
+                : 'Not entered yet.';
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
+    async saveCheckBankDetails() {
+        const pick = document.getElementById('check-bank-account');
+        if (!pick || !pick.value) { toast('Add a bank account first', 'error'); return; }
+        const body = {
+            bank_name: document.getElementById('check-bank-name').value,
+            bank_city_state: document.getElementById('check-bank-city').value,
+            routing_number: document.getElementById('check-bank-routing').value,
+            fractional_routing: document.getElementById('check-bank-fraction').value,
+        };
+        // an empty box keeps the saved number
+        const number = document.getElementById('check-bank-account-number').value.trim();
+        if (number) body.account_number = number;
+        try {
+            await API.put(`/settings/check-bank-details/${pick.value}`, body);
+            toast('Bank account details saved');
+            SettingsPage.loadCheckBankDetails();
+        } catch (err) { toast(err.message, 'error'); }
     },
 
     // ----- AI Insights config (provider/model/key/etc.) ------------------

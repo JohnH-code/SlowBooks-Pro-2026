@@ -81,6 +81,11 @@ DEFAULT_SETTINGS = {
     # bookkeeper leaves what it prepared, in "To review", for the
     # Bookkeeper inbox. Blank: no inbox.
     "bookkeeper_folder": "",
+    # Construction mode: the contractor's license number, printed in the
+    # estimate PDF's header, and the default terms / inclusions / exclusions
+    # text a new construction estimate starts with (editable on each one).
+    "company_license": "",
+    "estimate_terms": "",
     "operator_name": "",
     "operator_email": "",
     # Desktop: "true" signs the company out whenever the app is quit, so the
@@ -88,6 +93,10 @@ DEFAULT_SETTINGS = {
     "ask_password_on_start": "false",
     "default_terms": "Net 30",
     "default_tax_rate": "0.0",
+    # Construction: the use tax a contractor self-assesses on materials it
+    # buys untaxed for a "contractor pays" job, a PERCENT like
+    # default_tax_rate. Empty is the default tax rate.
+    "use_tax_rate": "",
     # "false" starts every new sales line (invoice, estimate, sales receipt,
     # credit memo, recurring, Quick Entry) and every new item untaxed (#486):
     # a service company that charges no sales tax stops unticking the Tax box
@@ -166,6 +175,20 @@ DEFAULT_SETTINGS = {
     "check_position": "bottom",
     "check_nudge_x_in": "0",
     "check_nudge_y_in": "0",
+    # Blank check stock (#739): "true" prints what pre-printed stock would
+    # carry — the logo, the bank's name and city, the fractional routing
+    # number and the MICR line from the bank account's check details — on
+    # the plain layout, with every field where it already prints. The MICR
+    # amount field is left for the bank of first deposit unless
+    # check_micr_amount is "true".
+    "check_blank_stock": "false",
+    "check_micr_amount": "false",
+    # Per-field check layout (#749): each value on the check face (payee,
+    # payee address, date, amount in figures, amount in words, memo) moved,
+    # sized and bolded on its own, on top of the nudges, as JSON of what
+    # differs from today's face (settings_service._clean_check_field_layout).
+    # "" is today's layout, so a company that never sets it sees no change.
+    "check_field_layout": "",
     # Opening-balance wizard readiness metadata
     "chart_setup_source": "",
     "chart_setup_ready_at": "",
@@ -217,6 +240,18 @@ DEFAULT_SETTINGS = {
     # Mercury read-only feed; mapping and sync state are managed by its routes.
     "mercury_api_token": "",
     "mercury_webhook_secret": "",
+    # Make Deposits (#734): the bank account id the Deposits page opens on,
+    # and the one listed first under Undeposited Funds in a payment's or a
+    # sales receipt's Deposit To. "" = none, the list's own order as before.
+    # A deposit or a payment already saved keeps its own account.
+    "default_deposit_account_id": "",
+    # Make Deposits (#735): a JSON list of the bank account ids the
+    # destination list offers (Make Deposits, and the bank accounts in a
+    # payment's or a sales receipt's Deposit To); "[]" = every bank account,
+    # as before. An account off the list is hidden nowhere else (chart,
+    # registers, reports), and a deposit already in it keeps it. The default
+    # deposit account above must be on the list, or the list empty.
+    "deposit_account_ids": "[]",
     # Class tracking (#243): "true" starts every entry form with no class
     # chosen and asks before a transaction is saved without one (it would
     # be reported under Uncategorized); "false" starts the picker on
@@ -280,4 +315,13 @@ DEFAULT_SETTINGS = {
     "late_fee_enabled": "false",
     "late_fee_rate": "1.5",
     "late_fee_grace_days": "15",
+    # Collections (#653): "true" lets the app send the due payment reminders
+    # itself, once a day, when someone opens it. last_run is the ISO date of
+    # that automatic run, so it happens once however often the app loads.
+    "invoice_reminders_auto": "false",
+    "invoice_reminders_last_run": "",
+    # Who is reminded about a sub-customer billed with its parent (a tenant
+    # billed with its property): property, tenant or both. The property,
+    # whose A/R the invoice sits on, unless chosen otherwise.
+    "invoice_reminders_billed_sub_to": "property",
 }

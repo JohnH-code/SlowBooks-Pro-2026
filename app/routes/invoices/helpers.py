@@ -16,6 +16,7 @@ from app.models.invoices import InvoiceStatus
 from app.models.items import Item
 from app.services.accounting import (
     compute_line_totals,
+    refuse_total_past_column,
     _q,
 )
 from app.services.terminology import document_reference
@@ -436,7 +437,9 @@ def kept_tax(invoice, tax_rate, lines):
 def _compute_totals(lines_data, tax_rate):
     """Tax applies to the lines flagged taxable (QuickBooks-style per-line
     tax); the rate itself stays on the document."""
-    return compute_line_totals(lines_data, tax_rate)
+    totals = compute_line_totals(lines_data, tax_rate)
+    refuse_total_past_column(*totals)
+    return totals
 
 
 def _build_invoice_journal_lines(
@@ -649,3 +652,32 @@ def _reverse_and_delete_journal(db: Session, transaction_id: int):
         .filter(TransactionLine.transaction_id == transaction_id)
         .execution_options(**everything),
     )
+
+
+def fill_last_emailed(db: Session, responses) -> None:
+    """Set last_emailed_at / last_emailed_to on invoice responses (#780):
+    the newest email_log row for each invoice that went out ("sent"). One
+    query for the whole list. Every send writes the row, the app's Email
+    button and the API alike, so this sees both."""
+    from app.models.email_log import EmailLog
+
+    by_id = {r.id: r for r in responses}
+    if not by_id:
+        return
+    rows = (
+        db.query(EmailLog.entity_id, EmailLog.recipient, EmailLog.sent_at)
+        .filter(
+            EmailLog.entity_type == "invoice",
+            EmailLog.status == "sent",
+            EmailLog.entity_id.in_(list(by_id)),
+        )
+        .order_by(EmailLog.sent_at.desc(), EmailLog.id.desc())
+        .all()
+    )
+    seen = set()
+    for entity_id, recipient, sent_at in rows:
+        if entity_id in seen:
+            continue
+        seen.add(entity_id)
+        by_id[entity_id].last_emailed_at = sent_at
+        by_id[entity_id].last_emailed_to = recipient

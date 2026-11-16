@@ -119,15 +119,48 @@ def test_in_a_narrow_window_the_table_scrolls_and_add_line_clears_the_bar(
         page.close()
 
 
+# The move column's room against what one row of its controls takes.
+SLACK = """() => {
+    const c = document.querySelector('#bill-lines tr .line-order-controls');
+    const td = c.closest('td');
+    const cs = getComputedStyle(td);
+    const content = td.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const kids = [...c.children].map(k => k.getBoundingClientRect().width);
+    const gap = parseFloat(getComputedStyle(c).columnGap) || 0;
+    const need = kids.reduce((a, b) => a + b, 0) + gap * (kids.length - 1);
+    return { content: Math.round(content), need: Math.round(need), kids: kids.map(Math.round) };
+}"""
+
+
+# Each move button's glyph against its button: how far the glyph's centre
+# sits from the button's, in px, left negative.
+GLYPH_OFFSETS = """() => {
+    const c = document.querySelector('#bill-lines tr .line-order-controls');
+    return [...c.querySelectorAll('button')].map(b => {
+        const r = document.createRange();
+        r.selectNodeContents(b);
+        const g = r.getBoundingClientRect();
+        const bb = b.getBoundingClientRect();
+        return Math.round(((g.left + g.right) - (bb.left + bb.right)) / 2 * 10) / 10;
+    });
+}"""
+
+
 def test_a_construction_bill_shows_every_column_at_the_agents_window(
     browser, company, books, classed, client
 ):
     """2.31.1 gate, NEW-187: a construction company's bill adds Cost Type,
     eleven columns with the move controls, and its line table scrolled at
-    the 1264px window and at the 1280px cap alike. The wide dialog takes the
-    window less a margin, the line cells' sides are 2px, and the move
+    the 1264px window and at the dialog's cap alike. The wide dialog takes
+    the window less a margin, the line cells' sides are 2px, and the move
     controls fold where the table is tight, so every column shows at 1264,
-    the move controls with them; with room, the controls keep one row."""
+    the move controls with them; with room, the controls keep one row. At
+    the cap (1300px, 2.31.11 gate, L-1) the row has slack to spare: the
+    controls' widths are set in CSS, not by the font (one font set's wider
+    handle folded them at the old 1280px cap), the column has 16px more
+    than a row of them needs, and each glyph sits in the middle of its
+    button (NEW-214: a flex box with no justify-content left them at the
+    left edge)."""
     before = client.get("/api/settings").json().get("company_type") or "business"
     r = client.put("/api/settings", json={"company_type": "construction"})
     assert r.status_code == 200, r.text
@@ -149,9 +182,76 @@ def test_a_construction_bill_shows_every_column_at_the_agents_window(
                 )
                 if width == 1440:
                     assert rows == 1, (width, rows)  # room: one row
+                    slack = page.evaluate(SLACK)
+                    assert slack["need"] <= 84, slack  # set in CSS, not by the font
+                    assert slack["content"] - slack["need"] >= 16, slack
+                    # the glyphs sit in the middle of their 22px buttons: a
+                    # flex box with no justify-content put them at the left
+                    # (2.31.11 gate, NEW-214)
+                    offsets = page.evaluate(GLYPH_OFFSETS)
+                    assert len(offsets) == 3 and all(
+                        abs(o) <= 1.5 for o in offsets
+                    ), offsets
                 else:
                     assert rows in (1, 2), (width, rows)
             finally:
                 page.close()
+    finally:
+        client.put("/api/settings", json={"company_type": before})
+
+
+USE_TAX = """() => {
+    const row = document.querySelector('#bill-lines tr');
+    const box = row.querySelector('.line-usetax');
+    const head = [...row.closest('table').querySelectorAll('thead th')].find(h => h.textContent.trim() === 'Use tax');
+    if (!box || !head) return null;
+    const b = box.getBoundingClientRect();
+    const c = row.querySelector('.line-order-controls');
+    const mid = (e) => { const r = e.getBoundingClientRect(); return Math.round((r.top + r.bottom) / 2); };
+    return { head: head.textContent.trim(), boxW: Math.round(b.width), boxH: Math.round(b.height),
+             rows: new Set([...c.children].map(mid)).size };
+}"""
+
+
+def test_a_construction_bill_keeps_its_use_tax_column_inside_the_window(
+    browser, company, books, classed, client
+):
+    """The per-line Use tax box (#731) added a twelfth column to a
+    construction company's bill, and with its header kept on one line the
+    line table ran 11px past the 1264px window, on Enter Bill and on a
+    memorized bill alike. The header folds at its space now, "Use" over
+    "tax", so the column takes its checkbox's room, not the two words', and
+    the table fits again with every column and both words shown; at the
+    dialog's cap the move controls still keep one row."""
+    before = client.get("/api/settings").json().get("company_type") or "business"
+    r = client.put("/api/settings", json={"company_type": "construction"})
+    assert r.status_code == 200, r.text
+    try:
+        for form in ("BillsPage.showForm()", "MemorizedPage.showBillForm()"):
+            for width in (1264, 1440):
+                r = client.post(
+                    "/api/cost-codes",
+                    json={"code": "01-100", "name": "Site Prep", "cost_type": "labor"},
+                )
+                assert r.status_code in (200, 201, 400, 409), r.text
+                page, handled = _open(browser, company)
+                page.set_viewport_size({"width": width, "height": 821})
+                _visit(page, handled, "#/bills")
+                page.evaluate(f"async () => {{ await {form}; }}")
+                page.wait_for_function(OPEN, timeout=5000)
+                page.wait_for_selector("#bill-lines tr .cbx--line-account")
+                settle(page, handled)
+                try:
+                    m = page.evaluate(MEASURE)
+                    _boxes_hold(m)
+                    u = page.evaluate(USE_TAX)
+                    assert u and u["head"] == "Use tax", (form, width, u)
+                    assert u["boxW"] >= 13 and u["boxH"] >= 13, (form, width, u)
+                    assert not m["scrollable"], (form, width, m)
+                    assert m["lastCellRight"] <= m["boxRight"], (form, width, m)
+                    if width == 1440:  # at the cap the move controls keep one row
+                        assert u["rows"] == 1, (form, width, u)
+                finally:
+                    page.close()
     finally:
         client.put("/api/settings", json={"company_type": before})

@@ -40,7 +40,9 @@ const MigrationPage = {
                     QuickBooks Online, upload the Export data zip as downloaded, with
                     its <strong>A/R Aging Detail</strong> report beside it (Reports →
                     A/R Aging Detail → Export to Excel) to carry the open invoices and
-                    unapplied payments over. From <strong>QuickBooks Desktop</strong>,
+                    unapplied payments over, and its <strong>Account List</strong> report
+                    (Reports → Account List → Export to Excel) to give every account its
+                    number, type and description. From <strong>QuickBooks Desktop</strong>,
                     upload the lists <strong>.iif</strong>, the <strong>Journal</strong>
                     report (dates All) and the <strong>Balance Sheet</strong> and
                     <strong>Profit &amp; Loss</strong> by year as CSV; add the company's
@@ -52,6 +54,7 @@ const MigrationPage = {
                     <button class="btn btn-primary" onclick="MigrationPage.dryRun()">Dry Run</button>
                     <button class="btn btn-danger" id="migration-import-btn" disabled onclick="MigrationPage.doImport()">Import</button>
                 </div>
+                <div id="migration-choices" style="margin-top:12px; font-size:12px;"></div>
                 <div id="migration-result" style="margin-top:12px; font-size:12px;"></div>
             </div>
             <div class="card" style="margin-top:16px;" data-write>
@@ -99,6 +102,8 @@ const MigrationPage = {
         if (btn) btn.disabled = true;
         const out = $('#migration-result');
         if (out) out.innerHTML = '';
+        const choices = $('#migration-choices');
+        if (choices) choices.innerHTML = '';
     },
 
     _formData() {
@@ -106,7 +111,29 @@ const MigrationPage = {
         if (!files.length) { toast('Choose the export files first', 'error'); return null; }
         const fd = new FormData();
         for (const f of files) fd.append('files', f);
+        // the person's choice on the Employee Contact List (NEW-222); a
+        // disabled tick sends nothing, and the server says why it is left out
+        const tick = $('#migration-include-employees');
+        if (tick && !tick.disabled) fd.append('include_employees', tick.checked ? 'true' : 'false');
         return fd;
+    },
+
+    // Adding employees is a person's choice, never the software's (NEW-222):
+    // when the dry run found the Employee Contact List, a tick says whether
+    // it comes in, ticked for a caller who may add employees and disabled,
+    // with the reason beside it, for one who may not. Changing it runs the
+    // dry run again, so its counts are what Import will write.
+    _employeeChoice(list) {
+        const box = $('#migration-choices');
+        if (!box) return;
+        if (!list) { box.innerHTML = ''; return; }
+        const why = list.may_add ? '' : `<div id="migration-include-employees-why" style="color:var(--text-muted); margin-left:22px;">Adding employees needs an administrator, or a token that may also run payroll, so the list is left out.</div>`;
+        box.innerHTML = `<label style="display:flex; align-items:center; gap:6px;">
+                <input type="checkbox" id="migration-include-employees" data-write
+                    ${list.included ? 'checked' : ''} ${list.may_add ? '' : 'disabled aria-describedby="migration-include-employees-why"'}
+                    onchange="MigrationPage.dryRun()">
+                Bring in the people on the Employee Contact List (${MigrationPage._n(list.employees, 'employee')})
+            </label>${why}`;
     },
 
     // "13 journals", "1 journal": a count with its word.
@@ -168,6 +195,7 @@ const MigrationPage = {
             MigrationPage._dryRunOk = data.ok;
             MigrationPage._dryRunData = data.ok ? data : null;
             $('#migration-import-btn').disabled = !data.ok;
+            MigrationPage._employeeChoice(data.employee_list);
             MigrationPage._renderResult(data, false);
         } catch (err) {
             // a refusal (a file it cannot place, another source's export)

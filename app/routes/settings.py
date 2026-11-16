@@ -7,12 +7,17 @@ import logging
 
 from datetime import date
 
+import re
+
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.settings import DEFAULT_SETTINGS
+from app.schemas.common import StrictModel
+from app.services import bank_check_details
+from app.services.nacha_export import validate_routing_number
 from app.services.settings_service import (
     ENCRYPTED_SETTINGS_KEYS,
     SECRET_PLACEHOLDER,
@@ -82,6 +87,8 @@ ENUM_SETTINGS = {
     # Where the check face prints (#727): bottom = stub / stub / check,
     # top = check / voucher / voucher (QuickBooks' standard voucher stock).
     "check_position": frozenset({"bottom", "top"}),
+    "check_blank_stock": frozenset({"true", "false"}),
+    "check_micr_amount": frozenset({"true", "false"}),
     "warn_date_past": frozenset({"true", "false"}),
     "warn_date_future": frozenset({"true", "false"}),
     "warn_duplicate_check_number": frozenset({"true", "false"}),
@@ -308,6 +315,74 @@ def _guard_payroll_accounts(db: Session, cleaned: dict) -> None:
             raise HTTPException(status_code=400, detail=problem)
 
 
+def _deposit_bank_account(db: Session, value, label: str):
+    """The bank account a Make Deposits setting names, or a 422 saying what
+    is wrong with it (#734): an id in the chart, a bank account (not
+    Undeposited Funds, a credit card or any other kind), and active."""
+    from app.models.accounts import Account
+
+    text = str(value).strip()
+    acct = db.get(Account, int(text)) if text.isdigit() else None
+    if acct is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{label}: no account {text} in the chart. Nothing was saved.",
+        )
+    if acct.bank_kind != "bank":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{label} must be a bank account; {acct.name} is not one. "
+                "Nothing was saved."
+            ),
+        )
+    if acct.is_active is False:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{label}: {acct.name} is inactive. Nothing was saved.",
+        )
+    return acct
+
+
+def _guard_deposit_accounts(db: Session, cleaned: dict) -> None:
+    """Make Deposits' default destination (#734) is "" or an active bank
+    account from the chart, and so is every account on its destination
+    list (#735, cleaned to a JSON list of ids). The default must be on the
+    list, or the list empty; each saved value counts where the request
+    leaves it out. Anything else is refused with a 422 before any setting
+    is written."""
+    import json
+
+    if "default_deposit_account_id" in cleaned:
+        value = cleaned["default_deposit_account_id"]
+        if value:
+            acct = _deposit_bank_account(db, value, "Default deposit account")
+            cleaned["default_deposit_account_id"] = str(acct.id)
+    if "deposit_account_ids" in cleaned:
+        for acct_id in json.loads(cleaned["deposit_account_ids"]):
+            _deposit_bank_account(db, acct_id, "Deposit into these accounts")
+    if "default_deposit_account_id" in cleaned or "deposit_account_ids" in cleaned:
+        default = cleaned.get("default_deposit_account_id")
+        if default is None:
+            default = get_setting_raw(db, "default_deposit_account_id") or ""
+        chosen = cleaned.get("deposit_account_ids")
+        if chosen is None:
+            chosen = get_setting_raw(db, "deposit_account_ids") or "[]"
+        try:
+            chosen_ids = {str(i) for i in json.loads(chosen)}
+        except (TypeError, ValueError):
+            chosen_ids = set()
+        if default and chosen_ids and default not in chosen_ids:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "The default deposit account must be one of the accounts "
+                    "under Deposit into these accounts, or that list must be "
+                    "empty. Nothing was saved."
+                ),
+            )
+
+
 def _clearing_off_warnings(db: Session, cleaned: dict) -> list[str]:
     """Turning a provider's clearing off while its clearing account still
     holds money is allowed, with a warning (#584): payouts stay available
@@ -398,6 +473,7 @@ def update_settings(
         )
     _guard_clearing_accounts(db, cleaned)
     _guard_payroll_accounts(db, cleaned)
+    _guard_deposit_accounts(db, cleaned)
     # The "Taxed as" select is hidden for a non-LLC but the form still submits
     # its last value; drop a stale election so it never lingers (#488).
     if "llc_tax_election" in cleaned:
@@ -486,3 +562,79 @@ def test_email(db: Session = Depends(get_db)):
                 "for the reason."
             ),
         )
+
+
+# ----- a bank account's check details (#739) --------------------------------
+
+_FRACTIONAL = re.compile(r"[0-9][0-9 /-]*")
+_ON_US = re.compile(r"[0-9][0-9-]*")
+
+
+class BankCheckDetailsIn(StrictModel):
+    """What blank check stock prints for a bank account. Each field left out
+    keeps what is saved; `account_number` "" clears it."""
+
+    bank_name: str = Field(default="", max_length=100)
+    bank_city_state: str = Field(default="", max_length=100)
+    fractional_routing: str = Field(default="", max_length=30)
+    routing_number: str = Field(default="", max_length=9)
+    account_number: str = Field(default="", max_length=17)
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _strip(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("routing_number")
+    @classmethod
+    def _aba(cls, value):
+        if value and not validate_routing_number(value):
+            raise ValueError(
+                "The routing number is the bank's 9-digit ABA routing number, "
+                "as printed at the left of the MICR line of a check."
+            )
+        return value
+
+    @field_validator("account_number")
+    @classmethod
+    def _on_us(cls, value):
+        if value and not _ON_US.fullmatch(value):
+            raise ValueError(
+                "The account number is digits, with dashes where the bank "
+                "prints them, up to 17 characters."
+            )
+        return value
+
+    @field_validator("fractional_routing")
+    @classmethod
+    def _fraction(cls, value):
+        if value and not _FRACTIONAL.fullmatch(value):
+            raise ValueError(
+                "The fractional routing number is digits, dashes and a "
+                "slash, like 70-1234/719."
+            )
+        return value
+
+
+def _check_bank_account(db: Session, account_id: int):
+    from app.routes.checks import _bank_account
+
+    return _bank_account(db, account_id)
+
+
+@router.get("/check-bank-details/{account_id}")
+def get_bank_check_details(account_id: int, db: Session = Depends(get_db)):
+    """A bank account's details for blank check stock (#739); the account
+    number reads as its last four. Under /api/settings so writing them is
+    an administrator's, as the rest of check printing's setup is."""
+    _check_bank_account(db, account_id)
+    return bank_check_details.describe(db, account_id)
+
+
+@router.put("/check-bank-details/{account_id}")
+def put_bank_check_details(
+    account_id: int, data: BankCheckDetailsIn, db: Session = Depends(get_db)
+):
+    """Save a bank account's details for blank check stock (#739)."""
+    _check_bank_account(db, account_id)
+    return bank_check_details.save(db, account_id, data.model_dump(exclude_unset=True))

@@ -16,6 +16,10 @@ from app.services.accounting import (
     _q,
 )
 from app.services.numbering import next_invoice_number
+from app.services.pay_applications import (
+    invoice_is_release_only,
+    pay_application_number,
+)
 from app.services.payment_terms import (
     DocumentTerms,
     document_due_date,
@@ -30,6 +34,7 @@ from app.routes.invoices.helpers import (
     invoice_customer_name,
     confirm_credit_limit,
     confirm_zero_total,
+    fill_last_emailed,
     opening_status,
     refuse_due_before_date,
     resolve_line_taxable,
@@ -115,6 +120,7 @@ def list_invoices(
             # "Parent: Sub" for a sub-customer's, as the pickers say it
             resp.customer_name = invoice_customer_name(inv)
         results.append(resp)
+    fill_last_emailed(db, results)
     return results
 
 
@@ -127,6 +133,9 @@ def get_invoice(invoice_id: int, db: Session = Depends(get_db)):
     DocumentTerms(db, "invoice").fill(resp, inv)
     if inv.customer:
         resp.customer_name = invoice_customer_name(inv)
+    resp.pay_application_number = pay_application_number(db, inv)
+    resp.release_only = invoice_is_release_only(inv)
+    fill_last_emailed(db, [resp])
     return resp
 
 
@@ -694,6 +703,16 @@ def update_invoice(invoice_id: int, data: InvoiceUpdate, db: Session = Depends(g
 
             cash_basis.recompute_invoice_cash_lines(db, invoice)
 
+        # A late fee has its own A/R posting that the repost above leaves
+        # standing; the invoice owes it still, so the A/R Aging ties to 1100.
+        from app.services.open_balances import standing_late_fee
+
+        fee = standing_late_fee(db, invoice.id)
+        if fee:
+            invoice.subtotal += fee
+            invoice.total += fee
+            invoice.balance_due = invoice.total - invoice.amount_paid
+
     if adopting:
         txn = _post_invoice_journal(
             db,
@@ -725,4 +744,5 @@ def update_invoice(invoice_id: int, data: InvoiceUpdate, db: Session = Depends(g
     if invoice.customer:
         resp.customer_name = invoice_customer_name(invoice)
     resp.warnings = stock_warnings
+    fill_last_emailed(db, [resp])
     return resp

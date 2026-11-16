@@ -1183,8 +1183,13 @@ document.addEventListener('keydown', QuickMath.handle, true);
 // opts.wide: a form whose rows are wider than a dialog — the line-item
 // tables with ten or eleven columns (job cost entry). The default 700px
 // dialog clipped the last columns of that table with no scrollbar (#174).
+let _modalOnClose = null;
 function openModal(title, html, opts) {
     _modalOpener = document.activeElement;
+    // opts.onClose runs once, however the dialog closes: a button, ×, Escape
+    // or a page change. A dialog that asks a question treats every way out
+    // but its yes as no (the first-run reminder preview, W-131).
+    _modalOnClose = opts && typeof opts.onClose === 'function' ? opts.onClose : null;
     const wasOpen = !$('#modal-overlay').classList.contains('hidden');
     $('#modal-title').textContent = title;
     $('#modal-body').innerHTML = html;
@@ -1246,8 +1251,11 @@ function closeModal(opts) {
     if (window.App && typeof window.App.syncBack === 'function') window.App.syncBack();
     const opener = _modalOpener;
     _modalOpener = null;
+    const onClose = _modalOnClose;
+    _modalOnClose = null;
     if (opener && document.contains(opener)) focusFor(opener, _byKeyboard());
     if (wasOpen && !(opts && opts.keepAddress) && window.App && typeof App.dialogClosed === 'function') App.dialogClosed();
+    if (wasOpen && onClose) onClose(!!(opts && opts.chosen === true));
 }
 
 // Keys inside an open dialog. Escape closes it. Tab and Shift+Tab are
@@ -1665,6 +1673,64 @@ const ClassWarn = {
     okValue(value) {
         if (!ClassWarn.enabled() || value) return true;
         return confirm(ClassWarn.message());
+    },
+};
+
+// Make Deposits' destination (#734, #735), from Settings → Connections →
+// Deposits: default_deposit_account_id is the bank account Make Deposits
+// opens on, and the first bank listed under Undeposited Funds in a
+// payment's or a sales receipt's Deposit To ("" = none: today's order);
+// deposit_account_ids (a JSON list, "[]" = every bank account) narrows the
+// bank accounts those pickers offer; an account deactivated in the chart is
+// left off them (#741) unless it is an existing record's own. Nothing is
+// hidden anywhere else. Pure
+// functions of the settings and the bank accounts a page already has; a
+// page loaded alone (the node probes) may not have this object, so pages
+// ask with typeof.
+const DepositAccounts = {
+    _settings(s) {
+        return s || (typeof App !== 'undefined' && App.settings) || {};
+    },
+    // the default's id as a string, '' for none
+    defaultId(s) {
+        const v = String(DepositAccounts._settings(s).default_deposit_account_id || '').trim();
+        return /^\d+$/.test(v) ? v : '';
+    },
+    // the default, when it is one of `banks` and still active; '' otherwise
+    // (a default deactivated after it was chosen never opens a deposit)
+    startId(banks, s) {
+        const d = DepositAccounts.defaultId(s);
+        return d && (banks || []).some(a => String(a.id) === d && a.is_active !== false) ? d : '';
+    },
+    // the chosen ids as strings; [] for every bank account
+    chosenIds(s) {
+        let ids = [];
+        try { ids = JSON.parse(DepositAccounts._settings(s).deposit_account_ids || '[]'); } catch (err) { ids = []; }
+        return Array.isArray(ids) ? ids.map(String).filter(v => /^\d+$/.test(v)) : [];
+    },
+    // `accounts` less the ones deactivated in the chart (#741), which take
+    // no new deposit (the server refuses one), except `keepId`, an
+    // existing record's own account, so an edit keeps it
+    active(accounts, keepId = null) {
+        const keep = keepId === null || keepId === undefined ? '' : String(keepId);
+        return (accounts || []).filter(a => a.is_active !== false || String(a.id) === keep);
+    },
+    // The bank accounts a deposit destination offers, in their own order:
+    // the active chosen ones (every active one when none is chosen, or
+    // none of them is here), plus `keepId`, an existing record's own
+    // account, wherever it is and even when inactive, so an edit keeps it.
+    banks(banks, s, keepId = null) {
+        const chosen = new Set(DepositAccounts.chosenIds(s));
+        const keep = keepId === null || keepId === undefined ? '' : String(keepId);
+        const usable = DepositAccounts.active(banks, keepId);
+        const shown = usable.filter(a => chosen.has(String(a.id)) || String(a.id) === keep);
+        return chosen.size && usable.some(a => chosen.has(String(a.id))) ? shown : usable;
+    },
+    // `banks` with the default first, the rest in their own order
+    defaultFirst(banks, s) {
+        const d = DepositAccounts.startId(banks, s);
+        if (!d) return banks;
+        return banks.filter(a => String(a.id) === d).concat(banks.filter(a => String(a.id) !== d));
     },
 };
 
@@ -2148,6 +2214,18 @@ const CostTypes = {
     fromRow(row, cls) {
         const v = row.querySelector(`.${cls}`)?.value;
         return v || null;
+    },
+    // The account a construction line with a cost code or type and no account
+    // posts to, as the server resolves it: the code's account, else the
+    // default account of the line's type (its own, else the code's). Needs
+    // CostCodes.load() and CostTypes.load(); null when nothing names one.
+    accountFor(costCodeId, costType) {
+        if (!Terms.isConstruction() || (!costCodeId && !costType)) return null;
+        const code = costCodeId ? (CostCodes._list || []).find(c => c.id === costCodeId) : null;
+        if (code && code.account_id) return code.account_id;
+        const type = costType || (code ? code.cost_type : null);
+        const t = type ? (CostTypes._list || []).find(x => x.code === type) : null;
+        return (t && t.default_account_id) || null;
     },
 };
 

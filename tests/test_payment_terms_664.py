@@ -666,6 +666,9 @@ def test_the_bill_prints_its_discount_date(client, discounted_bill):
 # ── the migration ───────────────────────────────────────────────────────
 
 
+TERMS_REVISION = "e5c1a7d3f9b2"  # the payment terms list migration (#664)
+
+
 def test_the_migration_seeds_the_list_from_the_terms_in_use(tmp_path):
     """Up from main's head: the five form terms, plus a Net N anything
     already carries; other text stays as it is. Down drops the list and the
@@ -680,8 +683,10 @@ def test_the_migration_seeds_the_list_from_the_terms_in_use(tmp_path):
     cfg.set_main_option("script_location", str(ROOT / "migrations"))
     cfg.attributes["database_url"] = "sqlite:///" + db.as_posix()
     script = ScriptDirectory.from_config(cfg)
-    # John's build: its own merge revision (a7b8c9d0e1f4) sits on top of this one
-    assert "d7f3a9c1b5e2" in script.get_revision("a7b8c9d0e1f4").down_revision
+    # John's build: its own merge revision (d2e3f4a5b6c8) is the head, on
+    # top of 2.31.14's (token payroll and imports, #755)
+    assert "f3b9d2e6a1c7" in script.get_revision("d2e3f4a5b6c8").down_revision
+    assert script.get_heads() == ["d2e3f4a5b6c8"]
     assert script.get_revision("e5c1a7d3f9b2").down_revision == "95209e8d293c"
 
     command.upgrade(cfg, "95209e8d293c")
@@ -721,7 +726,7 @@ def test_the_migration_seeds_the_list_from_the_terms_in_use(tmp_path):
             )
     engine.dispose()
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, TERMS_REVISION)  # its own step, not the chain (#770)
     engine = create_engine(f"sqlite:///{db}")
     with engine.connect() as conn:
         rows = conn.execute(
@@ -768,7 +773,7 @@ def test_the_migration_seeds_the_list_from_the_terms_in_use(tmp_path):
 
     # Up again rebuilds the list, re-ties the documents, and puts the
     # indexes back (#665: the re-upgrade used to assert nothing).
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, TERMS_REVISION)  # its own step, not the chain (#770)
     engine = create_engine(f"sqlite:///{db}")
     insp = inspect(engine)
     with engine.connect() as conn:
@@ -833,7 +838,7 @@ def test_the_downgrade_refuses_to_drop_a_standing_discount_link(tmp_path):
     cfg.set_main_option("script_location", str(ROOT / "migrations"))
     cfg.attributes["database_url"] = "sqlite:///" + db.as_posix()
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, TERMS_REVISION)  # its own step, not the chain (#770)
     engine = create_engine(f"sqlite:///{db}")
     with engine.begin() as conn:
         # a payment, and a credit memo that is its early-payment discount
@@ -945,7 +950,7 @@ def test_settings_keeps_the_terms_list():
     assert "API.put(`/payment-terms/${id}`, { is_active: active })" in settings
 
 
-# ── the skeptic passes (#665 review): what they found ───────────────────
+# ── what the #665 review found ───────────────────
 
 
 def _receive_one(

@@ -47,9 +47,26 @@ What comes across:
 - **The chart** from the Balance Sheet and the Profit and Loss: every
   account with a figure, typed by the section it sits under (Bank Accounts
   are banks, Credit Cards are cards), sub-accounts named `Parent:Child` as
-  QuickBooks writes them elsewhere and placed under their parents.
-  QuickBooks Online accounts have no numbers, so these arrive without one;
-  give them numbers in Chart of Accounts afterwards if you like.
+  QuickBooks writes them elsewhere and placed under their parents. A
+  company with **account numbers** switched on has them on every statement
+  row ("1010 Operating Checking"), while the Journal and the Trial Balance
+  write the account's own number in front of the whole path ("1010
+  Operating:Operating Checking"): the number comes across as the account's
+  number and the rest as its name. A number the books already use on
+  another account, or one SlowBooks keeps for a control account (2000
+  Accounts Payable, 2200 Sales Tax Payable …), is left off and the dry run
+  names it; number those accounts in Chart of Accounts afterwards if you
+  like. An account with no balance that QuickBooks marked "(deleted)" is
+  off both statements and the Trial Balance; the General Ledger in the zip
+  lists it in chart order, so it is typed from its neighbours there, with
+  a note. Deleted accounts come across inactive, with their history. The
+  Balance Sheet and the Profit and Loss must be the ones from Export data:
+  a statement exported from the Reports page has no indentation, and the
+  dry run says so.
+- **The Account List report**, when you download it beside the zip
+  (Reports → Account List → Export to Excel) and upload it with the rest,
+  is the chart: every account's number, type and description in one
+  place, the statements adding only the deleted accounts it leaves out.
 - **Every transaction in the Journal** as a journal entry: invoices,
   payments, bills, checks, deposits, transfers and journal entries alike,
   with the date, type, number, name and memo, each block checked against
@@ -57,9 +74,17 @@ What comes across:
   invoices or bills, which is what the ledger needs for history; start
   documents fresh from the cut-over date.
 - **Customers and Vendors** with their emails, phones and addresses, named
-  as QuickBooks has them. The Employee list is left alone (the export
-  carries no payroll), as is the General Ledger, which repeats the Journal
-  by account.
+  as QuickBooks has them. The General Ledger is left alone: it repeats the
+  Journal by account.
+- **The Employee Contact List**, when the export has it, by your choice: the
+  dry run names it and how many people it would add, and a tick, **Bring in
+  the people on the Employee Contact List**, says whether they come in (names
+  and contact details only; the export carries no payroll). Adding employees
+  is an administrator's, or an API token's that may also run payroll; for
+  anyone else the tick is off and locked, and the list is left out and said
+  so. Over the API it is `include_employees` on the dry run and the import:
+  `false` leaves the list out, and `true` from a caller who may not add
+  employees is refused (403) with nothing imported.
 
 Re-uploading the same export is safe: every transaction is tracked by its
 type, number and date, and nothing posts twice. Afterwards, follow **After
@@ -286,8 +311,15 @@ service item, the billing status (not billable, unbilled, billed) and the
 customer or job label as QuickBooks printed it; the entry links to the job
 when the label is one on the Jobs list, so import the lists IIF first for
 the customer:jobs. A person who is not on the Employees list is added from
-the name and named in the result; set their pay type and rate on the
-Employees page. Imported time is history: HR → Time Entries shows it marked
+the name and named in the result when **Add people who are not on the
+Employees list** is ticked; set their pay type and rate on the Employees
+page. Adding employees is an administrator's (or an API token's that may also
+run payroll), so for anyone else the tick is off and locked: that person's
+entries are left out and named, the entries of the people already on the list
+come in, and the report imports the rest once an administrator has added
+them. Over the API it is `add_employees` on the import (`false` leaves them
+out for anyone; `true` from a caller who may not add employees is refused,
+403, with nothing imported). Imported time is history: HR → Time Entries shows it marked
 as QuickBooks', and a pay run never picks it up. The whole file is checked
 against QuickBooks' own Total rows before anything is written, and refused
 whole if it does not add up; a second upload posts nothing twice.

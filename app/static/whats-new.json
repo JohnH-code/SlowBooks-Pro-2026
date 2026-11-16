@@ -1,4 +1,60 @@
 {
+  "2.31.14": {
+    "title": "Cash basis after the retainage change, and sentences where there were errors",
+    "items": [
+      "Cash basis and retainage: a payment recorded before 2.31.11 on a pay application or a retainage-release bill is rewritten once at the upgrade so it reads as a fresh posting does; payments on or before the closing date are left as they were, and the start-up log says how many of each. The accrual books do not move.",
+      "A bill, expense or card charge line on Accounts Receivable, Accounts Payable, Undeposited Funds or Inventory is refused with a sentence, from the window or the API; a line already saved there keeps its account until it is moved.",
+      "A quantity, rate or unit cost too large for its column is refused with a sentence instead of an error, on every document with lines.",
+      "The estimate, sales and purchase forms round the way the server does, so a form's total matches the saved document and its PDF to the cent.",
+      "Recurring invoices take only daily, weekly, semimonthly, monthly, quarterly or yearly; anything else is refused with a sentence.",
+      "An invoice shows when and to whom it was last emailed, and a bookkeeper, accountant or read-only sign-in or token can read the email send log, each row naming its document."
+    ]
+  },
+  "2.31.13": {
+    "title": "QuickBooks Online account numbers, and bills that pay a loan",
+    "items": [
+      "QuickBooks Online export with account numbers switched on: the number comes across as the account's number and the rest as its name, every sub-account under a numbered parent is found by the Journal's spelling, and a second upload of the same export makes nothing twice; a number the books already use, or a control number, is left off and the dry run says which.",
+      "A zero-balance account QuickBooks deleted, off the statements and the Trial Balance, is typed from its place in the General Ledger instead of stopping the import; deleted accounts come across inactive with their history. The Account List report uploaded beside the zip is read as the chart, with every account's number, type and description.",
+      "A bill line, an expense line or a card charge can post to a balance-sheet account: Other accounts in the picker holds the loan, escrow, prepaid and equity accounts, so a loan payment entered as a bill splits between interest and principal; bank and card accounts, Accounts Receivable, Accounts Payable, Undeposited Funds and Inventory stay out."
+    ]
+  },
+  "2.31.12": {
+    "title": "Checks laid out field by field, report PDFs that keep every column, and payroll for API tokens",
+    "items": [
+      "Settings → Check Printing has a Field layout table that moves, sizes and bolds the payee, payee address, date, amount, amount in words and memo one at a time, for check stock whose boxes don't all line up with one nudge.",
+      "A pay application that only releases retainage prints and shows as one: a \"Retainage release, PA-x\" line for the amount, no $0.00 total, the same on the customer's pay page.",
+      "Report PDFs keep every column: long job and class names wrap inside their column, so P&L by Job and the other grids print every column and the Total, and the WIP Schedule goes over three pages of columns with the job and contract on each.",
+      "API tokens: an administrator can let a bookkeeper token run payroll (pay runs, tax forms, benefits, deductions, employee records; never bank accounts, documents, E-Verify or the NACHA file) and run the migration imports, each off by default; a tax-form year out of range is refused and a W-2 for an unknown employee is a 404.",
+      "Bringing people onto the Employees list from an import is a tick you set: Migrate Data's dry run names the QuickBooks Online Employee Contact List and asks whether to bring it in, and a QuickBooks time report asks before adding people who are not on the list (an administrator's choice, or a payroll token's; anyone else's import leaves them out and says so).",
+      "The customer payment page prints amounts in the invoice's currency, the way its PDF does.",
+      "Apply Credit's part-way refusal ends the server's sentence before saying what was applied.",
+      "Mac: quitting no longer shows a \"Could not open the native window\" message, and a window on a second display opens where you left it.",
+      "The macOS release build retries hdiutil verify on the runner's transient errors.",
+      "Settings no longer reports unsaved changes when an API token has a ticked box in the token list."
+    ]
+  },
+  "2.31.11": {
+    "title": "Construction, gone through; checks on blank stock",
+    "items": [
+      "Construction, gone through: every schedule-of-values line carries its section, a revenue account and a taxable flag, so revenue by section sits beside cost by section; pay applications are due by the customer's terms, foot on the PDF, charge tax only on taxable lines and true it up to the bid's cent; change orders take the date they take effect; a job's Field tickets tab holds T&M tickets, material slips and delivery tickets; the WIP schedule posts an as-of entry with its reversal; a contractor's dashboard, a Retainage report and Sub Compliance. A company that already keeps construction books upgrades with every figure where it was.",
+      "In every company mode, a misspelled filter on the aging and job reports and the estimate, change-order, pay-application and field-ticket lists is refused with a sentence naming the filters accepted, instead of being dropped.",
+      "Checks on blank stock: Settings → Check Printing → Print on blank check stock puts the company logo, name and address, the bank's name and city, the check number and a MICR line on the face, drawn by the app with no MICR font; each bank account keeps its own bank details, the account number encrypted. Off, checks print exactly as before.",
+      "Every check of a batch prints at the first check's height, so each one tears cleanly on stock perforated in thirds.",
+      "A bank account made inactive in the chart leaves Make Deposits and every Deposit To, and a new deposit, payment or sales receipt into one is refused; a record already on it keeps its account.",
+      "Memorize Bill saves again, and a memorized bill keeps each line's Use tax box; every answer from the API names UTF-8 as its encoding.",
+      "The Expenses list and an expense's View have Edit beside View and Void: Void and Replace, as a report drill-down's Edit, not on a void expense. Edit keeps every saved line's account in the picker, a liability, bank or equity split or an inactive account included, so a memo-only edit leaves the postings as they were."
+    ]
+  },
+  "2.31.10": {
+    "title": "Collections reminders and statements, where deposits go, and the SBP icon",
+    "items": [
+      "Collections: reminder rules that send each open invoice its reminder once, a monthly statement for the customers you flag, and a Collections page of open invoices with the last and next reminder. The automatic daily run is off until an administrator turns it on in Settings and sees who the first run will email.",
+      "Settings → Connections → Deposits: a Default deposit account that Make Deposits opens on, and Deposit into these accounts, which trims the deposit pickers to the bank accounts you actually use. Nothing is hidden anywhere else.",
+      "Checks at the bottom: the two stubs end where stock perforated in thirds tears, as the check-on-top layout already did; the face's fields stay where they were on the face.",
+      "A register entry or expense with a vendor and no payee text prints the vendor's name on the Pay to line.",
+      "The app's icon is the SBP monogram. A Mac updated from an earlier version may keep the old icon in the Dock until SlowBooks Pro is dragged off the Dock and opened again."
+    ]
+  },
   "2.31.9": {
     "title": "Checks on top, the payee's address on a check, and a register that opens at today",
     "items": [

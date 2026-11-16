@@ -14,12 +14,18 @@ from app.database import get_db
 from app.models.invoices import Invoice
 from app.services.payments import enabled_providers, get_provider, provider_settings
 from app.services.payments.recorder import record_provider_payment
+from app.services.pdf_service import _format_currency, document_currency_code
 from app.services.settings_service import get_all_settings as get_settings
 
 router = APIRouter(tags=["public"])
 
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
 _jinja_env = Environment(autoescape=True, loader=FileSystemLoader(str(TEMPLATE_DIR)))
+# The page prints an invoice's amounts the way its PDF does: in the
+# invoice's currency, with thousands separators, and plain dollars when that
+# is the home currency. It used to hard-code "$" (#761).
+_jinja_env.filters["currency"] = _format_currency
+_jinja_env.globals["document_currency_code"] = document_currency_code
 
 
 def _confirm_return_payment(db: Session, invoice: Invoice, provider_name: str) -> bool:
@@ -105,9 +111,18 @@ def public_payment_page(
     else:
         payment_status = status or None
 
+    from app.services.pay_applications import (
+        invoice_is_release_only,
+        pay_application_number,
+    )
+
     template = _jinja_env.get_template("public_pay.html")
     html = template.render(
         inv=invoice,
+        # a pay application that only releases retainage reads as the
+        # release, not a $0.00 total (#751)
+        release_only=invoice_is_release_only(invoice),
+        pay_application_number=pay_application_number(db, invoice),
         company=settings,
         providers=providers,
         payment_status=payment_status,

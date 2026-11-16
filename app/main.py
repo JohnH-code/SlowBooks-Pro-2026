@@ -63,6 +63,7 @@ from app.routes import vendor_credits
 
 # Phase 3: Productivity
 from app.routes import recurring, batch_payments, memorized
+from app.routes import collections as collections_routes
 
 # Phase 4: Communication & Export
 from app.routes import csv as csv_routes
@@ -84,6 +85,7 @@ from app.routes import nonprofit as nonprofit_routes
 from app.routes import construction as construction_routes
 from app.routes import trade_packages as trade_packages_routes
 from app.routes import change_orders as change_orders_routes
+from app.routes import field_tickets as field_tickets_routes
 from app.routes import pay_applications as pay_applications_routes
 from app.routes import lien_waivers as lien_waivers_routes
 from app.routes import donors as donors_routes
@@ -629,6 +631,28 @@ async def lifespan(app: FastAPI):
                     "and were skipped; see the log above for each",
                     done["failed"],
                 )
+            # #778: once per company file, the cash lines of payments on a
+            # document holding or releasing retainage are rewritten to the
+            # 2.31.11 rule; those on or before the closing date are kept.
+            from app.services.cash_basis import (
+                retainage_pass_sentence as cash_basis_retainage_sentence,
+                rewrite_retainage_cash_lines,
+            )
+
+            redone = rewrite_retainage_cash_lines(
+                _db, on_progress=startup_progress.report
+            )
+            if not redone["already_done"] and (
+                redone["payments"] or redone["bill_payments"] or redone["kept_closed"]
+            ):
+                print(cash_basis_retainage_sentence(redone))
+            if redone["failed"]:
+                logging.getLogger("uvicorn.error").warning(
+                    "Cash basis and retainage: the payments on %d document(s) "
+                    "could not be rewritten and were skipped; see the log above "
+                    "for each. They are tried again at the next start",
+                    redone["failed"],
+                )
         finally:
             _db.close()
             startup_progress.clear()
@@ -955,6 +979,16 @@ async def security_headers(request: Request, call_next):
         disposition = response.headers.get("Content-Disposition", "")
         if disposition.lower().startswith("attachment"):
             response.headers["Content-Disposition"] = "inline" + disposition[10:]
+    # JSON is UTF-8 (RFC 8259), but a client that finds no charset on the
+    # Content-Type may guess: Windows PowerShell 5.1's Invoke-RestMethod
+    # reads ISO-8859-1, so the QBO importer's "Payment — Dana" printed as
+    # "Payment â€” Dana" (#742). FastAPI's serialization fast path and
+    # JSONResponse both send a bare application/json (and a custom
+    # default_response_class would switch that fast path off), so the
+    # charset is named here, once, for every route, error handler and
+    # gate refusal.
+    if response.headers.get("content-type") == "application/json":
+        response.headers["content-type"] = "application/json; charset=utf-8"
     _set_if_unset(response.headers, "X-Content-Type-Options", "nosniff")
     _set_if_unset(response.headers, "X-Frame-Options", "DENY")
     _set_if_unset(
@@ -1095,8 +1129,11 @@ _READ_METHODS = ("GET", "HEAD", "OPTIONS")
 # ... and moves lines between accounts with the reclassify tool (#337),
 # the accountant's own job: nothing new is posted, and the audit log
 # names every line.
+# ... and posts or voids the WIP schedule's adjusting entry, a journal entry
+# the report computes.
 _ACCOUNTANT_WRITE_RE = _re.compile(
-    r"^/api/(journal(/\d+/void)?|attachments/journal_entry/\d+|reclassify)$"
+    r"^/api/(journal(/\d+/void)?|attachments/journal_entry/\d+|reclassify"
+    r"|reports/wip-schedule/(post|void))$"
 )
 ACCOUNTANT_REFUSAL = (
     "An accountant's sign-in posts journal entries and reads everything "
@@ -1145,6 +1182,42 @@ TOKEN_RESTORE_REFUSAL = (
 )
 
 
+# What a token's "Can run payroll" permission reaches (#755): pay runs, tax
+# forms and their audit history, benefits and deductions, every method; an
+# employee listed, read, added or edited, and its year-to-date pay. Never a
+# DELETE under /api/employees, and never the parts that are a credential or
+# an identity paper: the portal login and access, bank accounts, documents,
+# E-Verify, onboarding, and the NACHA direct-deposit file.
+_TOKEN_PAYROLL_PREFIXES = (
+    "/api/payroll",
+    "/api/tax-forms",
+    "/api/document-audits",
+    "/api/benefits",
+    "/api/deductions",
+)
+_TOKEN_PAYROLL_EMPLOYEE_RE = _re.compile(
+    r"^/api/employees(/\d+(/(ytd|opening-ytd))?)?/?$"
+)
+# The NACHA file decrypts every employee's full routing and account number
+# and takes the company's originating account from the request: a bank
+# credential, so it stays with a signed-in administrator, grant or not.
+_TOKEN_PAYROLL_NEVER_RE = _re.compile(r"^/api/payroll/[^/]+/nacha(/|$)")
+
+
+def _under(path: str, prefix: str) -> bool:
+    """`path` is `prefix` or below it, segment by segment: a later route
+    named /api/payroll-export would not ride on /api/payroll's grant."""
+    return path == prefix or path.startswith(prefix + "/")
+
+
+def _is_token_payroll_route(method: str, path: str) -> bool:
+    if _TOKEN_PAYROLL_NEVER_RE.match(path):
+        return False
+    if any(_under(path, p) for p in _TOKEN_PAYROLL_PREFIXES):
+        return True
+    return method != "DELETE" and bool(_TOKEN_PAYROLL_EMPLOYEE_RE.match(path))
+
+
 def _is_token_backup_route(method: str, path: str) -> bool:
     if path == "/api/backups":
         return method in ("GET", "HEAD", "POST")
@@ -1188,7 +1261,7 @@ async def _require_session(request: Request, call_next):
     ):
         return await call_next(request)
     token_principal = None
-    backup_grant = False
+    token_grant = False
     if request.session.get("authenticated") is True:
         if _signed_in_before_this_start(request.session):
             # Settings -> "Ask for the password each time SlowBooks Pro
@@ -1289,15 +1362,31 @@ async def _require_session(request: Request, call_next):
             )
         role = token_principal["role"]
         allow_backups = bool(token_principal.get("allow_backups"))
+        # "Can run payroll" and "Can import" (#755) ride on a bookkeeper's
+        # role only; Settings refuses them on any other, and a row that
+        # carries one anyway gets nothing from it.
+        allow_payroll = role == "bookkeeper" and bool(
+            token_principal.get("allow_payroll")
+        )
+        allow_imports = role == "bookkeeper" and bool(
+            token_principal.get("allow_imports")
+        )
         # get_db reads this to stamp audit attribution ("token:<label>")
         request.state.token_principal = {
             "username": "token:" + token_principal["label"],
             "role": role,
             "allow_backups": allow_backups,
+            "allow_payroll": allow_payroll,
+            "allow_imports": allow_imports,
         }
-        # "Can make backups" (#434), set by an administrator on the token:
-        # make, list and download this company's backups on top of the role.
-        backup_grant = allow_backups and _is_token_backup_route(request.method, path)
+        # Permissions an administrator set on the token, on top of its role:
+        # "Can make backups" (#434) makes, lists and downloads this
+        # company's backups; "Can run payroll" and "Can import" (#755).
+        token_grant = (
+            (allow_backups and _is_token_backup_route(request.method, path))
+            or (allow_payroll and _is_token_payroll_route(request.method, path))
+            or (allow_imports and _under(path, "/api/migration"))
+        )
 
     # A signed-in person's own preferences (#480: Enter moves between
     # fields, the decimal point; the dashboard's order) are theirs to set
@@ -1317,7 +1406,7 @@ async def _require_session(request: Request, call_next):
             content={"detail": "An API token has no preferences of its own to set."},
         )
     if (
-        not backup_grant
+        not token_grant
         and not own_preference
         and not _role_allows(role, request.method, path)
     ):
@@ -1538,6 +1627,7 @@ app.include_router(nonprofit_routes.router)
 app.include_router(construction_routes.router)
 app.include_router(trade_packages_routes.router)
 app.include_router(change_orders_routes.router)
+app.include_router(field_tickets_routes.router)
 app.include_router(pay_applications_routes.router)
 app.include_router(lien_waivers_routes.router)
 app.include_router(donors_routes.router)
@@ -1573,6 +1663,7 @@ app.include_router(vendor_credits.router)
 # Phase 3: Productivity
 app.include_router(recurring.router)
 app.include_router(memorized.router)
+app.include_router(collections_routes.router)
 app.include_router(batch_payments.router)
 # Phase 4: Communication & Export
 app.include_router(csv_routes.router)

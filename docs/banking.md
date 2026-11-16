@@ -137,6 +137,34 @@ line says so, as the journal entry's edit does. An accountant's
 sign-in posts and voids journal entries but does not edit them, so it is
 offered no Edit on these rows.
 
+### Where deposits go
+
+Settings → Connections → Deposits holds the **default deposit account**
+(#734): the bank account Make Deposits opens on. Left blank, Make Deposits
+opens on the first bank account in the list, as it always did. Receive
+Payment and Enter Sales Receipt still open Deposit To on Undeposited Funds;
+the default is the first bank account listed under it, so posting straight
+to the bank is one step down. A company with no Undeposited Funds account
+has nothing to deposit later, so Deposit To starts on the default there. Only
+a bank account from the chart can be the default. A deposit or a payment
+already saved keeps the account it went into.
+
+The same section's **Deposit into these accounts** (#735) ticks the bank
+accounts a deposit goes into: Make Deposits lists only those, and so does
+Deposit To on Receive Payment and Enter Sales Receipt, under Undeposited
+Funds. With none ticked, every bank account is listed. The list only
+shortens those pickers: an account left off stays active, with its register,
+its reconciliations and its lines in every report, and a deposit or a
+payment already made into it keeps that account when it is edited. When
+accounts are ticked, the default deposit account must be one of them.
+
+A bank account made inactive in the chart is left off all of these pickers
+(#741), and a new deposit, payment, batch payment or sales receipt into one
+is refused, naming the account, with nothing saved. A deposit or a payment
+already in it keeps it: the deposit still opens, prints and edits, and the
+payment's edit still offers its own account. A blank Deposit To still
+posts to Undeposited Funds.
+
 Above the register, **From**, **To** and **Class** narrow what it shows. A
 From date adds a *Balance brought forward* row, and the running balance
 counts the lines shown. The dates apply when you press Enter or leave the
@@ -266,10 +294,38 @@ check** opens a sample check (Sample Payee, $1,234.56, today, "Alignment
 test") in a new tab; print it on plain paper and hold it against your stock
 to see how far to nudge. The test check uses the stock and nudges as they
 stand in the form, saved or not, so a change can be tried before saving it
-(`GET /api/checks/test-print?check_stock=&check_position=&check_nudge_x_in=&check_nudge_y_in=`,
+(`GET /api/checks/test-print?check_stock=&check_position=&check_nudge_x_in=&check_nudge_y_in=&check_field_layout=`,
 each optional). This applies to every check print path — a bill
 payment, Pay Bills, the batch print of waiting checks, a register check
 and an expense paid from a bank account.
+
+**Field layout** (v2.31.12) is for stock whose boxes do not all sit where
+the check prints them: one company's payee line may sit right while its date
+is too far left and its amount box wants a larger figure, and the nudges move
+everything together. A table under the nudges has a row for each field of the
+check — **payee**, **payee address**, **date**, **amount in figures**,
+**amount in words** and **memo** — with four columns: **Left/right** and
+**Up/down**, in inches from where the field prints today (−1 to +1 in 0.01
+steps; a positive offset moves it right and down), applied on top of the
+nudges; **Size**, in points (6 to 18, one decimal place; empty prints the size
+it prints at today: payee 12, payee address 9, date 10, amount in figures 14,
+or 12 with the check on top, amount in words 9, memo 8); and **Bold** (the
+payee and the amount in figures are bold today, the others are not). Each
+change moves or restyles that field only: a field keeps its baseline as its
+size changes and nothing laid out after it moves (the payee's address, which
+runs to several lines, grows from its first line; a right-aligned field, the
+date or the amount, grows to the left, and on plain stock the date's DATE
+label moves with it). **Reset field layout to defaults** empties the table;
+Save Settings saves it like the rest. The layout applies to the check at the
+bottom and on top, to plain, pre-printed and blank stock, and to every print
+path, and the test check prints it as it stands in the form, saved or not.
+With nothing set (the default), every check prints exactly as before. The API
+keeps it in one setting, `check_field_layout`: JSON keyed by field (`payee`,
+`payee_address`, `date`, `amount`, `amount_words`, `memo`), each holding only
+what differs from today — `x` and `y` (inches), `size` (points) and `bold`
+(true or false), such as `{"date": {"x": -0.2, "size": 12, "bold": true}}`;
+`""` is today's layout. A value out of bounds is refused with a sentence that
+names the field, and nothing is saved.
 
 **Check position** (v2.31.9) says where the check sits on the sheet.
 **Check at the bottom** (the default) prints two stubs and then the check,
@@ -293,6 +349,60 @@ expense paid to a vendor; when the vendor has no address on file (or the
 check has no vendor), no address prints and nothing else on the check
 moves. The test check prints a made-up address so the block can be lined
 up too.
+
+### Blank check stock
+
+**Print on blank check stock** (Settings → Payroll and checks → Check
+Printing, off by default) prints the whole check onto stock that carries
+nothing: the company's logo (when one is saved under Company Logo), name and
+address at the top left, with the logo first and the name and address beside
+it; the bank's name and city and state centered below them; the check number
+at the top right with the fractional routing number under it; and the MICR
+line along the bottom edge of the check. The labels, lines and borders print
+as they do on plain stock, whatever the Check Stock choice says, and the
+date, payee, amount, amount in words, payee's address, memo and signature
+line print exactly where they do without it. It works with the check at the
+bottom or on top, the nudges, and every print path: a bill payment, Pay
+Bills, the batch print and a register check or expense.
+
+Each bank account keeps its own details, under **Bank account details for
+blank stock** in the same section: pick the account, then enter the bank's
+name, its city and state, the 9-digit **routing number** (checked against
+the ABA check digit), the **account number** (digits, with dashes where the
+bank prints them, up to 17 characters) and, if your bank's checks show one,
+the **fractional routing number** (like 70-1234/719). **Save bank account
+details** saves them on their own, apart from the settings form. The
+account number is stored encrypted and reads back as its last four; leave
+the box empty to keep it. With blank stock on, a check on an account that
+has no routing or account number is refused with a message saying where to
+enter them, and nothing is numbered.
+
+**The MICR line** follows the ANSI X9.100-160 layout: characters 1/8 inch
+apart, their baseline 3/16 inch above the check's bottom edge, the fields
+counted from the right edge. From left to right it carries the check number
+between two On-Us symbols, the routing number between two Transit symbols,
+and the account number followed by an On-Us symbol. The characters are the
+E-13B set, drawn by SlowBooks, so no MICR font is needed.
+
+**Encode the amount in the MICR line** (off by default) also prints the
+amount, in cents, between two Amount symbols at the right end of the line.
+That field is normally encoded by the bank where the check is deposited;
+printing it yourself means the amount cannot be changed without it showing.
+
+The blank check stock and the MICR toner are yours to buy. A bank's
+equipment reads the MICR line magnetically, which works only when it is
+printed with MICR toner; printed with ordinary toner it is readable by eye
+and by camera but may be rejected by a reader-sorter. Ask your bank to test
+a few checks before you rely on them. The test check on blank stock prints
+a sample bank, routing number and account number, never a saved account's,
+so it can be lined up without printing a check a bank would take
+(`GET /api/checks/test-print?check_blank_stock=true&check_micr_amount=true`).
+
+`GET /api/settings/check-bank-details/{account_id}` answers `bank_name`,
+`bank_city_state`, `fractional_routing`, `routing_number`,
+`account_number_last_four` and `has_account_number`; `PUT` takes any of the
+first four and `account_number` (an empty one clears it); an unknown field
+or a bad value is a 422.
 
 ## Transfers
 

@@ -26,9 +26,13 @@ const VendorsPage = {
                 <button class="btn btn-primary" onclick="VendorsPage.showForm()" style="margin-top:10px;">+ Create your first vendor</button>
             </div>`;
         } else {
+            // a contractor's list shows which vendors are subs and when each
+            // certificate of insurance runs out
+            const subs = Terms.isConstruction();
             html += `<div class="table-container"><table>
                 <thead><tr>
                     <th scope="col">Name</th><th scope="col">Company</th><th scope="col">Phone</th><th scope="col">Email</th>
+                    ${subs ? '<th scope="col">Sub</th><th scope="col">COI expires</th>' : ''}
                     <th scope="col" class="amount">Balance</th><th scope="col">Actions</th>
                 </tr></thead><tbody>`;
             for (const v of vendors) {
@@ -41,6 +45,7 @@ const VendorsPage = {
                     <td>${escapeHtml(v.company) || ''}</td>
                     <td>${escapeHtml(v.phone) || ''}</td>
                     <td>${escapeHtml(v.email) || ''}</td>
+                    ${subs ? `<td>${v.vendor_type === 'sub' ? '<span class="badge badge-sent">Sub</span>' : ''}</td><td>${VendorsPage.coiCell(v)}</td>` : ''}
                     <td class="amount">${formatCurrency(v.balance)}</td>
                     <td class="actions">
                         <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); VendorsPage.showForm(${v.id})">Edit</button>
@@ -51,6 +56,17 @@ const VendorsPage = {
             html += `</tbody></table></div>`;
         }
         return html;
+    },
+
+    // A sub's COI expiry for the list: red once past (or with no date),
+    // amber within 30 days, else plain. Blank for a vendor that is not a sub.
+    coiCell(v) {
+        if (v.vendor_type !== 'sub') return '';
+        if (!v.coi_expires) return '<span style="color:var(--text-danger)" title="No certificate of insurance date on file">None on file</span>';
+        const days = Math.floor((new Date(v.coi_expires + 'T00:00:00') - new Date(new Date().toDateString())) / 86400000);
+        const color = days < 0 ? 'var(--text-danger)' : (days <= 30 ? '#b26a00' : 'inherit');
+        const note = days < 0 ? ` (expired ${-days} day${days === -1 ? '' : 's'} ago)` : (days <= 30 ? ` (${days} day${days === 1 ? '' : 's'})` : '');
+        return `<span style="color:${color}" title="Certificate of insurance expires ${escapeHtml(v.coi_expires)}">${formatDate(v.coi_expires)}${note}</span>`;
     },
 
     // The search box narrows the list as you type (#335): name, company,
@@ -586,7 +602,8 @@ const VendorsPage = {
  * credits, expenses, card charges and the vendor's default. They listed
  * expense accounts only, so materials could not be pointed at 5100
  * Materials Cost (W-L18, F8). `keepId` keeps an account already chosen on
- * the record even when it is of another type or inactive.
+ * the record even when it is of another type or inactive. Bills, expenses
+ * and card charges also offer the balance-sheet accounts (#766).
  */
 const PurchaseAccounts = {
     filter(accounts, ...keepIds) {
@@ -595,9 +612,37 @@ const PurchaseAccounts = {
             ((a.account_type === 'expense' || a.account_type === 'cogs') && a.is_active !== false)
             || keep.has(Number(a.id)));
     },
+    // A balance-sheet account a purchase can post to (#766): a loan's
+    // principal, an escrow or prepaid asset, equity. Not a bank or card
+    // account (those pay for things), nor a control asset whose figure a
+    // sub-ledger keeps: Accounts Receivable (the invoices), Undeposited
+    // Funds (Make Deposits: a bill line there showed as a payment waiting
+    // to be deposited) and Inventory (the items: a line there raised the
+    // asset with no item behind it), W-143; nor Accounts Payable, which
+    // the bill itself posts to. The control liabilities and equity stay:
+    // a bill can pay the sales tax owed. `is_control` is the server's
+    // registry (#122), so the picker keeps no list of numbers.
+    isBalanceSheet(a) {
+        return (a.account_type === 'asset' || a.account_type === 'liability' || a.account_type === 'equity')
+            && !a.bank_kind
+            && !(a.account_type === 'asset' && a.is_control)
+            && a.detail_type !== 'accounts_receivable' && a.detail_type !== 'accounts_payable';
+    },
+    // The cost accounts and the balance-sheet accounts (#766): what a bill,
+    // an expense or a card charge can post a line to, as QuickBooks' Enter
+    // Bills allows, so a loan payment splits between interest and
+    // principal. The server took any account already; the picker did not
+    // offer them. A purchase order keeps `filter`: it commits cost.
+    withBalanceSheet(accounts, ...keepIds) {
+        const keep = new Set(keepIds.filter(Boolean).map(Number));
+        return accounts.filter(a =>
+            ((a.account_type === 'expense' || a.account_type === 'cogs' || PurchaseAccounts.isBalanceSheet(a))
+                && a.is_active !== false)
+            || keep.has(Number(a.id)));
+    },
     // Grouped, cost of goods first, so the COGS accounts read as a set and
-    // not as a few odd expenses (#214); anything else the record already
-    // uses comes last.
+    // not as a few odd expenses (#214); the balance-sheet accounts, and
+    // anything else the record already uses, come last as Other accounts.
     options(accounts, selectedId) {
         const opt = a => `<option value="${a.id}" ${selectedId && a.id == selectedId ? 'selected' : ''}>`
             + `${accountLabel(a)}</option>`;
@@ -608,25 +653,27 @@ const PurchaseAccounts = {
             if (these.length) html += `<optgroup label="${label}">${these.map(opt).join('')}</optgroup>`;
         }
         const rest = accounts.filter(a => !groups.some(([type]) => type === a.account_type));
-        if (rest.length) html += `<optgroup label="Other">${rest.map(opt).join('')}</optgroup>`;
+        if (rest.length) html += `<optgroup label="Other accounts">${rest.map(opt).join('')}</optgroup>`;
         return html;
     },
 };
 
 /** Line arithmetic for the purchase forms, the way the server stores it. */
 const PurchaseLines = {
-    // Half up to the cent, as the server rounds and as SalesLines.cents does:
-    // shift by exponent, not by multiplying. 2.5 x 13.37 is 33.42499999...
-    // in floating point, Number.EPSILON is far below its last digit, and
-    // x 100 rounded to $33.42 while the server stored $33.43 (2.22.1 gate,
-    // NEW-48: bills, purchase orders and vendor credits).
+    // To the cent, half away from zero, as the server's _q rounds and as
+    // SalesLines.cents does (a copy, so this helper runs on its own). The
+    // point is moved in decimal text, not by multiplying: 2.5 x 13.37 is
+    // 33.42499999... in floating point and x 100 rounded to $33.42 while the
+    // server stored $33.43 (2.22.1 gate, NEW-48: bills, purchase orders and
+    // vendor credits). The text is the value to 15 significant digits, all
+    // a double holds, so 0.3 x 2.15 (0.6449999999999999) is 0.645, $0.65 (#783).
     cents(x) {
         const n = Number(x) || 0;
-        const a = Math.abs(n);
-        let r = Number(`${a}e2`);
-        r = Number.isFinite(r) ? Math.round(r) : Math.round(a * 100);
-        const back = Number(`${r}e-2`); // NaN past 1e21, where the string has an exponent
-        return (n < 0 ? -1 : 1) * (Number.isFinite(back) ? back : r / 100);
+        if (!Number.isFinite(n)) return n;
+        const [digits, exp] = Math.abs(n).toPrecision(15).split('e');
+        const r = Math.round(Number(`${digits}e${Number(exp || 0) + 2}`));
+        const back = Number(`${r}e-2`); // NaN past 1e21, where r's text has an exponent
+        return (n < 0 && r ? -1 : 1) * (Number.isFinite(back) ? back : r / 100);
     },
     // Each line is rounded to the cent before it is added up.
     lineAmount(row) {

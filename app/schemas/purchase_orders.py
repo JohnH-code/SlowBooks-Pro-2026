@@ -9,6 +9,8 @@ from app.schemas.common import (
     TaxRateOut,
     clean_line_cost_type,
     validate_non_negative_line,
+    check_line_fits,
+    check_lines_fit,
     quantity_text,
 )
 from app.schemas.invoices import RateOut
@@ -31,7 +33,9 @@ class POLineCreate(StrictModel):
 
     @model_validator(mode="after")
     def _check_non_negative(self):
+        # each figure to its own column first (#782), then the product (W-145)
         validate_non_negative_line(self.quantity, self.rate)
+        check_line_fits(self.quantity, self.rate)
         return self
 
 
@@ -57,6 +61,18 @@ class POLineResponse(BaseModel):
 
 COMMITMENT_TYPES = ("po", "subcontract")
 
+PO_STATUSES = ("draft", "sent", "partial", "received", "closed")
+
+
+def _check_status(v):
+    """A status the model knows, else a 422 that names the valid ones (an
+    unknown word used to reach the enum and fail as a 500)."""
+    if v is not None and v not in PO_STATUSES:
+        raise ValueError(
+            f"Unknown status '{v}'. Valid statuses are: {', '.join(PO_STATUSES)}."
+        )
+    return v
+
 
 def _check_commitment_type(v):
     if v is None:
@@ -71,7 +87,7 @@ def _check_commitment_type(v):
 
 def _check_retainage_pct(v):
     if v is not None and not (0 <= v <= 100):
-        raise ValueError("retainage_pct must be between 0 and 100")
+        raise ValueError("Retainage must be between 0 and 100%.")
     return v
 
 
@@ -99,6 +115,7 @@ class POCreate(StrictModel):
     def _require_lines(cls, v):
         if not v:
             raise ValueError("purchase order must have at least one line")
+        check_lines_fit(v)
         return v
 
 
@@ -117,8 +134,16 @@ class POUpdate(StrictModel):
     scope_notes: Optional[str] = None
     lines: Optional[list[POLineCreate]] = None
 
+    @field_validator("lines")
+    @classmethod
+    def _lines_fit(cls, v):
+        if v:
+            check_lines_fit(v)
+        return v
+
     _ctype = field_validator("commitment_type")(_check_commitment_type)
     _ret = field_validator("retainage_pct")(_check_retainage_pct)
+    _status = field_validator("status")(_check_status)
 
 
 class POConvertLineAccount(StrictModel):

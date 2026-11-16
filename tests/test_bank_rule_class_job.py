@@ -256,11 +256,12 @@ def test_the_migration_adds_the_columns_and_walks_back(tmp_path):
     db = tmp_path / "rules.db"
     cfg = _cfg(db)
     script = ScriptDirectory.from_config(cfg)
-    # John's build: its own merge revision is the head, on top of 2.31.8's
-    # (the transaction_lines indexes, #693)
-    assert "d7f3a9c1b5e2" in script.get_revision("a7b8c9d0e1f4").down_revision
+    # John's build: its own merge revision (d2e3f4a5b6c8) is the head, on
+    # top of 2.31.14's (token payroll and imports, #755)
+    assert "f3b9d2e6a1c7" in script.get_revision("d2e3f4a5b6c8").down_revision
+    assert script.get_heads() == ["d2e3f4a5b6c8"]
     assert script.get_revision(REVISION).down_revision == "4810bd59e481"
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, REVISION)  # its own step, not the chain (#770)
     engine = create_engine(f"sqlite:///{db}")
     insp = inspect(engine)
     cols = {c["name"] for c in insp.get_columns("bank_rules")}
@@ -275,9 +276,9 @@ def test_the_migration_adds_the_columns_and_walks_back(tmp_path):
     engine.dispose()
     # and up again; an upgrade over books that already have the columns
     # (stamped back, as create_all books are) is a no-op, not an error
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, REVISION)  # its own step, not the chain (#770)
     command.stamp(cfg, "4810bd59e481")
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, REVISION)  # its own step, not the chain (#770)
     engine = create_engine(f"sqlite:///{db}")
     assert {"class_id", "job_id"} <= {
         c["name"] for c in inspect(engine).get_columns("bank_rules")

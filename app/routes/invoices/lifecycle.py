@@ -28,6 +28,7 @@ from app.services.closing_date import check_closing_date
 
 from app.routes.invoices._router import router
 from app.routes.invoices.helpers import (
+    fill_last_emailed,
     invoice_customer_name,
     _post_invoice_journal,
     confirm_credit_limit,
@@ -182,6 +183,11 @@ def void_invoice_unchecked(invoice_id: int, db: Session, commit: bool = True):
                 reference=invoice.invoice_number,
             )
 
+    # T&M tickets billed on this invoice are free to bill again (construction).
+    from app.services.field_tickets import release_invoice
+
+    release_invoice(db, invoice)
+
     # ---- Phase 11: reverse inventory movements ----
     # Pass the ORIGINAL (invoice, id) so reverse_sale looks up the sale's
     # historical unit_cost — this keeps the reversal balanced even if
@@ -217,6 +223,7 @@ def void_invoice_unchecked(invoice_id: int, db: Session, commit: bool = True):
     if invoice.customer:
         resp.customer_name = invoice_customer_name(invoice)
     resp.notice = notice
+    fill_last_emailed(db, [resp])
     return resp
 
 
@@ -237,6 +244,7 @@ def mark_invoice_sent(invoice_id: int, db: Session = Depends(get_db)):
     DocumentTerms(db, "invoice").fill(resp, invoice)
     if invoice.customer:
         resp.customer_name = invoice_customer_name(invoice)
+    fill_last_emailed(db, [resp])
     return resp
 
 

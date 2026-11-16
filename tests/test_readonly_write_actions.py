@@ -20,7 +20,7 @@ JS = ROOT / "app" / "static" / "js"
 def test_every_write_action_named_is_a_real_button_call():
     app = (JS / "app.js").read_text(encoding="utf-8")
     block = app[app.index("WRITE_ACTIONS:") : app.index("hideWriteControls(root)")]
-    names = re.findall(r"'(\w+Page\.\w+)'", block)
+    names = re.findall(r"'(\w+Page\.\w+|FieldTickets\.\w+)'", block)
     assert len(names) > 100
     spa = "".join(p.read_text(encoding="utf-8") for p in JS.glob("*.js"))
     assert [n for n in names if not re.search(re.escape(n) + r"\(", spa)] == []
@@ -93,3 +93,44 @@ def test_a_read_only_sign_in_sees_only_what_it_can_do():
     # the register's journal/deposit Edit (a write action) is hidden
     assert "Edit JE" not in got["shown"] and "Edit Dep" not in got["shown"]
     assert got["adminHidden"] == 0
+
+
+def test_field_ticket_and_estimate_write_buttons_are_marked_for_hiding():
+    """Delete, Void and delete-attachment on field tickets, and Mark lost and
+    Email on estimates, are hidden from a sign-in that cannot use them."""
+    app = (JS / "app.js").read_text(encoding="utf-8")
+    block = app[app.index("WRITE_ACTIONS:") : app.index("hideWriteControls(root)")]
+    for name in (
+        "FieldTickets.del",
+        "FieldTickets.voidTicket",
+        "FieldTickets.deleteAttachment",
+        "EstimatesPage.markLost",
+        "EstimatesPage.emailEstimate",
+    ):
+        assert f"'{name}'" in block
+    # the call pattern reads a FieldTickets.* handler, not only *Page.*
+    assert "|FieldTickets" in app
+    ft = (JS / "field_tickets.js").read_text(encoding="utf-8")
+    for handler in (
+        "FieldTickets.del(",
+        "FieldTickets.voidTicket(",
+        "FieldTickets.deleteAttachment(",
+    ):
+        button = next(l for l in ft.splitlines() if handler in l and "<button" in l)
+        assert "data-write" in button
+
+
+def test_a_pay_applications_delete_is_marked_for_hiding():
+    """Delete on an open pay application, on its row, in its form and on an
+    empty one, is hidden from a sign-in that cannot use it."""
+    app = (JS / "app.js").read_text(encoding="utf-8")
+    block = app[app.index("WRITE_ACTIONS:") : app.index("hideWriteControls(root)")]
+    assert "'JobsPage.paDelete'" in block
+    jobs = (JS / "jobs.js").read_text(encoding="utf-8")
+    buttons = [
+        line
+        for line in jobs.splitlines()
+        if "JobsPage.paDelete(" in line and "<button" in line
+    ]
+    assert len(buttons) == 3
+    assert all("data-write" in b for b in buttons), buttons

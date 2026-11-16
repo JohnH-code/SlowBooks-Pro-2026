@@ -60,6 +60,18 @@ def clean_line_cost_type(v):
     return v
 
 
+def choice_error(label: str, choices: dict, field: str) -> ValueError:
+    """A refused choice as a sentence a person reads: the field's label and
+    the choices' labels ("Line type must be Labor, Equipment, Material or
+    Other."), with the codes an API caller sends in a trailing note that
+    validation_messages keeps in "msg" only."""
+    names = list(choices.values())
+    listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
+    return ValueError(
+        f"{label} must be {listed}. (API: {field} is one of {', '.join(choices)}.)"
+    )
+
+
 # An email field that treats blank as absent. HTML forms submit every empty
 # input as "" — Optional[OptionalEmail] alone rejects that with a pattern
 # 422 even though the user typed nothing (#64). Blank collapses to None
@@ -95,6 +107,7 @@ def validate_non_negative_line(quantity, rate) -> None:
     negative balance_due. Anything that smells like a refund / discount /
     return belongs in a credit memo, not a negative invoice line.
     """
+    check_line_size(quantity, rate)
     q = Decimal(str(quantity if quantity is not None else 0))
     r = Decimal(str(rate if rate is not None else 0))
     if q < 0:
@@ -103,6 +116,84 @@ def validate_non_negative_line(quantity, rate) -> None:
         raise ValueError("rate must be non-negative; use a credit memo for refunds")
     if q != q.quantize(QUANTITY_PLACES):
         raise ValueError("Quantities are kept to four decimal places.")
+
+
+# A line's quantity is Numeric(12, 4) on invoices, estimates, bills, purchase
+# orders, credit memos, vendor credits and recurring and memorized lines; its
+# rate is Numeric(17, 4); an estimate line's unit cost is Numeric(12, 4). A
+# figure past its column overflows Postgres (a 500) or is stored wrong on
+# SQLite, and "1e40" at a rate of 0 passed the line check (it comes to 0)
+# and raised in the quantity rounding (#782). Each is held to its column
+# whatever the other figure is.
+MAX_QUANTITY = Decimal("99999999.9999")
+MAX_RATE = Decimal("9999999999999.9999")
+MAX_UNIT_COST = Decimal("99999999.9999")
+
+
+def _check_figure(value, limit: Decimal, label: str) -> None:
+    if value is None:
+        return
+    d = Decimal(str(value))
+    if not d.is_finite() or abs(d) > limit:
+        raise ValueError(f"{label} can be at most {limit:,}. Check the line.")
+
+
+def check_line_size(quantity, rate, unit_cost=None) -> None:
+    """Refuse a quantity, rate or unit cost too large for its column (or not a
+    number at all: "Infinity", "NaN") with a sentence, before anything rounds
+    it."""
+    _check_figure(quantity, MAX_QUANTITY, "A quantity")
+    _check_figure(rate, MAX_RATE, "A rate")
+    _check_figure(unit_cost, MAX_UNIT_COST, "A unit cost")
+
+
+# Money columns are Numeric(15, 2): a line or a document total past this
+# overflows Postgres (a 500) or, on SQLite, is stored as a float error.
+MAX_LINE_AMOUNT = Decimal("9999999999999.99")
+
+
+def line_total(quantity, rate) -> Decimal:
+    """quantity x rate computed exactly, however large, so a figure past the
+    money column can be named in a sentence instead of raising in a quantize."""
+    q = Decimal(str(quantity if quantity is not None else 0))
+    r = Decimal(str(rate if rate is not None else 0))
+    return q * r if q.is_finite() and r.is_finite() else Decimal("NaN")
+
+
+def check_line_fits(quantity, rate) -> None:
+    """Refuse a line whose quantity x rate would not fit a money column (a
+    sentence, never a 500)."""
+    amount = line_total(quantity, rate)
+    if not amount.is_finite() or abs(amount) > MAX_LINE_AMOUNT:
+        raise ValueError(
+            "This line comes to more than a line can be "
+            f"({MAX_LINE_AMOUNT:,.2f}). Check its quantity and rate."
+        )
+
+
+# Percent columns (an estimate's markups, a change order's markup, a job's
+# default change-order markup) are Numeric(7, 4): three whole digits. A
+# larger figure overflows Postgres (a 500) and "1e30" raised in the money
+# rounding before it got there.
+MAX_PERCENT = Decimal("999.9999")
+
+
+def check_markup_percent(v, label: str):
+    """A markup percent is 0 to 999.9999; the sentence names the field by
+    `label`. A negative markup would price the work below its cost."""
+    if v is not None and not (0 <= v <= MAX_PERCENT):
+        raise ValueError(f"{label} must be between 0 and {MAX_PERCENT}%.")
+    return v
+
+
+def check_lines_fit(lines) -> None:
+    """The lines' sum also fits a money column."""
+    total = sum((abs(line_total(ln.quantity, ln.rate)) for ln in lines), Decimal(0))
+    if total > MAX_LINE_AMOUNT:
+        raise ValueError(
+            "The lines come to more than a document can be "
+            f"({MAX_LINE_AMOUNT:,.2f}). Split the work across documents."
+        )
 
 
 # A line's quantity is stored to four decimal places (2.23.0, NEW-94: the
@@ -295,3 +386,52 @@ Discount = Annotated[Decimal, AfterValidator(_check_discount)]
 BIGINT_MAX = 9223372036854775807
 
 StrictId = Annotated[StrictInt, Field(ge=1, le=BIGINT_MAX)]
+
+
+# Money is kept in whole cents (#747). A payment or an allocation finer
+# than a cent was rounded on its own when stored: two allocations of 0.005
+# passed the "allocations exceed payment" check as 0.01 and were stored as
+# 0.01 each, two cents applied from a one-cent payment. Such an amount is
+# refused, not rounded, so what passes the checks is what is stored.
+def _finer_than_cents(value: Decimal) -> bool:
+    """Whether a finite Decimal has a nonzero digit past the cents, judged
+    on its digits (a quantize would round, or raise past 28 digits)."""
+    if not value.is_finite():
+        return False
+    _sign, digits, exponent = value.as_tuple()
+    if exponent >= -2:
+        return False
+    return any(digits[exponent + 2 :])
+
+
+def _plain(value: Decimal) -> str:
+    """The amount as sent, without an exponent or trailing zeros."""
+    text = format(value, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def whole_cents(label: str):
+    """A validator refusing an amount finer than a cent, in a sentence that
+    names the field by `label` ("A payment amount is in whole cents; 0.005
+    isn't."). It judges the decimal the client sent, a JSON number or a
+    string alike, so it runs before a float field converts the value; a
+    value that isn't a number is left to the field's own validation."""
+
+    def check(value):
+        if value is None or isinstance(value, bool):
+            return value
+        try:
+            exact = value if isinstance(value, Decimal) else Decimal(str(value).strip())
+        except (ArithmeticError, ValueError, TypeError):
+            return value
+        if _finer_than_cents(exact):
+            raise ValueError(f"{label} is in whole cents; {_plain(exact)} isn't.")
+        return value
+
+    return check
+
+
+def WholeCents(label: str, kind=Decimal):
+    """A money field of `kind` (Decimal, or float where a route still does
+    float arithmetic) that refuses anything finer than a cent (#747)."""
+    return Annotated[kind, BeforeValidator(whole_cents(label))]

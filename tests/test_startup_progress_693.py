@@ -50,8 +50,8 @@ def test_a_file_built_by_migrations_has_both_indexes(tmp_path):
     db = tmp_path / "fresh.db"
     cfg = _cfg(db)
     script = ScriptDirectory.from_config(cfg)
-    # John's build: its own merge revision (a7b8c9d0e1f4) sits on top of this one
-    assert REVISION in script.get_revision("a7b8c9d0e1f4").down_revision
+    # later migrations sit above this one; it stays in the chain under head
+    assert REVISION in {r.revision for r in script.walk_revisions()}
     assert script.get_revision(REVISION).down_revision == BEFORE
     command.upgrade(cfg, "head")
     indexes = _indexes(db)
@@ -79,10 +79,12 @@ def test_hand_made_indexes_do_not_stop_ours_and_downgrade_drops_only_ours(
         )
     engine.dispose()
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, REVISION)  # its own step, not the chain (#770)
     names = set(_indexes(db))
     assert OURS <= names and {"ix_tmp_tl_txn", "ix_tmp_tl_acct"} <= names
-    command.upgrade(cfg, "head")  # a second run has nothing to do
+    command.upgrade(
+        cfg, REVISION
+    )  # a second run has nothing to do (its own step, #770)
 
     command.downgrade(cfg, BEFORE)
     names = set(_indexes(db))

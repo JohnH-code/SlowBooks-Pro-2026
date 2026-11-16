@@ -4,12 +4,15 @@ from typing import Optional
 from pydantic import BaseModel, field_validator, model_validator, field_serializer
 
 from app.schemas.common import (
+    check_line_fits,
+    check_lines_fit,
+    clean_line_cost_type,
+    quantity_text,
     StrictModel,
     TaxRateFloat,
     TaxRateOut,
-    clean_line_cost_type,
     validate_non_negative_line,
-    quantity_text,
+    WholeCents,
 )
 from app.schemas.invoices import RateOut
 
@@ -32,7 +35,11 @@ class VendorCreditLineCreate(StrictModel):
     def _check_non_negative(self):
         # A credit is entered as a positive amount, the same way a bill is.
         # The direction is the document's job, not the operator's.
+        # a quantity past its column at a rate of 0 raised in the rounding
+        # (a 500, #782): each figure to its own column first, then the product
+        # (W-145, the 2.31.14 gate), which past the money column raised too
         validate_non_negative_line(self.quantity, self.rate)
+        check_line_fits(self.quantity, self.rate)
         return self
 
 
@@ -58,7 +65,7 @@ class VendorCreditLineResponse(BaseModel):
 
 class VendorCreditApplicationCreate(StrictModel):
     bill_id: int
-    amount: float
+    amount: WholeCents("An applied amount", float)
 
 
 class VendorCreditCreate(StrictModel):
@@ -77,6 +84,7 @@ class VendorCreditCreate(StrictModel):
     def _require_lines(cls, v):
         if not v:
             raise ValueError("vendor credit must have at least one line")
+        check_lines_fit(v)
         return v
 
 

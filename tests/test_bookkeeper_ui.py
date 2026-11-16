@@ -221,13 +221,6 @@ SETTINGS_TAKEN = {
     ),
     "Closing Date › Clear": ("PUT", "/api/settings", {"closing_date": ""}),
     "Email (SMTP) › Send Test Email": ("POST", "/api/settings/test-email", None),
-    # Recent sends reads the email_log (recipients, raw SMTP errors): admin
-    # only, like backups and tokens (#447).
-    "Recent sends › #email-log-failed-only": (
-        "GET",
-        "/api/email-log?status=failed",
-        None,
-    ),
     "Receipt Scanning › #ocr-engine-pref": (
         "PUT",
         "/api/settings",
@@ -235,6 +228,20 @@ SETTINGS_TAKEN = {
     ),
     "Company Logo › #logo-upload": ("POST", "/api/uploads/logo", UPLOAD),
     "Company Logo › Remove logo": ("DELETE", "/api/uploads/logo", None),
+    # a bank account's details for blank check stock (#739) sit under
+    # /api/settings: an administrator's, like the rest of check printing's setup
+    "Check Printing › Save bank account details": (
+        "PUT",
+        "/api/settings/check-bank-details/{bank_account}",
+        {"bank_name": "First Prairie Bank", "routing_number": "071000013"},
+    ),
+    # the check face's per-field layout (#749) is a company setting, saved
+    # and cleared with the rest: an administrator's, like the nudges
+    "Check Printing › Reset field layout to defaults": (
+        "PUT",
+        "/api/settings",
+        {"check_field_layout": ""},
+    ),
     "Backup / Restore › Create Backup": ("POST", "/api/backups", None),
     "Backup / Restore › Restore…": (
         "POST",
@@ -281,6 +288,23 @@ SETTINGS_TAKEN = {
         "/api/payment-terms",
         {"name": "Net 20", "net_days": 20},
     ),
+    # Reminder rules (#653): the schedule and wording are the administrator's;
+    # a bookkeeper runs them from Collections. The probe's stub lists no
+    # rules, so only the Add rule row is shown.
+    **{
+        f"Collections › {c}": (
+            "POST",
+            "/api/collections/rules",
+            {"days_from_due": 30, "subject": "Reminder", "body": "Please pay."},
+        )
+        for c in (
+            "Add rule",
+            "#rule-days-new",
+            "#rule-enabled-new",
+            "#rule-subject-new",
+            "#rule-body-new",
+        )
+    },
 }
 # Users and API tokens refuse every API token whatever its role, so these are
 # asked with a bookkeeper's own sign-in. Settings shows the two sections to
@@ -304,6 +328,30 @@ SETTINGS_TAKEN_FROM_A_SIGN_IN = {
     ),
 }
 SETTINGS_TAKEN_PARTS = {
+    "Check Printing › #check-bank-account": "Check Printing › Save bank account details",
+    "Check Printing › #check-bank-name": "Check Printing › Save bank account details",
+    "Check Printing › #check-bank-city": "Check Printing › Save bank account details",
+    "Check Printing › #check-bank-routing": "Check Printing › Save bank account details",
+    "Check Printing › #check-bank-account-number": (
+        "Check Printing › Save bank account details"
+    ),
+    "Check Printing › #check-bank-fraction": "Check Printing › Save bank account details",
+    # the Field layout table (#749): six fields, each with its offsets, size
+    # and bold, saved with the company settings
+    **{
+        f"Check Printing › #check-field-{field}-{attr}": (
+            "Check Printing › Reset field layout to defaults"
+        )
+        for field in (
+            "payee",
+            "payee-address",
+            "date",
+            "amount",
+            "amount-words",
+            "memo",
+        )
+        for attr in ("x", "y", "size", "bold")
+    },
     "AI Insights › #ai-settings-provider": "AI Insights › Save AI settings",
     "AI Insights › #ai-settings-model-select": "AI Insights › Save AI settings",
     "AI Insights › #ai-settings-key": "AI Insights › Save AI settings",
@@ -315,6 +363,12 @@ SETTINGS_TAKEN_PARTS = {
         "API Tokens — agents & integrations › Create Token"
     ),
     "API Tokens — agents & integrations › #token-new-role": (
+        "API Tokens — agents & integrations › Create Token"
+    ),
+    # the new token's boxes are Create Token's, not Settings fields
+    # (NEW-221); payroll and imports stay locked until the role is
+    # bookkeeper (#755), so only backups is offered as the form opens
+    "API Tokens — agents & integrations › #token-new-backups": (
         "API Tokens — agents & integrations › Create Token"
     ),
 }
@@ -337,13 +391,29 @@ MIGRATE_TAKEN = {
 
 
 KEPT = {**SETTINGS_KEPT}
+# What the page keeps for an administrator though the server answers a
+# bookkeeper: Recent sends is an administrator's section of Settings (#447),
+# but GET /api/email-log answers every role since #781, without the raw SMTP
+# error, so an integration can confirm a send went out.
+SETTINGS_TAKEN_ON_THE_PAGE_ONLY = {
+    "Recent sends › #email-log-failed-only": (
+        "GET",
+        "/api/email-log?status=failed",
+        None,
+    ),
+}
 TAKEN = {**SETTINGS_TAKEN, **COMPANIES_TAKEN, **MIGRATE_TAKEN}
 
 
 def _control(key, names):
     """The control a key is sent by: a field or a picker belongs to its
     button, and every named field of the Settings form to Save Settings."""
-    if key in KEPT or key in TAKEN or key in SETTINGS_TAKEN_FROM_A_SIGN_IN:
+    if (
+        key in KEPT
+        or key in TAKEN
+        or key in SETTINGS_TAKEN_FROM_A_SIGN_IN
+        or key in SETTINGS_TAKEN_ON_THE_PAGE_ONLY
+    ):
         return key
     for parts in (SETTINGS_KEPT_PARTS, SETTINGS_TAKEN_PARTS):
         if key in parts:
@@ -424,11 +494,16 @@ def test_settings_leaves_a_bookkeeper_the_lists_and_templates():
 def test_settings_is_as_it_was_for_an_administrator():
     got = _probe()["settings"]["admin"]
     assert got["fields"]["enabled"] == got["fields"]["names"]
+    # the API token boxes (the new token's, which lock until its role is
+    # bookkeeper, #755, and each token's in the list) save through their own
+    # buttons, never Save Settings: none is a Settings field (NEW-221)
+    assert [n for n in got["fields"]["names"] if n.startswith("token")] == []
     everything = (
         set(SETTINGS_KEPT)
         | set(SETTINGS_KEPT_PARTS)
         | set(SETTINGS_TAKEN)
         | set(SETTINGS_TAKEN_FROM_A_SIGN_IN)
+        | set(SETTINGS_TAKEN_ON_THE_PAGE_ONLY)
         | set(SETTINGS_TAKEN_PARTS)
     )
     assert sorted(everything - _yes(got["offered"])) == []
@@ -448,7 +523,8 @@ def test_a_read_only_sign_in_has_its_own_sentence_on_settings_not_two():
     got = _probe()["settings"]["readonly"]
     assert got["fields"]["enabled"] == []
     assert (got["readonly_notes"], got["notes"]) == (1, [])
-    assert _yes(got["offered"]) & set(SETTINGS_TAKEN) == set()
+    taken = set(SETTINGS_TAKEN) | set(SETTINGS_TAKEN_ON_THE_PAGE_ONLY)
+    assert _yes(got["offered"]) & taken == set()
 
 
 def test_companies_leaves_a_new_company_to_an_administrator():
@@ -557,6 +633,11 @@ def made(client, db_session, seed_accounts, seed_customer):
                 "/api/equipment", json={"name": "Skid steer", "hourly_rate": 85}
             )
         )["id"],
+        "bank_account": next(
+            a["id"]
+            for a in ok(client.get("/api/accounts"))
+            if a.get("bank_kind") or a["name"] == "Checking"
+        ),
     }
 
 
@@ -595,7 +676,9 @@ def test_every_control_taken_from_a_bookkeeper_the_server_refuses(client, made):
     admin, keeper_pages = _pages(probe, "admin"), _pages(probe, "bookkeeper")
     taken = {page: admin[page] - keeper_pages[page] for page in admin}
     assert taken == {
-        "settings": set(SETTINGS_TAKEN) | set(SETTINGS_TAKEN_FROM_A_SIGN_IN),
+        "settings": set(SETTINGS_TAKEN)
+        | set(SETTINGS_TAKEN_FROM_A_SIGN_IN)
+        | set(SETTINGS_TAKEN_ON_THE_PAGE_ONLY),
         "companies": set(COMPANIES_TAKEN),
         "migrate": set(MIGRATE_TAKEN),
     }
@@ -603,6 +686,10 @@ def test_every_control_taken_from_a_bookkeeper_the_server_refuses(client, made):
     for control, (method, path, body) in TAKEN.items():
         r = _send(keeper, method, path, body, made)
         assert r.status_code == 403, (control, method, path, r.status_code, r.text)
+    # the page keeps these for an administrator; the server answers (#781)
+    for control, (method, path, body) in SETTINGS_TAKEN_ON_THE_PAGE_ONLY.items():
+        r = _send(keeper, method, path, body, made)
+        assert r.status_code == 200, (control, method, path, r.status_code, r.text)
     # users and tokens, from a bookkeeper's own sign-in: no API token may
     # manage either, whatever its role
     r = client.post(

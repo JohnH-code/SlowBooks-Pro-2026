@@ -16,7 +16,8 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models.transactions import LEDGER_BASIS_OPTION, READ_ALL
 from app.database import get_db
-from app.routes._helpers import reject_null_updates
+from app.routes._helpers import refuse_unknown_filters, reject_null_updates
+from app.models.accounts import Account, AccountType
 from app.models.contacts import Customer
 from app.models.cost_codes import CostCode
 from app.models.trade_packages import TradePackage
@@ -38,6 +39,7 @@ from app.schemas.jobs import (
     JobUpdate,
     SovLineOut,
     SovSave,
+    SovSaveResponse,
 )
 from app.schemas.pay_applications import JobDepositCreate
 from app.models.estimates import Estimate
@@ -46,6 +48,7 @@ from app.services.contracts import (
     contract_is_locked,
     contract_summary,
     settle_contract_type,
+    shared_revenue_account_id,
     sync_contingency_line,
 )
 from app.services.estimating import estimate_totals
@@ -61,9 +64,11 @@ from app.services.job_costing import (
 from app.services.jobs_service import (
     commitment_figures,
     committed_cost,
+    delete_job_setup,
     find_job,
     job_profitability,
     job_transactions,
+    refuse_deleting_job_with_records,
     refuse_moving_a_carried_job,
 )
 
@@ -116,7 +121,11 @@ def list_jobs(
     return [_to_response(j) for j in rows]
 
 
-@router.get("/profitability", response_model=list[JobSummary])
+@router.get(
+    "/profitability",
+    response_model=list[JobSummary],
+    dependencies=[Depends(refuse_unknown_filters)],
+)
 def jobs_profitability(
     start_date: Optional[date] = Query(default=None),
     end_date: Optional[date] = Query(default=None),
@@ -135,7 +144,7 @@ def jobs_profitability(
     return rows
 
 
-@router.get("/budget-vs-actual")
+@router.get("/budget-vs-actual", dependencies=[Depends(refuse_unknown_filters)])
 def jobs_budget_vs_actual(
     start_date: Optional[date] = Query(default=None),
     end_date: Optional[date] = Query(default=None),
@@ -202,7 +211,7 @@ def get_job_transactions(
     return job_transactions(db, job_id, start_date, end_date)
 
 
-@router.get("/{job_id}/cost-tree")
+@router.get("/{job_id}/cost-tree", dependencies=[Depends(refuse_unknown_filters)])
 def get_job_cost_tree(
     job_id: int,
     start_date: Optional[date] = Query(default=None),
@@ -220,7 +229,7 @@ def _cost_tree_filename(job_id: int, start_date, end_date, ext: str) -> str:
     return f"job-cost-detail_{job_id}{dates or '_job-to-date'}.{ext}"
 
 
-@router.get("/{job_id}/cost-tree/pdf")
+@router.get("/{job_id}/cost-tree/pdf", dependencies=[Depends(refuse_unknown_filters)])
 def get_job_cost_tree_pdf(
     job_id: int,
     start_date: Optional[date] = Query(default=None),
@@ -248,7 +257,7 @@ def get_job_cost_tree_pdf(
     )
 
 
-@router.get("/{job_id}/cost-tree/csv")
+@router.get("/{job_id}/cost-tree/csv", dependencies=[Depends(refuse_unknown_filters)])
 def get_job_cost_tree_csv(
     job_id: int,
     request: Request,
@@ -424,6 +433,9 @@ def _sov_responses(job: Job) -> list[SovLineOut]:
         data = SovLineOut.model_validate(r)
         data.trade_package_name = r.trade_package.name if r.trade_package else None
         data.cost_code_label = r.cost_code.label if r.cost_code else None
+        data.revenue_account_name = (
+            r.revenue_account.name if r.revenue_account else None
+        )
         out.append(data)
     return out
 
@@ -432,6 +444,7 @@ def _contract_response(db: Session, job: Job) -> ContractResponse:
     return ContractResponse(
         contract=ContractSummary(**contract_summary(db, job)),
         sov=_sov_responses(job),
+        new_line_revenue_account_id=shared_revenue_account_id(job.sov_lines),
     )
 
 
@@ -541,7 +554,25 @@ def set_contract(job_id: int, data: ContractTerms, db: Session = Depends(get_db)
         sync_contingency_line(db, job)
     db.commit()
     db.refresh(job)
-    return _contract_response(db, job)
+    resp = _contract_response(db, job)
+    resp.warnings = _contract_warnings(db, job)
+    return resp
+
+
+def _contract_warnings(db: Session, job: Job) -> list[str]:
+    """A sentence for a saved term that does nothing yet: a job whose
+    contractor pays the tax on its materials, with no use tax rate (or
+    default tax rate) set, accrues no use tax on those bills."""
+    from app.services.contracts import contractor_pays_tax
+    from app.services.purchase_posting import use_tax_rate
+
+    if contractor_pays_tax(job) and use_tax_rate(db) <= 0:
+        return [
+            "The contractor pays the tax on this job's materials, but no Use tax "
+            "rate or Default tax rate is set, so its material bills will accrue "
+            "no use tax. Set the Use tax rate in Settings."
+        ]
+    return []
 
 
 @router.post(
@@ -609,17 +640,30 @@ def contract_from_estimate(
     return _contract_response(db, job)
 
 
-@router.put("/{job_id}/sov", response_model=ContractSummary)
+@router.put("/{job_id}/sov", response_model=SovSaveResponse)
 def save_sov(job_id: int, data: SovSave, db: Session = Depends(get_db)):
     """Replace the schedule of values with the given lines, renumbered 1..n
     in the order sent. Returns the contract summary (whose sov_balance
-    shows whether the SOV balances to the contract sum)."""
+    shows whether the SOV balances to the contract sum). A schedule that does
+    not add up to it is saved, with a warning (a job may be mid-setup)."""
     job = _get(db, job_id)
     for line in data.lines:
         if line.trade_package_id and not db.get(TradePackage, line.trade_package_id):
             raise HTTPException(status_code=404, detail="Trade package not found")
         if line.cost_code_id and not db.get(CostCode, line.cost_code_id):
             raise HTTPException(status_code=404, detail="Cost code not found")
+        if line.revenue_account_id:
+            acct = db.get(Account, line.revenue_account_id)
+            if acct is None:
+                raise HTTPException(status_code=404, detail="Account not found")
+            if acct.account_type != AccountType.INCOME:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"{acct.name} is not an income account. Choose an "
+                        "income account for the line's revenue."
+                    ),
+                )
     # A change_order-kind line is owned by its change order (#554), not the
     # grid: it is never sent by the client and is preserved across a save.
     if any(line.kind == "change_order" for line in data.lines):
@@ -637,13 +681,19 @@ def save_sov(job_id: int, data: SovSave, db: Session = Depends(get_db)):
     # line must round-trip by id and may not shrink below what it has billed,
     # and it may not be dropped (#555). With no approved application the save
     # is an ordinary full replace — existing lines are rebuilt from scratch.
-    from app.services.pay_applications import billed_completed_by_sov_line
+    from app.services.pay_applications import (
+        billed_completed_by_sov_line,
+        sov_balance_warnings,
+    )
 
     billed = billed_completed_by_sov_line(db, job.id)
+    # A new line sent without an account takes the one every line on the
+    # schedule credits, read before the save changes them (#731).
+    shared = shared_revenue_account_id(job.sov_lines)
     if billed:
-        _save_sov_with_billings(db, job, data.lines, kept, billed)
+        _save_sov_with_billings(db, job, data.lines, kept, billed, shared)
     else:
-        _save_sov_replace(db, job, data.lines, kept)
+        _save_sov_replace(db, job, data.lines, kept, shared)
     # A schedule of values makes the sum billable: with no contract type saved
     # it is taken as a lump sum and its original stamped, as building from an
     # estimate does (#723).
@@ -651,17 +701,43 @@ def save_sov(job_id: int, data: SovSave, db: Session = Depends(get_db)):
         settle_contract_type(db, job)
     db.commit()
     db.refresh(job)
-    return ContractSummary(**contract_summary(db, job))
+    return SovSaveResponse(
+        **contract_summary(db, job), warnings=sov_balance_warnings(job)
+    )
 
 
-def _save_sov_replace(db: Session, job: Job, lines, kept) -> None:
+def _sov_mapping(line, row, shared=None) -> dict:
+    """A saved line's revenue account and taxable flag: what the request
+    sent, else what the existing line `row` had, else for a new line the
+    account `shared` every line on the schedule credits, else no account
+    (4050 at posting); and taxed."""
+    sent = line.model_fields_set
+    if "revenue_account_id" in sent:
+        revenue = line.revenue_account_id
+    else:
+        revenue = row.revenue_account_id if row is not None else shared
+    if "is_taxable" in sent and line.is_taxable is not None:
+        taxable = line.is_taxable
+    else:
+        taxable = bool(row.is_taxable) if row is not None else True
+    return {"revenue_account_id": revenue, "is_taxable": taxable}
+
+
+def _save_sov_replace(db: Session, job: Job, lines, kept, shared=None) -> None:
     """Full replace of the non change-order lines (no billings to protect)."""
+    old = {
+        r.id: r
+        for r in db.query(SovLine).filter(
+            SovLine.job_id == job.id, SovLine.kind != "change_order"
+        )
+    }
+    mapping = [_sov_mapping(line, old.get(line.id), shared) for line in lines]
     db.query(SovLine).filter(
         SovLine.job_id == job.id, SovLine.kind != "change_order"
     ).delete()
     db.flush()
     n = 0
-    for line in lines:
+    for line, mapped in zip(lines, mapping):
         n += 1
         item_no = (line.item_no or "").strip() or f"{n:02d}"
         db.add(
@@ -674,6 +750,7 @@ def _save_sov_replace(db: Session, job: Job, lines, kept) -> None:
                 cost_code_id=line.cost_code_id,
                 kind=line.kind,
                 scheduled_value=_q(line.scheduled_value),
+                **mapped,
             )
         )
     for co_line in kept:  # keep their value and FK, renumbered after the rest
@@ -681,7 +758,9 @@ def _save_sov_replace(db: Session, job: Job, lines, kept) -> None:
         co_line.line_no = n
 
 
-def _save_sov_with_billings(db: Session, job: Job, lines, kept, billed) -> None:
+def _save_sov_with_billings(
+    db: Session, job: Job, lines, kept, billed, shared=None
+) -> None:
     """Save the schedule while a pay application has billed it: update a
     billed line in place by id (never dropping it or shrinking it below its
     billed completed_to_date), add new lines, drop only unbilled ones (#555)."""
@@ -693,7 +772,8 @@ def _save_sov_with_billings(db: Session, job: Job, lines, kept, billed) -> None:
     }
     sent_ids = {line.id for line in lines if line.id is not None}
     for line_id, row in existing.items():
-        if line_id not in sent_ids and _q(billed.get(line_id, 0)) > 0:
+        # A deduct line bills down: a negative billed amount pins it as well.
+        if line_id not in sent_ids and _q(billed.get(line_id, 0)) != 0:
             raise HTTPException(
                 status_code=422,
                 detail=(
@@ -710,12 +790,15 @@ def _save_sov_with_billings(db: Session, job: Job, lines, kept, billed) -> None:
         if row is not None:
             seen.add(row.id)
             floor = _q(billed.get(row.id, 0))
-            if _q(line.scheduled_value) < floor:
+            # In the line's own direction: a deduct line billed -6,000 cannot
+            # be cut back to -3,000.
+            value = _q(line.scheduled_value)
+            if (value < floor) if floor >= 0 else (value > floor):
                 raise HTTPException(
                     status_code=422,
                     detail=(
                         f"Line {item_no} has billed {floor:.2f}; its scheduled "
-                        f"value cannot drop below that."
+                        f"value cannot {'drop below' if floor >= 0 else 'rise above'} that."
                     ),
                 )
             row.line_no = n
@@ -725,6 +808,8 @@ def _save_sov_with_billings(db: Session, job: Job, lines, kept, billed) -> None:
             row.cost_code_id = line.cost_code_id
             row.kind = line.kind
             row.scheduled_value = line.scheduled_value
+            for field, value in _sov_mapping(line, row).items():
+                setattr(row, field, value)
         else:
             db.add(
                 SovLine(
@@ -736,6 +821,7 @@ def _save_sov_with_billings(db: Session, job: Job, lines, kept, billed) -> None:
                     cost_code_id=line.cost_code_id,
                     kind=line.kind,
                     scheduled_value=line.scheduled_value,
+                    **_sov_mapping(line, None, shared),
                 )
             )
     for line_id, row in existing.items():
@@ -774,9 +860,12 @@ def save_cost_to_complete_forecast(
 def get_buyout(job_id: int, db: Session = Depends(get_db)):
     """Bid vs buyout per trade package (#553): the bid cost from the accepted
     estimate, what has been bought on the job, the variance, and the
-    commitments behind each package with their compliance flags."""
+    commitments behind each package with their compliance flags.
+    Construction mode only, as the Report Center's Buyout Report is."""
+    from app.routes.reports.construction import _construction_only
     from app.services.buyout import job_buyout
 
+    _construction_only(db)
     job = _get(db, job_id)
     return job_buyout(db, job)
 
@@ -915,12 +1004,22 @@ def void_deposit(job_id: int, deposit_id: int, db: Session = Depends(get_db)):
     return JobDepositOut.model_validate(dep)
 
 
+def _stamp_closed_on(job: Job, was: Optional[str]) -> None:
+    """The day the job went to Closed (today), so a back-dated WIP reads it
+    open before then; reopening clears it."""
+    if job.status == "closed" and was != "closed":
+        job.closed_on = date.today()
+    elif job.status != "closed":
+        job.closed_on = None
+
+
 @router.post("", response_model=JobResponse, status_code=201)
 def create_job(data: JobCreate, db: Session = Depends(get_db)):
     if not db.get(Customer, data.customer_id):
         raise HTTPException(status_code=404, detail="Customer not found")
     _check_name_clash(db, data.customer_id, data.name)
     job = Job(**data.model_dump())
+    _stamp_closed_on(job, None)
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -946,8 +1045,10 @@ def update_job(job_id: int, data: JobUpdate, db: Session = Depends(get_db)):
             changes["contract_amount"] = _q(changes["contract_amount"])
         _refuse_sum_change(db, job, changes["contract_amount"])
     _follow_original(job, changes)
+    was = job.status
     for key, value in changes.items():
         setattr(job, key, value)
+    _stamp_closed_on(job, was)
     # The job form's plain contract amount runs through the same stamp as the
     # Contract tab (#552): set the amount with a type already on the job and
     # the original is stamped once here too.
@@ -976,6 +1077,8 @@ def delete_job(job_id: int, db: Session = Depends(get_db)):
     from app.services.memorized_service import refuse_if_memorized
 
     refuse_if_memorized(db, "Job", "job_id", job_id)
+    refuse_deleting_job_with_records(db, job_id)
+    delete_job_setup(db, job_id)
     db.delete(job)
     db.commit()
     return {"message": "Job deleted"}

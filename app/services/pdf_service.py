@@ -254,8 +254,12 @@ _jinja_env.globals["terms"] = _Terms()
 # The construction estimate PDF (#551) groups and totals the bid through the
 # same pure function the route and tests use.
 from app.services.estimating import estimate_totals as _estimate_totals  # noqa: E402
+from app.services.estimate_bid import (  # noqa: E402
+    spread_markup_prices as _spread_markup_prices,
+)
 
 _jinja_env.globals["estimate_totals"] = _estimate_totals
+_jinja_env.globals["spread_markup_prices"] = _spread_markup_prices
 
 
 def _render(template_name: str, company_settings: dict, **context) -> str:
@@ -327,6 +331,10 @@ def render_invoice_html(invoice, company_settings: dict) -> str:
     from sqlalchemy.orm import object_session
 
     from app.services.donor_documents import invoice_pdf_context
+    from app.services.pay_applications import (
+        invoice_is_release_only,
+        pay_application_number,
+    )
     from app.services.payment_terms import (
         document_discount_line,
         document_discount_taken,
@@ -337,6 +345,8 @@ def render_invoice_html(invoice, company_settings: dict) -> str:
         "invoice_pdf.html",
         company_settings,
         inv=invoice,
+        release_only=invoice_is_release_only(invoice),
+        pay_application_number=pay_application_number(_db, invoice),
         discount_line=document_discount_line(invoice),
         # the discount already taken, shown in place of the offer (#664)
         discount_taken=(
@@ -675,10 +685,102 @@ def check_position(company_settings: dict) -> str:
     return "top" if chosen == "top" else "bottom"
 
 
+def blank_stock(company_settings: dict) -> dict:
+    """The blank-stock options (#739): `on` prints the logo, the bank's name
+    and city, the fractional routing number and the MICR line from each
+    check's `bank_details`; `micr_amount` also encodes the amount in the
+    MICR line. Read apart from check_print_options() so its shape holds."""
+    return {
+        "on": company_settings.get("check_blank_stock") == "true",
+        "micr_amount": company_settings.get("check_micr_amount") == "true",
+    }
+
+
+# Where each field of the check layout (#749) sits on the face: the element
+# an offset moves, and whether its size and weight go on a span around the
+# value (the value's own line keeps its height, so nothing laid out after it
+# moves and its baseline stays put) or on the element itself (the payee's
+# address, several lines, last on the face).
+_CHECK_FIELD_BOXES = {
+    "payee": (".pay-to-line", True),
+    "payee_address": (".payee-address", False),
+    "date": (".check-date", True),
+    "amount": (".amount-box", True),
+    "amount_words": (".amount-words", True),
+    "memo": (".memo-text", True),
+}
+
+
+def check_field_layout_css(company_settings: dict) -> tuple:
+    """The per-field check layout (#749) as (css, wrapped): the rules that
+    move, size and bold each field the layout names, and the fields whose
+    value is printed in a span for its size and weight. ("", set()) when
+    the layout is empty, so the face is exactly what it was before it."""
+    from app.services.settings_service import check_field_layout
+
+    layout = check_field_layout(company_settings.get("check_field_layout"))
+    rules = []
+    wrapped = set()
+    for field, (box, wrap) in _CHECK_FIELD_BOXES.items():
+        attrs = layout.get(field)
+        if not attrs:
+            continue
+        x, y = attrs.get("x", 0), attrs.get("y", 0)
+        if x or y:
+            rules.append(
+                f"    .check-area {box} {{ transform: translate({x:g}in, {y:g}in); }}"
+            )
+        look = []
+        if "size" in attrs:
+            look.append(f"font-size: {attrs['size']:g}pt;")
+            if wrap:
+                # one line at its own baseline: a wrapped second line would
+                # sit on the first and push what follows down
+                look.append("line-height: 0; white-space: nowrap;")
+        if "bold" in attrs:
+            look.append(f"font-weight: {'bold' if attrs['bold'] else 'normal'};")
+        if look:
+            target = f".check-field-{field}" if wrap else box
+            rules.append(f"    .check-area {target} {{ {' '.join(look)} }}")
+            if wrap:
+                wrapped.add(field)
+    if wrapped:
+        # a value kept on one line may run past the face; the face keeps its
+        # width (a flex item is otherwise as wide as its widest line)
+        rules.insert(0, "    .check-area { min-width: 0; }")
+    return "\n".join(rules), wrapped
+
+
+def _blank_stock_fields(check_data: dict, micr_amount: bool) -> None:
+    """The bank's lines and the MICR line of one check on blank stock, from
+    its `bank_details`; a check without routing and account numbers prints
+    no MICR line (the print routes refuse it before it gets here)."""
+    from decimal import Decimal
+
+    from app.services.micr import micr_line, micr_svg
+
+    bank = check_data.get("bank_details") or {}
+    check_data["bank_name"] = bank.get("bank_name", "")
+    check_data["bank_city_state"] = bank.get("bank_city_state", "")
+    check_data["fractional_routing"] = bank.get("fractional_routing", "")
+    check_data["micr_svg"] = ""
+    if bank.get("routing_number") and bank.get("account_number"):
+        line = micr_line(
+            bank["routing_number"],
+            bank["account_number"],
+            check_data.get("check_number", ""),
+            check_data.get("amount") if micr_amount else None,
+        )
+        check_data["micr_line"] = line
+        # the sheet's width; its height takes in the clear band
+        check_data["micr_svg"] = micr_svg(line, Decimal("8.5"), Decimal("0.625"))
+
+
 def render_check_html(check_data: dict, company_settings: dict, options=None) -> str:
     """The check face as HTML. Checks print on stock that already carries the
     bank's and the company's marks, so this is the one document that
-    deliberately bypasses _render() and gets no logo. The stock choice and
+    deliberately bypasses _render() and gets no logo, unless it prints on
+    blank stock (#739, blank_stock()), which carries nothing. The stock choice and
     alignment nudge come from check_print_options(); pass ``options={}`` to
     render with none of that context (the pre-#440 face, for a byte-for-byte
     comparison)."""
@@ -693,11 +795,24 @@ def render_checks_html(checks: list, company_settings: dict, options=None) -> st
     for check_data in checks:
         check_data["amount_words"] = _amount_to_words(check_data.get("amount", 0))
     opts = check_print_options(company_settings) if options is None else options
+    blank = blank_stock(company_settings)
+    extra = {}
+    if blank["on"]:
+        # blank stock carries nothing, so the face prints its labels and
+        # lines whatever the stock setting says
+        opts = {**opts, "stock": "plain"}
+        for check_data in checks:
+            _blank_stock_fields(check_data, blank["micr_amount"])
+        extra = {"blank": True, "logo": _company_logo_data_uri(company_settings)}
+    field_css, field_wrap = check_field_layout_css(company_settings)
     return template.render(
         checks=checks,
         company=company_settings,
         position=check_position(company_settings),
+        field_css=field_css,
+        field_wrap=field_wrap,
         **opts,
+        **extra,
     )
 
 

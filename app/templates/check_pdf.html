@@ -9,7 +9,13 @@
     @page { size: letter; margin: 0.25in 0.5in; }
 {%- endif %}
     body { font-family: 'Courier New', Courier, monospace; font-size: 10pt; color: #000; }
-    .check-page { height: 10in; display: flex; flex-direction: column; }
+    /* The 8 px the panels are measured with (#732, #727) is the browser's
+       default top margin on the body, which only the first page gets: a
+       batch's later pages start right at the page margin and printed 8 px
+       (0.08 in) higher (#740). Each page carries the 8 px itself instead,
+       so every page of a batch starts where the first one does. */
+    body { margin-top: 0; }
+    .check-page { height: 10in; padding-top: 8px; display: flex; flex-direction: column; }
     .check-page + .check-page { break-before: page; }
     .stub { height: 3.33in; border-bottom: 1px dashed #999; padding: 0.25in 0.25in; box-sizing: border-box; }
     .check-area { height: 3.33in; padding: 0.25in 0.25in; box-sizing: border-box; position: relative; }
@@ -20,7 +26,12 @@
     .stub-table td { padding: 2px 6px; border-bottom: 1px solid #ddd; }
     .stub-table td.r { text-align: right; }
     .check-number { position: absolute; top: 0.25in; right: 0.25in; font-size: 11pt; font-weight: bold; }
-    .check-date { position: absolute; top: 0.25in; right: 2.5in; font-size: 10pt; }
+    /* nowrap: the box has no width, so it is shrink-to-fit, and Pango 1.50
+       (Ubuntu 22.04) measures it a hair narrower than the line it then lays
+       out and wraps the date at its space ("Oct" over "24, 2026"); Pango
+       1.52 does not. The <br> after the label still breaks (2.31.12 gate,
+       Linux round 1). */
+    .check-date { position: absolute; top: 0.25in; right: 2.5in; font-size: 10pt; white-space: nowrap; }
     .check-date-label { font-size: 8pt; color: #666; }
     .check-company { font-weight: bold; font-size: 11pt; margin-bottom: 4px; }
     .check-company-addr { font-size: 8pt; color: #444; margin-bottom: 16px; }
@@ -54,6 +65,22 @@
        left, where a window envelope shows it. Only printed when a check
        carries one, so a check without it is unchanged. */
     .payee-address { margin: 6px 0 0 0.5in; font-size: 9pt; line-height: 1.2; }
+</style>
+{%- endif %}
+{%- if position != 'top' %}
+<style>
+    /* Check at the bottom (#732): the two stubs end where a sheet
+       perforated in thirds tears, the first at 3.67 in from the top of the
+       sheet (0.25 in of page margin, the body's 8 px and 3.34 in of stub),
+       the second at 7.33 in, and the face runs to the foot of the printable
+       page. The memo and the signature are placed from the face's foot, so
+       they move with its 0.09 in of extra height and every field keeps its
+       place on the face (the pre-printed stock and the nudges, #440). */
+    .check-page-bottom { height: 10.42in; }
+    .check-page-bottom .stub { height: 3.34in; }
+    .check-page-bottom .stub + .stub { height: 3.66in; }
+    .check-page-bottom .check-area { height: 3.42in; }
+    .check-page-bottom .memo-line, .check-page-bottom .signature-line { bottom: 0.59in; }
 </style>
 {%- endif %}
 {%- if position == 'top' %}
@@ -103,6 +130,10 @@
        MICR clear band (the cheque's bottom 5/8 in, from 2.875 in). */
     .cpa-sheet { position: relative; width: 8.5in; height: 11in; font-family: Helvetica, Arial, sans-serif; color: #000; }
     .cpa-sheet + .cpa-sheet { break-before: page; }
+    /* 2.31.14 dropped the body's 8 px top margin (#740, it reached only a
+       batch's first page); this sheet was measured with it, so it carries
+       the 8 px itself, on every page of a batch. */
+    .cpa-sheet { top: 8px; }
     .cpa-sheet .v { position: absolute; white-space: nowrap; }
     .c-date-label { left: 6.0in; top: 1.02in; font-size: 7pt; }
     .c-date-guide { left: 6.55in; top: 0.88in; font-size: 5.5pt; }
@@ -121,6 +152,46 @@
     .s-lines .r { text-align: right; }
     .s-foot { left: 0.4in; width: 7.5in; font-size: 9pt; }
     .s-foot .r { position: absolute; right: 0; font-weight: bold; }
+</style>
+{%- endif %}
+{%- if blank %}
+<style>
+    /* Blank check stock (#739): what pre-printed stock carries, printed by
+       us, each piece in space the fields leave free so every field keeps
+       the place it has on plain stock. The logo sits at the top left with
+       the company's name and address beside it; the bank's name and city
+       are centered under them; the fractional routing number is under the
+       check number. The MICR line spans the sheet's width with its bottom
+       on the check's bottom edge (the perforation for a check on top, the
+       foot of the sheet for one at the bottom), its glyphs placed in
+       inches from the check's right and bottom edges (app/services/micr.py).
+       Its offsets run from the face's box to the sheet's edges: across,
+       0.5 in of page margin and the body's 8 px; down, the face at the
+       bottom ends 0.2467 in above the foot of the sheet (10.7533 in from
+       the top), and the face on top 0.0067 in below the tear at 3.6667 in. */
+    .check-logo { position: absolute; top: 0.25in; left: 0.25in; max-width: 1.1in; max-height: 0.6in; }
+    .check-has-logo .check-company, .check-has-logo .check-company-addr { margin-left: 1.25in; }
+    .check-bank { position: absolute; top: 0.75in; left: 0; right: 0; text-align: center; font-size: 8pt; line-height: 1.2; }
+    .check-bank-name { font-weight: bold; }
+    .check-fraction { position: absolute; top: 0.47in; right: 0.25in; font-size: 7pt; }
+    .micr { position: absolute; left: -0.5833in; bottom: -0.2467in; }
+    .check-top .check-logo { top: 0.1in; left: 0.1in; }
+    .check-top.check-has-logo .check-company, .check-top.check-has-logo .check-company-addr { margin: 0; left: 1.35in; }
+    .check-top .check-bank { top: 0.62in; }
+    .check-top .check-fraction { top: 0.3in; right: 0.1in; }
+    .check-top .micr { bottom: 0.0067in; }
+</style>
+{%- endif %}
+{%- if field_css %}
+<style>
+    /* The per-field layout (#749, Settings -> Check Printing): each field
+       moved from where it prints above, on top of the whole-face nudge, and
+       its size and weight changed, that field alone. A size goes on a span
+       around the value with no line height of its own, so the value's line
+       keeps its height and baseline: nothing after it moves. Only the
+       fields the layout names get a rule, so an empty layout is the face
+       above, unchanged. */
+{{ field_css }}
 </style>
 {%- endif %}
 </head>
@@ -173,32 +244,49 @@
 {%- macro payee_address(check) -%}
 <div class="payee-address">{% for line in check.payee_address %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
 {%- endmacro %}
+{%- macro field(name, value) -%}
+{%- if name in field_wrap %}<span class="check-field-{{ name }}">{{ value }}</span>{% else %}{{ value }}{% endif -%}
+{%- endmacro %}
 {%- for check in checks %}
-    <div class="check-page{% if position == 'top' %} check-page-top{% endif %}">
+    <div class="check-page {% if position == 'top' %}check-page-top{% else %}check-page-bottom{% endif %}">
 {%- if position == 'top' %}
         <!-- Check (top) -->
-        <div class="check-area check-top"{% if nudge_x or nudge_y %} style="transform: translate({{ nudge_x }}in, {{ nudge_y }}in);"{% endif %}>
+        <div class="check-area check-top{% if blank and logo %} check-has-logo{% endif %}"{% if nudge_x or nudge_y %} style="transform: translate({{ nudge_x }}in, {{ nudge_y }}in);"{% endif %}>
             <div class="check-company">{{ company.company_name or 'Company' }}</div>
             <div class="check-company-addr">
                 {% if company.company_address1 %}{{ company.company_address1 }}<br>{% endif %}
                 {% if company.company_city %}{{ company.company_city }}, {{ company.company_state }} {{ company.company_zip }}{% endif %}
             </div>
             <div class="check-number">#{{ check.check_number }}</div>
-            <div class="check-date"><span class="check-date-label">DATE</span> {{ check.date | fdate }}</div>
+            <div class="check-date"><span class="check-date-label">DATE</span> {{ field('date', check.date | fdate) }}</div>
             <div class="pay-to">
                 <span class="pay-to-label">PAY TO THE ORDER OF</span>
-                <span class="pay-to-line">{{ check.payee }}</span>
+                <span class="pay-to-line">{{ field('payee', check.payee) }}</span>
             </div>
-            <div class="amount-box">{{ check.amount | currency }}</div>
-            <div class="amount-words">{{ check.amount_words }} ******</div>
+            <div class="amount-box">{{ field('amount', check.amount | currency) }}</div>
+            <div class="amount-words">{{ field('amount_words', check.amount_words ~ ' ******') }}</div>
 {%- if check.payee_address %}
             {{ payee_address(check) }}
 {%- endif %}
             <div class="memo-line">
                 <span class="memo-label">MEMO</span>
-                <span class="memo-text">{{ check.memo or '' }}</span>
+                <span class="memo-text">{{ field('memo', check.memo or '') }}</span>
             </div>
             <div class="signature-line"></div>
+{%- if blank %}
+{%- if logo %}
+            <img class="check-logo" src="{{ logo }}" alt="{{ company.company_name or 'Company' }} logo">
+{%- endif %}
+{%- if check.bank_name or check.bank_city_state %}
+            <div class="check-bank"><span class="check-bank-name">{{ check.bank_name }}</span>{% if check.bank_name and check.bank_city_state %}<br>{% endif %}{{ check.bank_city_state }}</div>
+{%- endif %}
+{%- if check.fractional_routing %}
+            <div class="check-fraction">{{ check.fractional_routing }}</div>
+{%- endif %}
+{%- if check.micr_svg %}
+            {{ check.micr_svg }}
+{%- endif %}
+{%- endif %}
         </div>
 {%- for _ in range(2) %}
 
@@ -274,7 +362,7 @@
         </div>
 
         <!-- Actual Check -->
-        <div class="check-area"{% if nudge_x or nudge_y %} style="transform: translate({{ nudge_x }}in, {{ nudge_y }}in);"{% endif %}>
+        <div class="check-area{% if blank and logo %} check-has-logo{% endif %}"{% if nudge_x or nudge_y %} style="transform: translate({{ nudge_x }}in, {{ nudge_y }}in);"{% endif %}>
             <div class="check-company">{{ company.company_name or 'Company' }}</div>
             <div class="check-company-addr">
                 {% if company.company_address1 %}{{ company.company_address1 }}<br>{% endif %}
@@ -283,22 +371,36 @@
             <div class="check-number">#{{ check.check_number }}</div>
             <div class="check-date">
                 <span class="check-date-label">DATE</span><br>
-                {{ check.date | fdate }}
+                {{ field('date', check.date | fdate) }}
             </div>
             <div class="pay-to">
                 <span class="pay-to-label">PAY TO THE ORDER OF</span><br>
-                <span class="pay-to-line">{{ check.payee }}</span>
+                <span class="pay-to-line">{{ field('payee', check.payee) }}</span>
             </div>
-            <div class="amount-box">{{ check.amount | currency }}</div>
-            <div class="amount-words">{{ check.amount_words }} ******</div>
+            <div class="amount-box">{{ field('amount', check.amount | currency) }}</div>
+            <div class="amount-words">{{ field('amount_words', check.amount_words ~ ' ******') }}</div>
 {%- if check.payee_address %}
             {{ payee_address(check) }}
 {%- endif %}
             <div class="memo-line">
                 <span class="memo-label">MEMO</span>
-                <span class="memo-text">{{ check.memo or '' }}</span>
+                <span class="memo-text">{{ field('memo', check.memo or '') }}</span>
             </div>
             <div class="signature-line"></div>
+{%- if blank %}
+{%- if logo %}
+            <img class="check-logo" src="{{ logo }}" alt="{{ company.company_name or 'Company' }} logo">
+{%- endif %}
+{%- if check.bank_name or check.bank_city_state %}
+            <div class="check-bank"><span class="check-bank-name">{{ check.bank_name }}</span>{% if check.bank_name and check.bank_city_state %}<br>{% endif %}{{ check.bank_city_state }}</div>
+{%- endif %}
+{%- if check.fractional_routing %}
+            <div class="check-fraction">{{ check.fractional_routing }}</div>
+{%- endif %}
+{%- if check.micr_svg %}
+            {{ check.micr_svg }}
+{%- endif %}
+{%- endif %}
         </div>
 {%- endif %}
     </div>

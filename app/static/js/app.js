@@ -37,6 +37,7 @@ const App = {
         '/in-kind-gifts': { page: 'in-kind-gifts',   label: 'In-Kind Gifts',      nonprofit: true, render: () => InKindPage.render() },
         '/in-kind-gifts/:id': { page: 'in-kind-gifts', label: 'In-Kind Gift',     nonprofit: true, document: true, render: (id) => App.withDocument(() => InKindPage.render(), () => InKindPage.view(id)) },
         '/estimates':     { page: 'estimates',       label: 'Create Estimates',   render: () => EstimatesPage.render() },
+        '/collections':   { page: 'collections',    label: 'Collections',        render: () => CollectionsPage.render() },
         '/payments':      { page: 'payments',        label: 'Receive Payments',   render: () => PaymentsPage.render() },
         '/payments/:id':      { page: 'payments',   label: 'Payment',       document: true, render: (id) => App.withDocument(() => PaymentsPage.render(), () => PaymentsPage.view(id)) },
         '/banking':       { page: 'banking',         label: 'Banking',            render: () => BankingPage.render() },
@@ -1084,6 +1085,9 @@ const App = {
         root.querySelectorAll('[data-admin]').forEach(el => {
             const field = /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName);
             if (field) el.disabled = true;
+            // a tick that is a yes only an administrator gives (adding
+            // employees on an import, W-138) reads no, not a locked yes
+            if (field && el.hasAttribute('data-admin-untick')) el.checked = false;
             // a field shows its value; a file chooser has none to show
             if (!field || el.type === 'file') el.classList.add('hidden');
         });
@@ -1113,7 +1117,8 @@ const App = {
         'InvoicesPage.void', 'InvoicesPage.markSent', 'InvoicesPage.duplicate', 'InvoicesPage.uploadAttachment',
         'InvoicesPage.deleteAttachment', 'InvoicesPage.showApplyCredit', 'InvoicesPage.showWriteOff',
         'InvoicesPage.emailInvoice', 'InvoicesPage.copyPaymentLink', 'InvoicesPage.checkPaymentStatus',
-        'EstimatesPage.convert', 'EstimatesPage.accept',
+        'EstimatesPage.convert', 'EstimatesPage.accept', 'EstimatesPage.markLost', 'EstimatesPage.emailEstimate',
+        'FieldTickets.del', 'FieldTickets.voidTicket', 'FieldTickets.deleteAttachment', 'FieldTickets.upload',
         'SalesReceiptsPage.void', 'CreditMemosPage.void', 'CreditMemosPage.showApply',
         'CreditMemosPage.doApply', 'PaymentsPage.void', 'PaymentsPage.doVoid', 'PaymentsPage.showApplyCredit', 'DepositsPage.voidDeposit',
         'DepositsPage.makeDeposit', 'DepositsPage.editDeposit', 'DepositsPage.saveEdit', 'JournalPage.editEntry',
@@ -1128,7 +1133,7 @@ const App = {
         'JobsPage.coSubmit', 'JobsPage.coApprove', 'JobsPage.coReject', 'JobsPage.coVoid', 'JobsPage.coPromote',
         'JobsPage.coMakeSub', 'JobsPage.coSubmitSubOrder',
         'JobsPage.paNew', 'JobsPage.paEdit', 'JobsPage.paSave', 'JobsPage.paSubmit', 'JobsPage.paApprove',
-        'JobsPage.paVoid', 'JobsPage.paMakeWaiver', 'JobsPage.paAddDeposit', 'JobsPage.paSaveDeposit', 'JobsPage.paVoidDeposit',
+        'JobsPage.paVoid', 'JobsPage.paDelete', 'JobsPage.paMakeWaiver', 'JobsPage.paAddDeposit', 'JobsPage.paSaveDeposit', 'JobsPage.paVoidDeposit',
         'PurchaseOrdersPage.subPayApp', 'PurchaseOrdersPage.releaseRetainage',
         'InKindPage.voidEntry', 'ReleasesPage.voidEntry',
         'AllocationsPage.voidEntry', 'AllocationsPage.deleteRule', 'AllocationsPage.showRun', 'RecurringPage.generateNow',
@@ -1181,7 +1186,7 @@ const App = {
             }
             const label = (el.textContent || '').trim();
             const headerAction = el.classList.contains('btn-primary') && el.closest('.page-header');
-            const call = /^\s*(\w+Page\.\w+)\(/.exec(el.getAttribute('onclick') || '');
+            const call = /^\s*(\w+Page\.\w+|FieldTickets\.\w+)\(/.exec(el.getAttribute('onclick') || '');
             // Edit beside View (an invoice's row): View shows the record, and
             // Edit would only open it locked
             const editBesideView = label === 'Edit' && !!el.parentElement
@@ -3020,7 +3025,24 @@ const App = {
             // boot_check.js stops waiting for a first screen. Its data can
             // take a while on a big company, and that is not a failed start.
             if (window.SlowBooksBoot) window.SlowBooksBoot.drawn();
+            App.checkReminders();
         });
+    },
+
+    // Once per browser tab session: send the day's invoice reminders when
+    // Settings -> Collections has them on. Quiet on any error (a read-only
+    // role gets a 403). Not marked done on a 401: the sign-in reloads the
+    // page, and the check should run then.
+    checkReminders() {
+        const KEY = 'sb_reminders_checked';
+        try { if (sessionStorage.getItem(KEY)) return; } catch (e) { return; }
+        const done = () => { try { sessionStorage.setItem(KEY, '1'); } catch (e) { /* no storage */ } };
+        API.post('/collections/reminders/run-if-due').then(res => {
+            done();
+            if (res && res.ran === true && res.sent > 0) {
+                toast(`Sent ${res.sent} ${T('invoice')} reminder${res.sent === 1 ? '' : 's'}`);
+            }
+        }).catch(err => { if (err && err.status !== 401) done(); });
     },
 
     /**

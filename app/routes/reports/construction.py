@@ -13,17 +13,23 @@ import io
 from datetime import date
 from typing import Annotated, Optional
 
-from fastapi import Depends, Query, Request
+from fastapi import Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.users import ROLE_ACCOUNTANT, ROLE_ADMIN
+from app.routes._helpers import refuse_unknown_filters
+from app.routes._roles import current_role
 from app.routes.reports._router import router
+from app.schemas.common import StrictModel
+from app.routes.reports.nonprofit import _cash_words
 from app.routes.reports.financial import (
     _company_name,
     _csv_download,
     _pdf_response,
     _period,
 )
+from app.services.compliance import compliance_report
 from app.services.csv_export import _SafeWriter
 from app.services.fiscal_year import fiscal_year_start
 from app.services.job_reports import (
@@ -36,6 +42,8 @@ from app.services.job_reports import (
     wip_schedule,
 )
 from app.services.ledger_exports import _Percent, _money, _pdf_money, _preamble
+from app.services.retainage_report import retainage_report
+from app.services import wip_posting
 
 # ── shared grid formatting ─────────────────────────────────────────────────
 
@@ -81,6 +89,19 @@ def _text_columns(columns: list[dict]) -> int:
     return max(n, 1)
 
 
+def _construction_only(db: Session = Depends(get_db)) -> None:
+    """These reports are construction mode's: a Business or Nonprofit company
+    has no retainage, WIP, sub compliance or field tickets to read."""
+    from app.services.terminology import terms_from_db
+
+    if not terms_from_db(db).is_construction:
+        raise HTTPException(
+            status_code=409,
+            detail="This report is part of construction mode. Set Company Type to "
+            "Construction under Settings → Company to use it.",
+        )
+
+
 _STATUS_Q = Annotated[
     Optional[str],
     Query(description="One job status; default leaves out closed and not-awarded"),
@@ -93,7 +114,10 @@ _CLOSED_Q = Annotated[bool, Query(description="Include closed jobs")]
 # ── 1. WIP schedule ─────────────────────────────────────────────────────────
 
 
-@router.get("/wip-schedule")
+@router.get(
+    "/wip-schedule",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def wip_schedule_route(
     as_of: date = Query(default=None),
     db: Session = Depends(get_db),
@@ -106,8 +130,79 @@ def wip_schedule_route(
     contract, over and under billing, retainage, cost to complete (from the
     cost-to-complete forecast) and any projected loss. `adjusting_entry` is the
     entry with amounts, per job and net, between the WIP accounts named in
-    `adjustment_accounts`. It posts nothing."""
+    `adjustment_accounts`, and whether one is posted for the date. Reading it
+    posts nothing; POST /wip-schedule/post does."""
     return wip_schedule(db, as_of, job_id, customer_id, status, include_closed)
+
+
+def _acting(db: Session) -> str:
+    """The sign-in making this request, as the audit log names it."""
+    return db.info.get("acting_username") or "operator"
+
+
+def _may_post_wip(request: Request) -> str:
+    """The role, when it may post or void the WIP entry: an administrator's
+    or an accountant's (the middleware lets the accountant through to these
+    two routes only). A bookkeeper's sign-in is refused with a sentence."""
+    role = current_role(request)
+    if role not in (ROLE_ADMIN, ROLE_ACCOUNTANT):
+        raise HTTPException(
+            status_code=403,
+            detail="Posting the WIP adjusting entry is an accountant's or an "
+            "administrator's job; this sign-in cannot post or void it.",
+        )
+    return role
+
+
+class _NoBody(StrictModel):
+    """Post and void take their date in the query; a body with any field is
+    refused, naming it."""
+
+
+@router.post("/wip-schedule/post", dependencies=[Depends(refuse_unknown_filters)])
+def wip_schedule_post(
+    request: Request,
+    as_of: date = Query(...),
+    body: Optional[_NoBody] = None,
+    db: Session = Depends(get_db),
+):
+    """Post the WIP schedule's adjusting entry for `as_of` — the whole
+    schedule, as it reads with no filter — as an adjusting journal dated that
+    day, with its reversal dated the next. 409 when an entry for the date is
+    already posted (void it first), 422 when there is nothing to post; the
+    closing date applies to both dates. Accountant or administrator."""
+    _may_post_wip(request)
+    out = wip_posting.post_wip_entry(db, as_of, _acting(db))
+    db.commit()
+    return out
+
+
+@router.post("/wip-schedule/void", dependencies=[Depends(refuse_unknown_filters)])
+def wip_schedule_void(
+    request: Request,
+    as_of: date = Query(...),
+    body: Optional[_NoBody] = None,
+    db: Session = Depends(get_db),
+):
+    """Void the WIP adjusting entry posted for `as_of` and its reversal, so the
+    date can be posted again. Accountant (its own entries) or administrator."""
+    role = _may_post_wip(request)
+    found = wip_posting.posted_entry(db, as_of)
+    acting = _acting(db)
+    if found is not None and role == ROLE_ACCOUNTANT:
+        posted_by = found[0].posted_by or ""
+        if posted_by != acting:
+            # as the journal's Void: an accountant voids only what it posted
+            raise HTTPException(
+                status_code=403,
+                detail="An accountant's sign-in voids only the journal entries "
+                "it posted; this one was posted by "
+                + (posted_by or "someone else")
+                + ".",
+            )
+    out = wip_posting.void_wip_entry(db, as_of, acting)
+    db.commit()
+    return out
 
 
 def _warnings_note(data: dict):
@@ -115,13 +210,41 @@ def _warnings_note(data: dict):
     return " ".join(data.get("warnings") or []) or None
 
 
+# The WIP Schedule's figures go over pages of this many columns at most (#760):
+# all nineteen side by side ran past a landscape page's edge, Loss provision
+# first, and ten a page left the Job column so narrow a long name took five
+# lines. Each page repeats the Customer and Job columns, and the revised
+# contract when its page does not hold it, and prints the totals row.
+WIP_PDF_FIGURES_PER_PAGE = 7
+
+
+def _wip_column_pages(cols: list[dict]) -> list[tuple[list[int], list[int]]]:
+    """The WIP grid's pages as (repeated, own) column indexes: the leading
+    text columns (and the revised contract where its page does not hold
+    it) on every page, then that page's share of the figures, split as
+    evenly as the page count allows."""
+    tc = _text_columns(cols)
+    figures = list(range(tc, len(cols)))
+    n_pages = max(1, -(-len(figures) // WIP_PDF_FIGURES_PER_PAGE))
+    size = max(1, -(-len(figures) // n_pages))
+    chunks = [figures[i : i + size] for i in range(0, len(figures), size)] or [[]]
+    revised = next(
+        (i for i, c in enumerate(cols) if c["key"] == "revised_contract"), None
+    )
+    pages = []
+    for chunk in chunks:
+        lead = list(range(tc))
+        if len(chunks) > 1 and revised is not None and revised not in chunk:
+            lead.append(revised)
+        pages.append((lead, chunk))
+    return pages
+
+
 def _wip_sections(data: dict) -> list[dict]:
     cols = data["columns"]
     tc = _text_columns(cols)
-    rows = []
-    for r in data["rows"]:
-        rows.append({"cells": [_pdf_cell(r[c["key"]], c["kind"]) for c in cols]})
     totals = data["totals"]
+    body = [[_pdf_cell(r[c["key"]], c["kind"]) for c in cols] for r in data["rows"]]
     total_cells = []
     for i, c in enumerate(cols):
         if i == 0:
@@ -130,20 +253,49 @@ def _wip_sections(data: dict) -> list[dict]:
             total_cells.append(_pdf_cell(totals[c["key"]], c["kind"]))
         else:
             total_cells.append("")
-    rows.append({"cells": total_cells, "style": "grand-total"})
-    return [
-        {
-            "title": "WIP Schedule",
-            "period": f"As of {data['as_of']} · cost-to-cost",
-            "columns": [c["label"] for c in cols],
-            "text_columns": tc,
-            "rows": rows,
-            "note": _warnings_note(data),
-        }
-    ]
+    pages = _wip_column_pages(cols)
+    sections = []
+    for page_no, (lead, own) in enumerate(pages, start=1):
+        idx = lead + own
+        rows = [{"cells": [cells[i] for i in idx]} for cells in body]
+        rows.append({"cells": [total_cells[i] for i in idx], "style": "grand-total"})
+        period = f"As of {data['as_of']} · cost-to-cost"
+        if len(pages) > 1 and own:
+            period += (
+                f" · columns {own[0] - tc + 1}–{own[-1] - tc + 1} of {len(cols) - tc}"
+                f" (page {page_no} of {len(pages)})"
+            )
+        sections.append(
+            {
+                "title": "WIP Schedule",
+                "period": period,
+                "columns": [cols[i]["label"] for i in idx],
+                "text_columns": tc,
+                "rows": rows,
+                "note": _warnings_note(data),
+            }
+        )
+    return sections
 
 
 _ENTRY_COLUMNS = ["Job", "Account", "Debit", "Credit"]
+
+
+def _account_text(ln: dict) -> str:
+    """An entry line's account as the chart names it: number and name."""
+    number = ln.get("account_number")
+    return f"{number} {ln['account']}" if number else ln["account"]
+
+
+def _entry_state(entry: dict) -> str:
+    """Whether the entry for the date is posted, in the words a grid heads."""
+    posted = entry.get("posted_entry")
+    if posted:
+        return (
+            f"posted (journal entry {posted['transaction_id']}, reversed "
+            f"{posted['reversal_date']})"
+        )
+    return "computed, not posted"
 
 
 def _wip_entry_sections(data: dict) -> list[dict]:
@@ -157,7 +309,7 @@ def _wip_entry_sections(data: dict) -> list[dict]:
                 {
                     "cells": [
                         job["job_name"] if i == 0 else "",
-                        ln["account"],
+                        _account_text(ln),
                         _pdf_cell(ln["debit"] or None, "money"),
                         _pdf_cell(ln["credit"] or None, "money"),
                     ]
@@ -168,7 +320,7 @@ def _wip_entry_sections(data: dict) -> list[dict]:
             {
                 "cells": [
                     "Net entry" if i == 0 else "",
-                    ln["account"],
+                    _account_text(ln),
                     _pdf_cell(ln["debit"] or None, "money"),
                     _pdf_cell(ln["credit"] or None, "money"),
                 ],
@@ -190,7 +342,7 @@ def _wip_entry_sections(data: dict) -> list[dict]:
     return [
         {
             "title": "WIP Adjusting Entry",
-            "period": f"As of {data['as_of']} · computed, not posted",
+            "period": f"As of {data['as_of']} · {_entry_state(entry)}",
             "columns": _ENTRY_COLUMNS,
             "text_columns": 2,
             "rows": rows,
@@ -201,14 +353,14 @@ def _wip_entry_sections(data: dict) -> list[dict]:
 def _wip_entry_csv_rows(data: dict, w) -> None:
     entry = data["adjusting_entry"]
     w.writerow([])
-    w.writerow(["WIP Adjusting Entry (computed, not posted)"])
+    w.writerow([f"WIP Adjusting Entry ({_entry_state(entry)})"])
     w.writerow(_ENTRY_COLUMNS)
     for job in entry["jobs"]:
         for ln in job["lines"]:
             w.writerow(
                 [
                     job["job_name"],
-                    ln["account"],
+                    _account_text(ln),
                     _csv_cell(ln["debit"] or None, "money"),
                     _csv_cell(ln["credit"] or None, "money"),
                 ]
@@ -217,7 +369,7 @@ def _wip_entry_csv_rows(data: dict, w) -> None:
         w.writerow(
             [
                 "Net entry",
-                ln["account"],
+                _account_text(ln),
                 _csv_cell(ln["debit"] or None, "money"),
                 _csv_cell(ln["credit"] or None, "money"),
             ]
@@ -259,7 +411,10 @@ def _grid_csv(data: dict, company: str, report: str, period: str, extra=None) ->
     return out.getvalue()
 
 
-@router.get("/wip-schedule/pdf")
+@router.get(
+    "/wip-schedule/pdf",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def wip_schedule_pdf(
     as_of: date = Query(default=None),
     db: Session = Depends(get_db),
@@ -277,7 +432,10 @@ def wip_schedule_pdf(
     )
 
 
-@router.get("/wip-schedule/csv")
+@router.get(
+    "/wip-schedule/csv",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def wip_schedule_csv(
     request: Request,
     as_of: date = Query(default=None),
@@ -301,7 +459,10 @@ def wip_schedule_csv(
 # ── 2. Cost to complete ───────────────────────────────────────────────────
 
 
-@router.get("/cost-to-complete")
+@router.get(
+    "/cost-to-complete",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def cost_to_complete_route(
     as_of: date = Query(default=None),
     db: Session = Depends(get_db),
@@ -395,7 +556,10 @@ def _ctc_csv_job_node(node: dict, job_name: str, cols: list[dict], w, prefix: st
         _ctc_csv_job_node(ch, job_name, cols, w, prefix + "  ")
 
 
-@router.get("/cost-to-complete/pdf")
+@router.get(
+    "/cost-to-complete/pdf",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def cost_to_complete_pdf(
     as_of: date = Query(default=None),
     db: Session = Depends(get_db),
@@ -410,7 +574,10 @@ def cost_to_complete_pdf(
     )
 
 
-@router.get("/cost-to-complete/csv")
+@router.get(
+    "/cost-to-complete/csv",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def cost_to_complete_csv(
     request: Request,
     as_of: date = Query(default=None),
@@ -431,7 +598,10 @@ def cost_to_complete_csv(
 # ── 2b. Cost-to-complete forecast ─────────────────────────────────────────
 
 
-@router.get("/cost-to-complete-forecast")
+@router.get(
+    "/cost-to-complete-forecast",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def cost_to_complete_forecast_route(
     as_of: date = Query(default=None),
     db: Session = Depends(get_db),
@@ -447,7 +617,10 @@ def cost_to_complete_forecast_route(
     return ctc_forecast_report(db, as_of, job_id, customer_id, status, include_closed)
 
 
-@router.get("/cost-to-complete-forecast/pdf")
+@router.get(
+    "/cost-to-complete-forecast/pdf",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def cost_to_complete_forecast_pdf(
     as_of: date = Query(default=None),
     db: Session = Depends(get_db),
@@ -467,7 +640,10 @@ def cost_to_complete_forecast_pdf(
     )
 
 
-@router.get("/cost-to-complete-forecast/csv")
+@router.get(
+    "/cost-to-complete-forecast/csv",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def cost_to_complete_forecast_csv(
     request: Request,
     as_of: date = Query(default=None),
@@ -493,7 +669,10 @@ def cost_to_complete_forecast_csv(
 # ── 6. Commitment status ──────────────────────────────────────────────────
 
 
-@router.get("/commitment-status")
+@router.get(
+    "/commitment-status",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def commitment_status_route(
     as_of: date = Query(default=None),
     db: Session = Depends(get_db),
@@ -502,13 +681,18 @@ def commitment_status_route(
     status: _STATUS_Q = None,
     include_closed: _CLOSED_Q = False,
 ):
-    """Each commitment (PO or subcontract) per job: committed, billed to date,
+    """Each commitment (PO or subcontract) per job: committed, received (the
+    delivery tickets' quantities at the line rates), billed to date,
     retainage held and remaining, with totals per job and grand. As of
-    `as_of`, only commitments and bills dated by then count."""
+    `as_of`, only commitments, delivery tickets and bills dated by then
+    count."""
     return commitment_status(db, as_of, job_id, customer_id, status, include_closed)
 
 
-@router.get("/commitment-status/pdf")
+@router.get(
+    "/commitment-status/pdf",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def commitment_status_pdf(
     as_of: date = Query(default=None),
     db: Session = Depends(get_db),
@@ -526,7 +710,10 @@ def commitment_status_pdf(
     )
 
 
-@router.get("/commitment-status/csv")
+@router.get(
+    "/commitment-status/csv",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def commitment_status_csv(
     request: Request,
     as_of: date = Query(default=None),
@@ -549,7 +736,10 @@ def commitment_status_csv(
 # ── 3. Change-order log ───────────────────────────────────────────────────
 
 
-@router.get("/change-order-log")
+@router.get(
+    "/change-order-log",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def change_order_log_route(
     as_of: date = Query(default=None),
     db: Session = Depends(get_db),
@@ -611,36 +801,46 @@ def _co_sections(data: dict) -> list[dict]:
 
 
 def _co_csv(data: dict, company: str) -> str:
-    cols = data["columns"]
+    """Every change order under one header (the log's columns, then the day
+    it took effect and was voided, its source PCO and a sub CO's
+    commitment), then each job's contract under a header of its own, so no
+    figure sits under another column's name, then the pending total and the
+    counts as of the date."""
+    cols = data["export_columns"]
     out = io.StringIO()
     w = _SafeWriter(out)
     _preamble(w, company, "Change Order Log", _co_period(data))
     w.writerow(["Job"] + [c["label"] for c in cols])
     for job in data["jobs"]:
-        c = job["contract"]
-        # The contract the change orders build, in a labelled row of its own.
-        w.writerow(
-            [
-                job["job_name"],
-                "Contract (original + approved changes = revised)",
-                _money(c["original"] or 0),
-                _money(c["approved_changes"] or 0),
-                _money(c["revised"] or 0),
-            ]
-        )
         for r in job["rows"]:
             w.writerow(
                 [job["job_name"]]
                 + [_csv_cell(r[col["key"]], col["kind"]) for col in cols]
             )
+    w.writerow([])
+    w.writerow(["Job", "Original contract", "Approved changes", "Revised contract"])
+    for job in data["jobs"]:
+        c = job["contract"]
+        w.writerow(
+            [
+                job["job_name"],
+                _money(c["original"] or 0),
+                _money(c["approved_changes"] or 0),
+                _money(c["revised"] or 0),
+            ]
+        )
     counts = data["totals"]["counts"]
     count_text = "; ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
-    w.writerow(["", "Pending total", _money(data["totals"]["pending_total"])])
-    w.writerow(["", "Counts", count_text])
+    w.writerow([])
+    w.writerow(["Pending total", _money(data["totals"]["pending_total"])])
+    w.writerow([f"Counts as of {data['as_of']}", count_text])
     return out.getvalue()
 
 
-@router.get("/change-order-log/pdf")
+@router.get(
+    "/change-order-log/pdf",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def change_order_log_pdf(
     as_of: date = Query(default=None),
     db: Session = Depends(get_db),
@@ -653,7 +853,10 @@ def change_order_log_pdf(
     return _pdf_response(_co_sections(data), db, "change-order-log.pdf", landscape=True)
 
 
-@router.get("/change-order-log/csv")
+@router.get(
+    "/change-order-log/csv",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def change_order_log_csv(
     request: Request,
     as_of: date = Query(default=None),
@@ -672,7 +875,10 @@ def change_order_log_csv(
 # ── 4. Buyout report ──────────────────────────────────────────────────────
 
 
-@router.get("/buyout")
+@router.get(
+    "/buyout",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def buyout_route(
     as_of: date = Query(default=None),
     db: Session = Depends(get_db),
@@ -753,7 +959,10 @@ def _per_job_grid_csv(data: dict, company: str, report: str, period: str = "") -
     return out.getvalue()
 
 
-@router.get("/buyout/pdf")
+@router.get(
+    "/buyout/pdf",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def buyout_pdf(
     as_of: date = Query(default=None),
     db: Session = Depends(get_db),
@@ -771,7 +980,10 @@ def buyout_pdf(
     )
 
 
-@router.get("/buyout/csv")
+@router.get(
+    "/buyout/csv",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
 def buyout_csv(
     request: Request,
     as_of: date = Query(default=None),
@@ -794,7 +1006,7 @@ def buyout_csv(
 # ── 5. Job cost by vendor ─────────────────────────────────────────────────
 
 
-@router.get("/job-cost-by-vendor")
+@router.get("/job-cost-by-vendor", dependencies=[Depends(refuse_unknown_filters)])
 def job_cost_by_vendor_route(
     start_date: date = Query(default=None),
     end_date: date = Query(default=None),
@@ -820,7 +1032,7 @@ def _vendor_period(data: dict) -> str:
     return f"{data['start_date']} — {data['end_date']}"
 
 
-@router.get("/job-cost-by-vendor/pdf")
+@router.get("/job-cost-by-vendor/pdf", dependencies=[Depends(refuse_unknown_filters)])
 def job_cost_by_vendor_pdf(
     start_date: date = Query(default=None),
     end_date: date = Query(default=None),
@@ -844,7 +1056,7 @@ def job_cost_by_vendor_pdf(
     )
 
 
-@router.get("/job-cost-by-vendor/csv")
+@router.get("/job-cost-by-vendor/csv", dependencies=[Depends(refuse_unknown_filters)])
 def job_cost_by_vendor_csv(
     request: Request,
     start_date: date = Query(default=None),
@@ -892,6 +1104,200 @@ def job_cost_by_vendor_csv(
     )
 
 
+# ── 8. Retainage ─────────────────────────────────────────────────────────
+
+
+def _check_job_status(status: Optional[str]) -> None:
+    """Refuse a job status the report cannot match (it would read as 'no jobs')."""
+    from app.models.jobs import JOB_STATUSES
+
+    if status and status not in JOB_STATUSES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"status must be one of {', '.join(JOB_STATUSES)}.",
+        )
+
+
+@router.get(
+    "/retainage",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
+def retainage_route(
+    as_of: date = Query(default=None),
+    db: Session = Depends(get_db),
+    job_id: _JOB_Q = None,
+    customer_id: _CUST_Q = None,
+    status: _STATUS_Q = None,
+):
+    """Retainage per job as of a date: held by the owner (1150) with what has
+    been released and what is outstanding, and held from each sub (2050) per
+    commitment and per hand-entered bill. The grand totals equal the Balance
+    Sheet's 1150 and 2050 for the date. Closed jobs are included."""
+    _check_job_status(status)
+    return retainage_report(db, as_of, job_id, customer_id, status)
+
+
+def _retainage_blocks(data: dict) -> list[dict]:
+    """The report as two printed grids: owed to the contractor, then owed by
+    it. Each is its columns, its rows and a total row."""
+    out = []
+    for key, title, label in (
+        ("receivable", "Retainage owed to me (1150)", "Total owed to me"),
+        ("payable", "Retainage I owe (2050)", "Total I owe"),
+    ):
+        block = data[key]
+        cols = block["columns"]
+        rows = [
+            {"cells": [_pdf_cell(r[c["key"]], c["kind"]) for c in cols]}
+            for r in block["rows"]
+        ]
+        t = block["totals"]
+        rows.append(
+            {
+                "cells": [label]
+                + [""] * (_text_columns(cols) - 1)
+                + [
+                    _pdf_cell(t[c["key"]], c["kind"])
+                    for c in cols[_text_columns(cols) :]
+                ],
+                "style": "grand-total",
+            }
+        )
+        out.append(
+            {
+                "title": title,
+                "period": f"As of {data['as_of']}",
+                "columns": [c["label"] for c in cols],
+                "text_columns": _text_columns(cols),
+                "rows": rows,
+            }
+        )
+    return out
+
+
+@router.get(
+    "/retainage/pdf",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
+def retainage_pdf(
+    as_of: date = Query(default=None),
+    db: Session = Depends(get_db),
+    job_id: _JOB_Q = None,
+    customer_id: _CUST_Q = None,
+    status: _STATUS_Q = None,
+):
+    _check_job_status(status)
+    data = retainage_report(db, as_of, job_id, customer_id, status)
+    return _pdf_response(
+        _retainage_blocks(data),
+        db,
+        f"retainage_{data['as_of']}.pdf",
+        landscape=True,
+    )
+
+
+@router.get(
+    "/retainage/csv",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
+def retainage_csv(
+    request: Request,
+    as_of: date = Query(default=None),
+    db: Session = Depends(get_db),
+    job_id: _JOB_Q = None,
+    customer_id: _CUST_Q = None,
+    status: _STATUS_Q = None,
+):
+    _check_job_status(status)
+    data = retainage_report(db, as_of, job_id, customer_id, status)
+    out = io.StringIO()
+    w = _SafeWriter(out)
+    _preamble(w, _company_name(db), "Retainage", f"As of {data['as_of']}")
+    for key, label in (
+        ("receivable", "Total owed to me"),
+        ("payable", "Total I owe"),
+    ):
+        block = data[key]
+        cols = block["columns"]
+        w.writerow(["Owed to me (1150)" if key == "receivable" else "I owe (2050)"])
+        w.writerow([c["label"] for c in cols])
+        for r in block["rows"]:
+            w.writerow([_csv_cell(r[c["key"]], c["kind"]) for c in cols])
+        n = _text_columns(cols)
+        t = block["totals"]
+        w.writerow(
+            [label]
+            + [""] * (n - 1)
+            + [_csv_cell(t[c["key"]], c["kind"]) for c in cols[n:]]
+        )
+        w.writerow([])
+    return _csv_download(out.getvalue(), f"retainage_{data['as_of']}.csv", request)
+
+
+# ── 9. Compliance ────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/compliance",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
+def compliance_route(as_of: date = Query(default=None), db: Session = Depends(get_db)):
+    """The subs to chase: a certificate of insurance expired or expiring in 30
+    days, no W-9 on file, or a paid bill with no lien waiver."""
+    return compliance_report(db, as_of)
+
+
+def _compliance_sections(data: dict) -> list[dict]:
+    cols = data["columns"]
+    rows = [
+        {"cells": [_pdf_cell(r[c["key"]], c["kind"]) for c in cols]}
+        for r in data["rows"]
+    ]
+    return [
+        {
+            "title": "Sub Compliance",
+            "period": f"As of {data['as_of']}",
+            "columns": [c["label"] for c in cols],
+            "text_columns": _text_columns(cols),
+            "rows": rows,
+        }
+    ]
+
+
+@router.get(
+    "/compliance/pdf",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
+def compliance_pdf(as_of: date = Query(default=None), db: Session = Depends(get_db)):
+    data = compliance_report(db, as_of)
+    return _pdf_response(
+        _compliance_sections(data),
+        db,
+        f"compliance_{data['as_of']}.pdf",
+        landscape=True,
+    )
+
+
+@router.get(
+    "/compliance/csv",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
+def compliance_csv(
+    request: Request,
+    as_of: date = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    data = compliance_report(db, as_of)
+    cols = data["columns"]
+    out = io.StringIO()
+    w = _SafeWriter(out)
+    _preamble(w, _company_name(db), "Sub Compliance", f"As of {data['as_of']}")
+    w.writerow([c["label"] for c in cols])
+    for r in data["rows"]:
+        w.writerow([_csv_cell(r[c["key"]], c["kind"]) for c in cols])
+    return _csv_download(out.getvalue(), f"compliance_{data['as_of']}.csv", request)
+
+
 # ── Export routes for the two existing contractor reports (#556) ────────────
 # Job Profitability and Job Budget vs Actual had on-screen views but no PDF or
 # CSV; these add them on the shared renderer so the Report Center can offer the
@@ -909,10 +1315,16 @@ _JOB_PROFIT_COLUMNS = [
 ]
 
 
-def _job_profitability_data(db, start_date, end_date, customer_id):
+def _job_profitability_data(db, start_date, end_date, customer_id, basis=None):
     from app.routes.reports.financial import job_profitability_report
 
-    return job_profitability_report(start_date, end_date, customer_id, db)
+    return job_profitability_report(
+        start_date=start_date,
+        end_date=end_date,
+        customer_id=customer_id,
+        db=db,
+        basis=basis,
+    )
 
 
 def _job_profitability_grid(data: dict) -> dict:
@@ -928,14 +1340,15 @@ def _job_profitability_grid(data: dict) -> dict:
     }
 
 
-@router.get("/job-profitability/pdf")
+@router.get("/job-profitability/pdf", dependencies=[Depends(refuse_unknown_filters)])
 def job_profitability_pdf(
     start_date: date = Query(default=None),
     end_date: date = Query(default=None),
     customer_id: int = Query(default=None),
+    basis: str = Query(default=None),
     db: Session = Depends(get_db),
 ):
-    data = _job_profitability_data(db, start_date, end_date, customer_id)
+    data = _job_profitability_data(db, start_date, end_date, customer_id, basis)
     grid = _job_profitability_grid(data)
     cols = grid["columns"]
     rows = [
@@ -956,7 +1369,7 @@ def job_profitability_pdf(
     sections = [
         {
             "title": "Job Profitability",
-            "period": f"{data['start_date']} — {data['end_date']}",
+            "period": f"{data['start_date']} — {data['end_date']}" + _cash_words(data),
             "columns": [c["label"] for c in cols],
             "text_columns": 2,
             "rows": rows,
@@ -970,15 +1383,16 @@ def job_profitability_pdf(
     )
 
 
-@router.get("/job-profitability/csv")
+@router.get("/job-profitability/csv", dependencies=[Depends(refuse_unknown_filters)])
 def job_profitability_csv(
     request: Request,
     start_date: date = Query(default=None),
     end_date: date = Query(default=None),
     customer_id: int = Query(default=None),
+    basis: str = Query(default=None),
     db: Session = Depends(get_db),
 ):
-    data = _job_profitability_data(db, start_date, end_date, customer_id)
+    data = _job_profitability_data(db, start_date, end_date, customer_id, basis)
     grid = _job_profitability_grid(data)
     cols = grid["columns"]
     out = io.StringIO()
@@ -987,7 +1401,7 @@ def job_profitability_csv(
         w,
         _company_name(db),
         "Job Profitability",
-        f"{data['start_date']} to {data['end_date']}",
+        f"{data['start_date']} to {data['end_date']}" + _cash_words(data),
     )
     w.writerow([c["label"] for c in cols])
     for r in grid["rows"]:
@@ -1042,7 +1456,7 @@ def _bva_rows(db, start_date, end_date, customer_id=None, include_inactive=False
     )
 
 
-@router.get("/job-budget-vs-actual/pdf")
+@router.get("/job-budget-vs-actual/pdf", dependencies=[Depends(refuse_unknown_filters)])
 def job_budget_vs_actual_pdf(
     start_date: date = Query(default=None),
     end_date: date = Query(default=None),
@@ -1092,7 +1506,7 @@ def job_budget_vs_actual_pdf(
     )
 
 
-@router.get("/job-budget-vs-actual/csv")
+@router.get("/job-budget-vs-actual/csv", dependencies=[Depends(refuse_unknown_filters)])
 def job_budget_vs_actual_csv(
     request: Request,
     start_date: date = Query(default=None),
@@ -1162,6 +1576,13 @@ def _cost_tree_shows_uncoded(un: dict) -> bool:
     return bool(un["lines"]) or any(f[c["key"]] for c in _COST_TREE_COLUMNS)
 
 
+def _uncommitted_figures(extra: float) -> dict:
+    """The tree's budget-not-yet-committed row: no budget of its own, its
+    amount in Projected and (as a shortfall against the budget) Variance."""
+    zero = {c["key"]: 0.0 for c in _COST_TREE_COLUMNS}
+    return {**zero, "projected": extra, "variance": -extra, "pct_used": None}
+
+
 def _cost_tree_rows(tree: dict, opened=None) -> list[dict]:
     """Every row of the tree in the tab's order: each cost type, its codes
     (depth-first, children under their parent), its "No cost code" row, then
@@ -1218,6 +1639,36 @@ def _cost_tree_rows(tree: dict, opened=None) -> list[dict]:
                     "figures": ty["uncoded"]["figures"],
                 }
             )
+    extra = tree["totals"].get("uncommitted_budget")
+    if extra:
+        # a contractor's projected carries the budget nothing has taken up;
+        # a row of its own keeps the Projected column footing to the total
+        rows.append(
+            {
+                "kind": "uncommitted",
+                "cost_type": "",
+                "code": "",
+                "name": "Budget not yet committed",
+                "label": "Budget not yet committed",
+                "depth": 0,
+                "figures": _uncommitted_figures(extra),
+            }
+        )
+    before = tree["totals"].get("cost_before_period")
+    if before:
+        # a dated tree's projected is the whole job's: the cost before the
+        # period is in it, on a row of its own
+        rows.append(
+            {
+                "kind": "before",
+                "cost_type": "",
+                "code": "",
+                "name": f"Cost before {tree['start_date']}",
+                "label": f"Cost before {tree['start_date']}",
+                "depth": 0,
+                "figures": _uncommitted_figures(before),
+            }
+        )
     jl = tree["job_level_budget"]
     if jl["original"] or jl["changes"] or jl["est_revenue"]:
         rows.append(
@@ -1238,6 +1689,34 @@ _COST_TREE_NOTE = (
     "Budgets and committed cost are job to date; actual cost and revenue are "
     "for the period."
 )
+
+# A contractor's revenue by section, beside the section's cost (the tree's
+# type branches carry cost only: a pay application's revenue has no type).
+_REVENUE_SECTION_COLUMNS = [
+    {"key": "budget", "label": "Budget", "kind": "money"},
+    {"key": "actual", "label": "Actual cost", "kind": "money"},
+    {"key": "est_revenue", "label": "Est. revenue", "kind": "money"},
+    {"key": "act_revenue", "label": "Act. revenue", "kind": "money"},
+    {"key": "revenue_diff", "label": "Revenue diff", "kind": "money"},
+    {"key": "gross_profit", "label": "Act. revenue − cost", "kind": "money"},
+]
+
+
+def _revenue_section_grid(tree: dict, job_name: str):
+    rows = tree.get("revenue_sections")
+    if not rows:
+        return None
+    cols = _REVENUE_SECTION_COLUMNS
+    return {
+        "title": f"Revenue by section — {job_name}",
+        "period": cost_tree_period(tree),
+        "columns": ["Section"] + [c["label"] for c in cols],
+        "text_columns": 1,
+        "rows": [
+            {"cells": [r["label"]] + [_pdf_cell(r[c["key"]], c["kind"]) for c in cols]}
+            for r in rows
+        ],
+    }
 
 
 def cost_tree_sections(tree: dict, job_name: str, opened=None) -> list[dict]:
@@ -1263,7 +1742,7 @@ def cost_tree_sections(tree: dict, job_name: str, opened=None) -> list[dict]:
         }
     )
     dated = tree.get("start_date") or tree.get("end_date")
-    return [
+    out = [
         {
             "title": f"Job Cost Detail — {job_name}",
             "period": cost_tree_period(tree),
@@ -1273,6 +1752,10 @@ def cost_tree_sections(tree: dict, job_name: str, opened=None) -> list[dict]:
             "note": _COST_TREE_NOTE if dated else None,
         }
     ]
+    by_section = _revenue_section_grid(tree, job_name)
+    if by_section is not None:
+        out.append(by_section)
+    return out
 
 
 def cost_tree_csv(tree: dict, job_name: str, company: str) -> str:
@@ -1294,4 +1777,91 @@ def cost_tree_csv(tree: dict, job_name: str, company: str) -> str:
     )
     if tree.get("start_date") or tree.get("end_date"):
         w.writerow([_COST_TREE_NOTE])
+    if tree.get("revenue_sections"):
+        rcols = _REVENUE_SECTION_COLUMNS
+        w.writerow([])
+        w.writerow(["Revenue by section"])
+        w.writerow(["Code", "Section"] + [c["label"] for c in rcols])
+        for r in tree["revenue_sections"]:
+            w.writerow(
+                [r["code"], r["name"]]
+                + [_csv_cell(r[c["key"]], c["kind"]) for c in rcols]
+            )
     return out.getvalue()
+
+
+# ── Field ticket log ──────────────────────────────────────────────────────
+# Per job, the T&M tickets that are still money on the table: unsigned, and
+# signed but not yet billed, at their bill rates (app/services/field_tickets).
+
+
+@router.get(
+    "/field-ticket-log",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
+def field_ticket_log_route(
+    as_of: date = Query(default=None),
+    db: Session = Depends(get_db),
+    job_id: _JOB_Q = None,
+    customer_id: _CUST_Q = None,
+    status: _STATUS_Q = None,
+    include_closed: _CLOSED_Q = False,
+):
+    """Per job, the T&M tickets dated by `as_of` not yet billed: unsigned ones
+    and signed ones, each at its bill rates, with the change order a signed
+    ticket is priced on when that is not yet approved. Totals per job and
+    grand. A job with no open ticket is left out."""
+    from app.services.field_tickets import field_ticket_log
+
+    _check_job_status(status)
+    return field_ticket_log(db, as_of, job_id, customer_id, status, include_closed)
+
+
+@router.get(
+    "/field-ticket-log/pdf",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
+def field_ticket_log_pdf(
+    as_of: date = Query(default=None),
+    db: Session = Depends(get_db),
+    job_id: _JOB_Q = None,
+    customer_id: _CUST_Q = None,
+    status: _STATUS_Q = None,
+    include_closed: _CLOSED_Q = False,
+):
+    from app.services.field_tickets import field_ticket_log
+
+    _check_job_status(status)
+    data = field_ticket_log(db, as_of, job_id, customer_id, status, include_closed)
+    return _pdf_response(
+        _per_job_grid_sections(data, "Field Ticket Log", f"As of {data['as_of']}"),
+        db,
+        f"field-ticket-log_{data['as_of']}.pdf",
+        landscape=True,
+    )
+
+
+@router.get(
+    "/field-ticket-log/csv",
+    dependencies=[Depends(refuse_unknown_filters), Depends(_construction_only)],
+)
+def field_ticket_log_csv(
+    request: Request,
+    as_of: date = Query(default=None),
+    db: Session = Depends(get_db),
+    job_id: _JOB_Q = None,
+    customer_id: _CUST_Q = None,
+    status: _STATUS_Q = None,
+    include_closed: _CLOSED_Q = False,
+):
+    from app.services.field_tickets import field_ticket_log
+
+    _check_job_status(status)
+    data = field_ticket_log(db, as_of, job_id, customer_id, status, include_closed)
+    return _csv_download(
+        _per_job_grid_csv(
+            data, _company_name(db), "Field Ticket Log", f"As of {data['as_of']}"
+        ),
+        f"field-ticket-log_{data['as_of']}.csv",
+        request,
+    )

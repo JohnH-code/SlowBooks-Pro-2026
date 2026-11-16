@@ -197,10 +197,13 @@ _PERCENT_SETTINGS = {
     "default_tax_rate": "Default tax rate",
     "hst_rate": "GST/HST rate",
     "late_fee_rate": "Late fee rate",
+    "use_tax_rate": "Use tax rate",
 }
 # A document keeps its tax rate to four places of a percent (New York
 # City's 8.875%, 7.0625%), so the default that fills it in can have no more.
-_FOUR_PLACE_PERCENTS = {"default_tax_rate"}
+_FOUR_PLACE_PERCENTS = {"default_tax_rate", "use_tax_rate"}
+# Percents whose empty value means "follow another setting", kept empty.
+_BLANK_IS_DEFAULT = {"use_tax_rate"}
 # key -> (label, smallest allowed, largest allowed or None)
 _WHOLE_NUMBER_SETTINGS = {
     "invoice_next_number": ("Next invoice number", 1, None),
@@ -225,6 +228,25 @@ _INCH_NUDGE_SETTINGS = {
     "check_nudge_y_in": "Vertical nudge",
 }
 _NUDGE_LIMIT = Decimal("0.5")
+
+# The check face's per-field layout (#749): pre-printed stock is not
+# universal, so each value the face prints can be moved, sized and bolded on
+# its own, on top of the whole-face nudge. Stored as one JSON object,
+# check_field_layout, keyed by field, each holding only what differs from
+# today's face: "x" / "y" (inches, positive = right / down, -1 to 1 in 0.01
+# steps), "size" (points, 6 to 18, one decimal place) and "bold" (true or
+# false). "" (the default) is today's layout. {field: label}
+CHECK_LAYOUT_FIELDS = {
+    "payee": "Payee",
+    "payee_address": "Payee address",
+    "date": "Date",
+    "amount": "Amount in figures",
+    "amount_words": "Amount in words",
+    "memo": "Memo",
+}
+CHECK_LAYOUT_OFFSET_LIMIT = Decimal("1")
+CHECK_LAYOUT_SIZE_MIN = Decimal("6")
+CHECK_LAYOUT_SIZE_MAX = Decimal("18")
 
 _DIGITS = re.compile(r"[0-9]+")
 # The two identifiers a bank prints on its ACH origination sheet: what the
@@ -274,10 +296,186 @@ _ADDRESS_LIST_SETTINGS = {
 }
 
 
+def _clean_deposit_account_ids(value, text: str) -> str:
+    """Make Deposits' destination list (#735) as stored: a JSON list of
+    account ids, each once, in id order; "[]" for every bank account. The
+    API may send the list itself or its JSON text; an empty value is the
+    empty list. Whether each id is a bank account in the chart is checked
+    by the settings route, which has the database."""
+    import json
+
+    if isinstance(value, (list, tuple)):
+        items = list(value)
+    elif text == "":
+        items = []
+    else:
+        try:
+            items = json.loads(text)
+        except ValueError:
+            items = None
+    wanted = (
+        "Deposit into these accounts must be a list of bank account ids, "
+        "such as [1, 2], or [] for every bank account."
+    )
+    if not isinstance(items, list):
+        raise SettingValueError(wanted)
+    ids = set()
+    for item in items:
+        if isinstance(item, bool):
+            raise SettingValueError(wanted)
+        if isinstance(item, int):
+            ids.add(item)
+        elif isinstance(item, str) and _DIGITS.fullmatch(item.strip()):
+            ids.add(int(item.strip()))
+        else:
+            raise SettingValueError(wanted)
+    return json.dumps(sorted(ids))
+
+
+def _layout_number(value):
+    """A number typed or sent for a layout attribute, as a Decimal; None
+    for blank (today's value); False for anything that is not a number."""
+    if value is None or isinstance(value, bool):
+        return None if value is None else False
+    text = str(value).strip()
+    if text == "":
+        return None
+    try:
+        number = Decimal(text)
+    except InvalidOperation:
+        return False
+    return number if number.is_finite() else False
+
+
+def _json_number(number: Decimal):
+    return int(number) if number == number.to_integral_value() else float(number)
+
+
+def _clean_check_field_layout(value, text: str) -> str:
+    """check_field_layout (#749) as stored: compact JSON with each field's
+    attributes that differ from today's face, or "" for none. The API may
+    send the object itself or its JSON text. Every field and attribute is
+    checked; the first problem of each field is named."""
+    import json
+
+    if isinstance(value, dict):
+        layout = value
+    elif text == "":
+        return ""
+    else:
+        try:
+            layout = json.loads(text)
+        except ValueError:
+            layout = None
+    if not isinstance(layout, dict):
+        raise SettingValueError(
+            "Check field layout must be an object of fields, such as "
+            '{"date": {"x": -0.2, "size": 12, "bold": true}}.'
+        )
+    problems = []
+    stored = {}
+    for field in sorted(layout):
+        attrs = layout[field]
+        label = CHECK_LAYOUT_FIELDS.get(field)
+        if label is None:
+            problems.append(
+                f"Check field layout: {field!s} is not a field; the fields are "
+                + ", ".join(CHECK_LAYOUT_FIELDS)
+                + "."
+            )
+            continue
+        if attrs is None:
+            continue
+        if not isinstance(attrs, dict):
+            problems.append(f"{label}: the layout must be an object.")
+            continue
+        unknown = sorted(set(attrs) - {"x", "y", "size", "bold"})
+        if unknown:
+            problems.append(
+                f"{label}: {', '.join(map(str, unknown))} is not part of a field's "
+                "layout (x, y, size, bold)."
+            )
+            continue
+        kept = {}
+        for attr, what in (("x", "left/right"), ("y", "up/down")):
+            number = _layout_number(attrs.get(attr))
+            if number is None:
+                continue
+            if number is False or abs(number) > CHECK_LAYOUT_OFFSET_LIMIT:
+                problems.append(
+                    f"{label} {what} offset must be a number of inches from -1 to 1."
+                )
+            elif number != number.quantize(Decimal("0.01")):
+                problems.append(
+                    f"{label} {what} offset can have up to two decimal places "
+                    "(0.01in steps)."
+                )
+            elif number != 0:
+                kept[attr] = _json_number(number)
+        number = _layout_number(attrs.get("size"))
+        if number is not None:
+            if (
+                number is False
+                or not CHECK_LAYOUT_SIZE_MIN <= number <= CHECK_LAYOUT_SIZE_MAX
+            ):
+                problems.append(
+                    f"{label} text size must be a number of points from 6 to 18, "
+                    "or empty for the size it prints at today."
+                )
+            elif number != number.quantize(Decimal("0.1")):
+                problems.append(f"{label} text size can have one decimal place (10.5).")
+            else:
+                kept["size"] = _json_number(number)
+        bold = attrs.get("bold")
+        if bold in ("true", "false"):
+            bold = bold == "true"
+        if isinstance(bold, bool):
+            kept["bold"] = bold
+        elif bold not in (None, ""):
+            problems.append(f"{label} bold must be true or false.")
+        if kept:
+            stored[field] = kept
+    if problems:
+        raise SettingValueError(" ".join(problems))
+    return json.dumps(stored, sort_keys=True, separators=(",", ":")) if stored else ""
+
+
+def check_field_layout(text) -> dict:
+    """The stored check_field_layout (#749) as {field: {attr: value}}, with
+    anything that does not check out left out, so a damaged value prints
+    today's face rather than failing the print."""
+    import json
+
+    try:
+        cleaned = _clean_check_field_layout(None, (text or "").strip())
+    except SettingValueError:
+        # keep the fields that are fine on their own
+        try:
+            raw = json.loads(text)
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        out = {}
+        for field, attrs in raw.items():
+            try:
+                one = _clean_check_field_layout({field: attrs}, "")
+            except SettingValueError:
+                continue
+            if one:
+                out.update(json.loads(one))
+        return out
+    return json.loads(cleaned) if cleaned else {}
+
+
 def clean_setting_value(key: str, value) -> str:
     """The string to store for ``key``, or SettingValueError saying what to
     type instead. Settings without a rule are stored as given."""
     text = "" if value is None else str(value).strip()
+    if key == "deposit_account_ids":
+        return _clean_deposit_account_ids(value, text)
+    if key == "check_field_layout":
+        return _clean_check_field_layout(value, text)
     if key in _ADDRESS_LIST_SETTINGS:
         # stored as the clean comma-separated list, so what the send uses is
         # what the page shows; an entry that is not an address is refused
@@ -298,7 +496,7 @@ def clean_setting_value(key: str, value) -> str:
     if key in _PERCENT_SETTINGS:
         label = _PERCENT_SETTINGS[key]
         if text == "":
-            return "0"
+            return "" if key in _BLANK_IS_DEFAULT else "0"
         try:
             number = Decimal(text)
         except InvalidOperation:
