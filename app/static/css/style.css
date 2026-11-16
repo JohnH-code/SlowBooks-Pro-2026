@@ -4197,3 +4197,11 @@ body.page-window #sidebar, body.page-window #sidebar-toggle { display: none !imp
     background: inherit;
     box-shadow: inset 0 1px 0 var(--panel-border);
 }
+
+/* John's build: the memorized-transactions reminder line on Home */
+.mem-reminder-line {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    margin: 0 0 12px; padding: 8px 12px; font-size: 13px;
+    background: var(--primary-light); border: 1px solid var(--qb-gold);
+}
+.mem-reminder-line[hidden] { display: none; }

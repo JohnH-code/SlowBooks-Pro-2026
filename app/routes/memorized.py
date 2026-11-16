@@ -253,6 +253,52 @@ def list_due(as_of: date | None = Query(default=None), db: Session = Depends(get
     return schedule_rows(db, as_of, due_only=True)
 
 
+# John's build: QuickBooks' Reminders for memorized transactions. A remind
+# schedule only sat on the Due now list, so nothing said a cheque was due
+# unless someone opened Memorized Transactions; the app now shows what is
+# due within the reminder window (setting memorized_remind_days, default 5)
+# when it opens and on Home.
+@router.get("/upcoming")
+def list_upcoming(
+    days: int | None = Query(default=None, ge=0, le=60),
+    as_of: date | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """The schedules due today or within `days` days (the
+    memorized_remind_days setting when not given), overdue ones first: each
+    row as GET /api/memorized gives it, with the memo and whether it is
+    overdue, due today or coming up."""
+    from datetime import timedelta
+
+    from app.services.settings_service import get_setting_raw
+
+    today = as_of or date.today()
+    if days is None:
+        try:
+            days = max(0, min(60, int(get_setting_raw(db, "memorized_remind_days"))))
+        except (TypeError, ValueError):
+            days = 5
+    rows = schedule_rows(db, today + timedelta(days=days), due_only=True)
+    notes = {
+        m.id: (m.notes or m.description or "")
+        for m in db.query(MemorizedTransaction).all()
+    }
+    items = []
+    for r in rows:
+        nd = r["next_date"]
+        items.append(
+            {
+                **ScheduleRow(**r).model_dump(mode="json"),
+                "memo": notes.get(r["id"], "") if r["kind"] != "invoice" else "",
+                "when": (
+                    "overdue" if nd < today else "today" if nd == today else "soon"
+                ),
+                "days_away": (nd - today).days,
+            }
+        )
+    return {"days": days, "today": today.isoformat(), "items": items}
+
+
 @router.post("/enter-due")
 def enter_due(as_of: date | None = Query(default=None), db: Session = Depends(get_db)):
     """Enter All Due: generate every due recurring invoice and enter every

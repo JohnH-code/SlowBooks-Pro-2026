@@ -311,6 +311,9 @@ DEFAULT_SETTINGS = {
     # (services/scheduler.py). "false" leaves them to Enter All Due, Enter
     # now, or a server's cron run of scripts/run_recurring.py.
     "auto_enter_on_open": "true",
+    # John's build: how many days ahead the app reminds of a memorized
+    # transaction coming due (QuickBooks' "Remind me N days before")
+    "memorized_remind_days": "5",
     # Phase 10: Late Fee Automation
     "late_fee_enabled": "false",
     "late_fee_rate": "1.5",
