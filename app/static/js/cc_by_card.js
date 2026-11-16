@@ -53,7 +53,7 @@
             html += `<div class="empty-state"><p>No charges on ${card ? escapeHtml(card.name) : 'any card'} yet</p></div>`;
             return html;
         }
-        html += `<div class="table-container"><table>
+        html += `<div class="table-container reg-table-box"><table>
             <thead><tr><th scope="col">Date</th><th scope="col">Payee</th><th scope="col">Account</th>${sel === 'all' ? '<th scope="col">Card</th>' : ''}<th scope="col">Reference</th>
             <th scope="col" class="amount">Amount</th><th scope="col"></th></tr></thead><tbody>`;
         for (const c of shown) {
@@ -82,7 +82,10 @@
             : new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
         const reg = await API.get(`/banking/check-register?account_id=${card.id}${from ? `&start_date=${from}` : ''}`);
         const [outLabel, inLabel] = BankingPage._cols('credit_card');
-        const rows = (reg.entries || []).map(e => `
+        // Newest first: the bank register's box, one choice for both
+        const newest = BankingPage._newestFirst();
+        const entries = reg.entries || [];
+        const rows = (newest ? [...entries].reverse() : entries).map(e => `
             <tr data-txn="${e.transaction_id}" style="${e.voided ? 'color:var(--gray-400); text-decoration:line-through;' : ''}">
                 <td>${formatDate(e.date)}</td>
                 <td>${escapeHtml(e.payee || '')}</td>
@@ -95,21 +98,52 @@
                 <td style="text-align:center;">${BankingPage._clearedCell(e, card.id)}</td>
                 <td style="white-space:nowrap;">${BankingPage._editButton(e, card.id)}${e.voidable ? `<button data-destructive class="btn btn-sm btn-secondary" onclick="BankingPage.voidEntry('${e.source_type}', ${e.transaction_id}, ${card.id})">Void</button>` : ''}</td>
             </tr>`).join('');
-        const opening = from ? `<tr style="color:var(--gray-500);"><td>${formatDate(from)}</td><td colspan="6">Balance brought forward</td><td class="amount">${formatCurrency(reg.opening_balance)}</td><td></td><td></td></tr>` : '';
+        const opening = from ? `<tr id="cc-reg-opening" style="color:var(--gray-500);"><td>${formatDate(from)}</td><td colspan="6">Balance brought forward</td><td class="amount">${formatCurrency(reg.opening_balance)}</td><td></td><td></td></tr>` : '';
         return `<div class="cc-reg-bar">
                 <label for="cc-reg-from">From</label>
                 <input type="date" id="cc-reg-from" value="${escapeHtml(from)}" onchange="CCChargesPage.setFrom(this.value)">
                 <button type="button" class="btn btn-sm btn-secondary" onclick="CCChargesPage.setFrom('')">All dates</button>
+                <label for="cc-reg-newest" style="display:inline-flex; align-items:center; gap:4px; text-transform:none;"><input type="checkbox" id="cc-reg-newest"${newest ? ' checked' : ''} onchange="CCChargesPage.setNewestFirst(this.checked)">Newest first</label>
             </div>
-            <div class="table-container cc-reg"><table>
+            <div class="table-container cc-reg reg-table-box"><table>
                 <thead><tr>
                     <th scope="col">Date</th><th scope="col">Payee</th><th scope="col">Memo</th><th scope="col">Ref #</th><th scope="col">Type</th>
                     <th scope="col" class="amount">${outLabel}</th><th scope="col" class="amount">${inLabel}</th><th scope="col" class="amount">Balance</th>
                     <th scope="col" title="✓ cleared · R reconciled">✓</th><th scope="col"></th>
                 </tr></thead>
-                <tbody>${opening}${rows || `<tr><td colspan="10" class="qbr-muted">Nothing on this card${from ? ' since ' + formatDate(from) : ''}</td></tr>`}</tbody>
+                <tbody>${newest ? '' : opening}${rows || `<tr><td colspan="10" class="qbr-muted">Nothing on this card${from ? ' since ' + formatDate(from) : ''}</td></tr>`}</tbody>
+                ${newest ? `<tbody>${opening}</tbody>` : ''}
             </table></div>`;
     }
+
+    CCChargesPage.setNewestFirst = function (on) {
+        if (typeof Store !== 'undefined') {
+            if (on) Store.set(BankingPage._newestFirstKey(), '1');
+            else Store.remove(BankingPage._newestFirstKey());
+        }
+        App.refresh();
+    };
+
+    // A card's register opens at its newest charges, as the bank register
+    // does: at the foot, or at the top when newest first. Once more after
+    // a long list is laid out, unless the user has scrolled since.
+    CCChargesPage.mount = function () {
+        const box = document.getElementById('content');
+        if (!box || !document.querySelector('.cc-reg')) return;
+        const newest = BankingPage._newestFirst();
+        const go = () => { box.scrollTop = newest ? 0 : box.scrollHeight; };
+        go();
+        let moved = false;
+        box.addEventListener('wheel', () => { moved = true; }, { once: true, passive: true });
+        const table = document.querySelector('.cc-reg');
+        const again = () => { if (!moved && table.isConnected) go(); };
+        requestAnimationFrame(again);
+        setTimeout(again, 300);
+    };
+    document.addEventListener('DOMContentLoaded', () => {
+        const route = typeof App !== 'undefined' && App.routes && App.routes['/cc-charges'];
+        if (route && !route.mount) route.mount = () => CCChargesPage.mount();
+    });
 
     CCChargesPage.setFrom = function (value) {
         CCChargesPage._from = value || '';
