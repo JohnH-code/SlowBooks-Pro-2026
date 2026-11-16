@@ -31,11 +31,14 @@ def test_the_entry_row_follows_the_entries_on_a_populated_register():
     # under a date filter too (#663); a class filter puts a line in its place
     assert "</tbody>${quickRow}</table>" in populated
     assert "const quickRow = f.class_id ? BankingPage._entryRowOff(" in js
-    # the brought-forward balance opens the oldest-first table (NEW-142)
-    assert "<tbody>${opening}${rows}</tbody>" in populated
+    # the brought-forward balance opens the oldest-first table (NEW-142);
+    # John's build: newest first, it closes it
+    assert "const body = newest ? `${rows}${opening}` : `${opening}${rows}`;" in (
+        populated
+    )
     # and the row's memo has a column of its own, in the one header the
     # empty and the populated register share (#729)
-    assert "<table>${head}<tbody>${opening}${rows}</tbody>" in populated
+    assert "<table>${head}<tbody>${body}</tbody>" in populated
     head = js[js.index("const head = `<thead>") :][:600]
     assert '<th scope="col">Memo</th>' in head
 

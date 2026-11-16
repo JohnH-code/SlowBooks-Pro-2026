@@ -852,6 +852,26 @@ const BankingPage = {
     _hidingVoided() {
         return typeof Store !== 'undefined' && Store.get(BankingPage._hideVoidedKey()) === '1';
     },
+    // John's build: Newest first, kept like Hide voided. The list reads
+    // newest to oldest, each row still with its running balance, and opens
+    // at its top; the entry row stays at the foot of the window.
+    _newestFirstKey() {
+        return BankingPage._hideVoidedKey().replace('hide-voided', 'newest-first');
+    },
+    _newestFirst() {
+        return typeof Store !== 'undefined' && Store.get(BankingPage._newestFirstKey()) === '1';
+    },
+    async regNewestFirst(box, id) {
+        if (typeof Store !== 'undefined') {
+            if (box.checked) Store.set(BankingPage._newestFirstKey(), '1');
+            else Store.remove(BankingPage._newestFirstKey());
+        }
+        const keyboard = typeof App !== 'undefined' && typeof App.keyboardFocus === 'function' && App.keyboardFocus();
+        BankingPage._openAtNewest = true;  // the newest entries, either way round
+        await BankingPage.go(BankingPage._regUrl(id));
+        const again = document.getElementById('reg-newest-first');
+        if (again) focusFor(again, keyboard);
+    },
     _withoutVoided(entries) {
         let off = 0;
         const shown = [];
@@ -1146,7 +1166,27 @@ const BankingPage = {
         if (!BankingPage._openAtEnd) return;
         BankingPage._openAtEnd = false;
         const box = document.getElementById('content');
-        if (box) box.scrollTop = box.scrollHeight;
+        if (!box) return;
+        // John's build: newest first opens at the top, where the newest are
+        const newest = BankingPage._newestFirst();
+        const go = () => { box.scrollTop = newest ? 0 : box.scrollHeight; };
+        go();
+        // A register of many years is still being laid out when it is first
+        // drawn in the desktop app (WebKit), and it opened part way, or at
+        // its oldest entries. Once more after it settles, unless the user
+        // has scrolled since, or the page is no longer this drawing.
+        const drawing = BankingPage._drawing;
+        let moved = false;
+        const off = () => { moved = true; };
+        box.addEventListener('wheel', off, { once: true, passive: true });
+        box.addEventListener('keydown', off, { once: true });
+        const again = () => {
+            if (moved || BankingPage._drawing !== drawing) return;
+            if (!document.querySelector(`#reg-filters[data-drawn="${drawing}"]`)) return;
+            go();
+        };
+        requestAnimationFrame(again);
+        setTimeout(again, 300);
     },
 
     // Whether the page under any dialog open is this account's register.
@@ -1162,7 +1202,8 @@ const BankingPage = {
         // opened, not drawn again in place (#728): the page under it is not
         // this register (a filter changed, a save, a void redraw it in place)
         const bar = document.querySelector('#reg-filters');
-        BankingPage._openAtEnd = !(bar && bar.dataset.account === String(id));
+        BankingPage._openAtEnd = BankingPage._openAtNewest || !(bar && bar.dataset.account === String(id));
+        BankingPage._openAtNewest = false;
         const q = query || {};
         await BankingPage._openCompany();  // whose From is kept
         const f = BankingPage._regFilterFrom(q);
@@ -1278,6 +1319,7 @@ const BankingPage = {
                 <label for="reg-class" style="font-size:11px;">${T('Class')}</label>
                 <select id="reg-class" data-no-search onchange="BankingPage.regFilterChanged(${id})"><option value="">All ${T('classes').toLowerCase()}</option>${classOpts}</select>
                 <label for="reg-hide-voided" style="font-size:11px; display:inline-flex; align-items:center; gap:4px;"><input type="checkbox" id="reg-hide-voided"${hideVoided ? ' checked' : ''} onchange="BankingPage.regHideVoided(this, ${id})">Hide voided</label>
+                <label for="reg-newest-first" style="font-size:11px; display:inline-flex; align-items:center; gap:4px;"><input type="checkbox" id="reg-newest-first"${BankingPage._newestFirst() ? ' checked' : ''} onchange="BankingPage.regNewestFirst(this, ${id})">Newest first</label>
                 ${filtered ? `<button type="button" class="btn btn-sm btn-secondary" onclick="BankingPage.regClear(${id})">Clear</button>` : ''}
                 ${filtered ? `<span id="reg-filter-note" style="font-size:11px; color:var(--gray-500);">Showing ${reg.class_name ? `${T('class').toLowerCase()} <strong>${escapeHtml(reg.class_name)}</strong>` : 'every ' + T('class').toLowerCase()}${f.start_date ? ` from ${formatDate(f.start_date)}` : ''}${f.end_date ? ` to ${formatDate(f.end_date)}` : ''}: the running balance counts these lines${reg.class_name ? ` only — the account's whole balance is ${formatCurrency(reg.balance)}` : ''}.</span>` : ''}
             </div>`;
@@ -1303,9 +1345,10 @@ const BankingPage = {
                 </tr></thead>`;
         if (!reg.entries.length) {
             html += `<div class="empty-state"><p>${filtered ? 'Nothing posted to this account for these filters' : 'Nothing posted to this account yet'}</p></div>`;
-            html += `<div class="table-container"><table>${head}<tbody></tbody>${quickRow}</table></div>`;
+            html += `<div class="table-container reg-table-box"><table>${head}<tbody></tbody>${quickRow}</table></div>`;
         } else {
-            const rows = shown.map(e => `
+            const newest = BankingPage._newestFirst();
+            const rows = (newest ? [...shown].reverse() : shown).map(e => `
                 <tr data-txn="${e.transaction_id}" style="${e.voided ? 'color:var(--gray-400); text-decoration:line-through;' : ''}">
                     <td>${formatDate(e.date)}</td>
                     <td>${escapeHtml(e.payee || '')}</td>
@@ -1324,7 +1367,11 @@ const BankingPage = {
             // row follows the entries on a populated register as on an
             // empty one (W-14, NEW-140)
             const opening = f.start_date ? `<tr style="color:var(--gray-500);" id="reg-opening"><td>${formatDate(f.start_date)}</td><td colspan="7">Balance brought forward${reg.class_name ? ` (${escapeHtml(reg.class_name)})` : ''}</td><td class="amount">${formatCurrency(reg.opening_balance)}</td><td></td><td></td></tr>` : '';
-            html += `<div class="table-container"><table>${head}<tbody>${opening}${rows}</tbody>${quickRow}</table></div>${hiddenNote}`;
+            // John's build: the headings and the entry row stay in view as
+            // the list scrolls (reg-table-box); newest first, the balance
+            // brought forward closes the list
+            const body = newest ? `${rows}${opening}` : `${opening}${rows}`;
+            html += `<div class="table-container reg-table-box"><table>${head}<tbody>${body}</tbody>${quickRow}</table></div>${hiddenNote}`;
         }
         return html;
     },

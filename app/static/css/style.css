@@ -4149,3 +4149,25 @@ body.page-window #sidebar, body.page-window #sidebar-toggle { display: none !imp
 .qb-journal .qbj-totals strong { min-width: 100px; text-align: right; }
 .qb-journal #je-balance { font-size: 11px; font-weight: 700; margin-left: 12px; }
 .qb-journal .qb-actions { justify-content: flex-end; }
+
+/* John's build: the bank register's column headings stay at the top of the
+   page as its entries scroll, and its entry row at the foot. Its box clips
+   sideways without scrolling (overflow-x: clip), so the page's own scroll
+   (#content) is what they hold to. */
+.table-container.reg-table-box {
+    overflow-x: clip;
+    overflow-y: visible;
+}
+.reg-table-box > table > thead th {
+    position: sticky;
+    top: -16px;
+    z-index: 3;
+}
+.reg-table-box > table > tfoot tr { background: var(--panel-bg); }
+.reg-table-box > table > tfoot td {
+    position: sticky;
+    bottom: -16px;
+    z-index: 3;
+    background: inherit;
+    box-shadow: inset 0 1px 0 var(--panel-border);
+}
