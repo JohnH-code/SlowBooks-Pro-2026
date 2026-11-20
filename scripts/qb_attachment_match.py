@@ -55,6 +55,11 @@ def _load_tx(path):
         except ValueError:
             a = 0
         tx[t]["amt"] = max(tx[t]["amt"], abs(a))
+        # every line's name: a deposit's first line is the bank, with no
+        # name; the payer (Texas Ventures V) is on the line after it
+        nm = r[idx["Name"]].strip()
+        if nm and nm.lower() not in tx[t].setdefault("names", "").lower():
+            tx[t]["names"] += " " + nm
     for t in tx.values():
         try:
             d = datetime.datetime.strptime(t["mod"], "%Y/%m/%d %H:%M:%S").replace(
@@ -73,7 +78,10 @@ T = sorted(tx.values(), key=lambda t: t["trans"])
 N = len(T)
 mod = np.array([t.get("ts", 0) for t in T], dtype=np.int64)
 dates = np.array([datetime.date.fromisoformat(t["date"]).toordinal() for t in T])
-text = [(t["name"] + " " + t["memo"] + " " + t["type"]).lower() for t in T]
+text = [
+    (t["name"] + " " + t.get("names", "") + " " + t["memo"] + " " + t["type"]).lower()
+    for t in T
+]
 amts = np.array([t["amt"] for t in T])
 DOC = json.load(open(sys.argv[3])) if len(sys.argv) > 3 else {}
 F = sorted(folders, key=lambda f: int(f.split("-")[0], 16))
@@ -114,7 +122,11 @@ def money(s):
 NEG = -1e9
 VOCAB = set()
 for t in T:
-    VOCAB |= {w for w in re.findall(r"[a-z]{3,}", t["name"].lower()) if w not in STOP}
+    VOCAB |= {
+        w
+        for w in re.findall(r"[a-z]{3,}", (t["name"] + t.get("names", "")).lower())
+        if w not in STOP
+    }
 VOCAB |= {w for t in T for w in re.findall(r"\b\d{3}\b", t["name"])}
 VOCAB -= {
     "inc",
@@ -144,9 +156,23 @@ for i, f in enumerate(F):
     s = np.full(N, NEG)
     timed = (gap >= -5) & (gap <= 900)
     s[timed] = 10 - gap[timed] / 120.0
-    later = (gap > 900) & ((fd - dates) <= 120) & ((fd - dates) >= -45)
+    # Attached long after the transaction was saved, or saved again later
+    # (a reconciliation, a bulk edit): then the attachment's day against
+    # the transaction's date is what is left to go by. A document is mostly
+    # attached on the day the transaction happened (a cheque received is
+    # scanned and attached as it is deposited), so that day scores.
+    later = ((gap > 900) | (gap < -5)) & ((fd - dates) <= 120) & ((fd - dates) >= -45)
     s[later] = 2.0
-    strong = {w for w in tk if w in VOCAB}
+    on_day = later & (np.abs(fd - dates) <= 2)
+    s[on_day] += 6.0
+    # a payee's name cut short in the file name ("Tex V cheque" for Texas
+    # Ventures V) counts too
+    strong = {
+        w
+        for w in tk
+        if w in VOCAB
+        or (len(w) >= 3 and not w.isdigit() and any(v.startswith(w) for v in VOCAB))
+    }
     strongs[f] = strong
     dm = money(DOC.get(f, ""))
     fdates = set()
@@ -155,6 +181,7 @@ for i, f in enumerate(F):
             fdates.add(datetime.date(int(y), int(mo), int(d)).toordinal())
         except ValueError:
             pass
+    received = bool(re.search(r"\b(cheque|check|chq|cq)\b", names.lower()))
     nums = set(re.findall(r"(?<![\d,.$])(\d{1,4})(?![\d,]|\.\d)", names))
     for j in np.where(s > NEG)[0]:
         bonus = 0
@@ -168,6 +195,10 @@ for i, f in enumerate(F):
             bonus += 12
         if nums and T[j]["num"] and T[j]["num"] in nums:
             bonus += 15
+        # "Tex V cheque": a cheque received, so a deposit (not the cheque
+        # written the same day)
+        if received and T[j]["type"].lower() == "deposit":
+            bonus += 5
         s[j] += bonus
     # dp
     diag = np.concatenate(
