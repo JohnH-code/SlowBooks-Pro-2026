@@ -559,8 +559,10 @@ def test_back_goes_back_within_the_app_while_there_is_somewhere_to_go(
         settle(page, handled)
         assert page.evaluate(BACK)["disabled"] is True
         # on a Mac: ⌘[, said on the button; Alt+← is the Mac's word-left
-        page.evaluate("""() => { Object.defineProperty(Navigator.prototype, 'platform',
-                { get: () => 'MacIntel', configurable: true }); App.labelBack(); }""")
+        page.evaluate(
+            """() => { Object.defineProperty(Navigator.prototype, 'platform',
+                { get: () => 'MacIntel', configurable: true }); App.labelBack(); }"""
+        )
         assert page.evaluate(BACK)["title"] == "Back (⌘[)"
         assert page.evaluate(BACK)["keys"] == "Meta+["
         _sidebar(page, handled, "#/customers")
@@ -2353,8 +2355,12 @@ def test_a_tables_last_row_draws_its_whole_halo(browser, company, books):
             page.evaluate(f"() => ({LAST_ROW_BUTTON})().focus()")
             page.keyboard.press("Shift+Tab")
             page.keyboard.press("Tab")
-            last = page.evaluate("""() => [document.activeElement.textContent.trim(),
-                    document.activeElement === (""" + LAST_ROW_BUTTON + """)()]""")
+            last = page.evaluate(
+                """() => [document.activeElement.textContent.trim(),
+                    document.activeElement === ("""
+                + LAST_ROW_BUTTON
+                + """)()]"""
+            )
             assert last[1], (width, last)
             assert page.evaluate(CONTAINER_OVERFLOW) == "auto hidden"
             inside = page.evaluate(
@@ -2554,9 +2560,11 @@ def test_tab_brings_every_grid_stop_out_from_under_the_frozen_parts(
         assert cut, "no heading under the grid's right edge between 1440 and 1200"
         page.mouse.move(cut["x"], cut["y"])
         page.mouse.down()
-        pressed = page.evaluate("""() => [document.activeElement.textContent.trim(),
+        pressed = page.evaluate(
+            """() => [document.activeElement.textContent.trim(),
                 document.activeElement.matches(':focus-visible'),
-                document.getElementById('grid-scroll').scrollLeft]""")
+                document.getElementById('grid-scroll').scrollLeft]"""
+        )
         page.mouse.move(cut["x"], cut["y"] + 200)
         page.mouse.up()
         assert pressed == [cut["name"], False, 0], (cut, pressed)
@@ -2811,9 +2819,11 @@ def test_tab_through_settings_never_lands_under_its_save_bar(browser, company, b
         assert half["covered"], half
         page.mouse.move(half["x"], half["y"])
         page.mouse.down()
-        pressed = page.evaluate("""() => [document.activeElement.dataset.half === '1',
+        pressed = page.evaluate(
+            """() => [document.activeElement.dataset.half === '1',
                 document.activeElement.matches(':focus-visible'),
-                document.getElementById('content').scrollTop]""")
+                document.getElementById('content').scrollTop]"""
+        )
         page.mouse.move(half["x"], half["y"] - 300)
         page.mouse.up()
         assert pressed == [True, False, half["top"]], (half, pressed)
@@ -4194,8 +4204,10 @@ def test_the_new_tab_modifier_is_the_platforms_own(browser, company, books):
                 )
                 got = page.evaluate(OPENS_ELSEWHERE, [platform, init])
                 assert got is bool(opens.get(held)), (platform, held, got)
-        page.evaluate("""() => Object.defineProperty(Navigator.prototype, 'platform',
-                { get: () => 'Linux x86_64', configurable: true })""")
+        page.evaluate(
+            """() => Object.defineProperty(Navigator.prototype, 'platform',
+                { get: () => 'Linux x86_64', configurable: true })"""
+        )
         if sys.platform == "darwin":
             # the browser's own answer to ⌘-click on a Mac is a new tab, and
             # to Ctrl-click the context menu: no key follows the link in
@@ -4233,7 +4245,9 @@ def test_a_file_picker_draws_the_keyboards_ring(browser, company, books):
         _keyed(page, "document.getElementById('qbcsv-file-input')")
         _both_themes(page, "QuickBooks report CSV", GOLD)
         for opener, sel in (
-            (f"() => InvoicesPage.view({books['sent']})", "#inv-attach-file"),
+            # John's build: the attachment's chooser is hidden; its one-step
+            # Attach File… button is what the keyboard reaches
+            (f"() => InvoicesPage.view({books['sent']})", "#inv-attach-file + button"),
             ("() => App.showChartImport()", "#modal input[type=file]"),
         ):
             page.evaluate("() => closeModal()")
@@ -4359,8 +4373,10 @@ def test_a_key_after_a_click_is_the_keyboards(browser, company, books, divisions
                 break
         assert cut, "no heading cut at the grid's edge"
         settle(page, handled)
-        page.evaluate("""() => Object.defineProperty(Navigator.prototype, 'platform',
-                { get: () => 'MacIntel', configurable: true })""")
+        page.evaluate(
+            """() => Object.defineProperty(Navigator.prototype, 'platform',
+                { get: () => 'MacIntel', configurable: true })"""
+        )
         page.mouse.click(cut["x"], cut["y"])
         page.wait_for_function(
             "() => location.hash.startsWith('#/reports/profit-loss-class')"
