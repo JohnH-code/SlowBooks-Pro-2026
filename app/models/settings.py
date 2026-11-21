@@ -314,6 +314,9 @@ DEFAULT_SETTINGS = {
     # John's build: how many days ahead the app reminds of a memorized
     # transaction coming due (QuickBooks' "Remind me N days before")
     "memorized_remind_days": "5",
+    # John's build: the top bar's shortcuts after Home (topbar_shortcuts.js),
+    # ids comma separated; blank is the build's own set, "none" none
+    "topbar_shortcuts": "",
     # Phase 10: Late Fee Automation
     "late_fee_enabled": "false",
     "late_fee_rate": "1.5",

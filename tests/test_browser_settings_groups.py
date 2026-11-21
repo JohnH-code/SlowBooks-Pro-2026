@@ -137,6 +137,7 @@ def test_the_list_is_the_groups_this_sign_in_can_see(
         assert got["selected"] == "company"
         assert got["headings"] == [
             "Company Information",
+            "Top Bar",  # John's build: the top bar's shortcuts
             "Company Logo",
             "Closing Date",
         ]
@@ -328,6 +329,7 @@ def test_find_a_setting_finds_a_field_in_a_group_not_showing(browser, company, b
         got = _state(page)
         assert got["selected"] == "company" and got["headings"] == [
             "Company Information",
+            "Top Bar",  # John's build: the top bar's shortcuts
             "Company Logo",
             "Closing Date",
         ]
@@ -349,13 +351,15 @@ def test_find_a_setting_finds_a_field_in_a_group_not_showing(browser, company, b
 def test_the_group_list_is_a_tab_list_for_the_keyboard(browser, company, books):
     page, handled = _open_at(browser, company, "#/settings")
     try:
-        roles = page.evaluate("""() => {
+        roles = page.evaluate(
+            """() => {
             const list = document.getElementById('settings-groups');
             return { list: list.getAttribute('role'), label: list.getAttribute('aria-label'),
                      panel: document.getElementById('settings-panel').getAttribute('role'),
                      stops: [...list.querySelectorAll('[role="tab"]')].filter(t => t.tabIndex === 0)
                         .map(t => t.id) };
-        }""")
+        }"""
+        )
         assert roles == {
             "list": "tablist",
             "label": "Settings groups",
@@ -423,7 +427,8 @@ def test_the_open_group_is_remembered_on_this_computer(browser, company, books):
 def test_a_narrow_window_puts_the_list_above_the_panel(browser, company, books):
     page, handled = _open_at(browser, company, "#/settings", width=800, height=700)
     try:
-        got = page.evaluate("""() => {
+        got = page.evaluate(
+            """() => {
             const nav = document.getElementById('settings-nav').getBoundingClientRect();
             const panel = document.getElementById('settings-panel').getBoundingClientRect();
             const tabs = [...document.querySelectorAll('#settings-groups [role="tab"]')]
@@ -431,7 +436,8 @@ def test_a_narrow_window_puts_the_list_above_the_panel(browser, company, books):
             return { above: nav.bottom <= panel.top, wide: panel.width >= nav.width - 1,
                      rows: new Set(tabs.map(r => Math.round(r.top))).size, count: tabs.length,
                      orientation: document.getElementById('settings-groups').getAttribute('aria-orientation') };
-        }""")
+        }"""
+        )
         assert got["above"] and got["wide"], got
         assert got["rows"] < got["count"], got  # a row of choices, not a column
         assert got["orientation"] == "horizontal"
@@ -507,7 +513,8 @@ def test_the_form_is_a_box_and_save_is_still_its_own_button(browser, company, bo
     page, handled = _open_at(browser, company, "#/settings")
     try:
         page.click("#settings-tab-email")
-        got = page.evaluate("""() => {
+        got = page.evaluate(
+            """() => {
             const form = document.getElementById('settings-form'),
                   bar = document.getElementById('settings-savebar'),
                   btn = document.getElementById('settings-save-btn'),
@@ -521,7 +528,8 @@ def test_the_form_is_a_box_and_save_is_still_its_own_button(browser, company, bo
                 fields: [...panel.querySelectorAll('.settings-section')]
                     .filter(s => s.getClientRects().length).length,
             };
-        }""")
+        }"""
+        )
         assert got["display"] not in ("contents", "none"), got
         assert got["height"] > 0 and got["fields"] > 0, got
         assert got["barInForm"] is False and got["barLast"] is True, got
