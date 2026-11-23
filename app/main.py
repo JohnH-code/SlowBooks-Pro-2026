@@ -142,6 +142,8 @@ from app.services.auth import get_session_secret
 from app.services.auth import (
     signed_in_before_this_start as _signed_in_before_this_start,
     signed_in_to_another_company as _signed_in_to_another_company,
+    clear_keeping_others as _clear_keeping_others,
+    resume_this_company as _resume_this_company,
     check_session_user as _check_session_user,
     SESSION_VERSION_KEY as _SESSION_VERSION_KEY,
 )
@@ -1262,6 +1264,8 @@ async def _require_session(request: Request, call_next):
         return await call_next(request)
     token_principal = None
     token_grant = False
+    # back in a company left with Switch company… (John's build)
+    _resume_this_company(request.session)
     if request.session.get("authenticated") is True:
         if _signed_in_before_this_start(request.session):
             # Settings -> "Ask for the password each time SlowBooks Pro
@@ -1275,8 +1279,9 @@ async def _require_session(request: Request, call_next):
                 },
             )
         if _signed_in_to_another_company(request.session):
-            # A sign-in belongs to the company it was made in (R6-1).
-            request.session.clear()
+            # A sign-in belongs to the company it was made in (R6-1); the
+            # other companies' sign-ins stay set aside (John's build)
+            _clear_keeping_others(request.session)
             return JSONResponse(
                 status_code=401,
                 content={

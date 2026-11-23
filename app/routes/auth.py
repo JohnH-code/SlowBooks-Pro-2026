@@ -38,6 +38,9 @@ from app.services.auth import (
     remember_this_start,
     set_password,
     remember_this_company,
+    clear_keeping_others,
+    leave_company,
+    resume_this_company,
     signed_in_before_this_start,
     signed_in_to_another_company,
 )
@@ -215,6 +218,8 @@ def _status_while_company_unavailable(request: Request, sentence: str) -> dict:
 
 
 def _auth_status(request: Request, db: Session) -> dict:
+    # back in a company left with Switch company… (John's build)
+    resume_this_company(request.session)
     authenticated = request.session.get("authenticated") is True
     if authenticated and (
         signed_in_before_this_start(request.session)
@@ -223,7 +228,7 @@ def _auth_status(request: Request, db: Session) -> dict:
         # "Ask for the password each time SlowBooks Pro starts": a session
         # from before this start is signed out here too, or the page would
         # be told it is signed in while every request answers 401.
-        request.session.clear()
+        clear_keeping_others(request.session)
         authenticated = False
     setup_needed = not password_is_set(db)
     out = {
@@ -732,7 +737,7 @@ def setup(
     # planted via a fixation attempt. Starlette's signed-cookie session is
     # already fixation-resistant (signature changes with payload) but this
     # is defence in depth and intent-revealing.
-    request.session.clear()
+    clear_keeping_others(request.session)
     request.session["authenticated"] = True
     remember_this_start(request.session)
     remember_this_company(request.session)
@@ -918,7 +923,7 @@ def login(
     _record_login_attempt(db, request, success=True)
     # Same rotation rationale as /setup.
     company = served_companies.chosen_file(request.session)
-    request.session.clear()
+    clear_keeping_others(request.session)
     request.session["authenticated"] = True
     remember_this_start(request.session)
     remember_this_company(request.session)
@@ -995,6 +1000,15 @@ def _other_companies_opened_by(username: str, password: str, here: str) -> dict:
             # a company that cannot be opened now is simply not offered
             logger.warning("could not check sign-in for %s", company["file"])
     return found
+
+
+@router.post("/leave")
+def leave(request: Request):
+    """John's build: Switch company… in the desktop app. This company's
+    sign-in is set aside in the cookie, not ended, so opening it again in
+    this app needs no password; Sign Out ends them all."""
+    leave_company(request.session)
+    return {"status": "ok"}
 
 
 @router.post("/logout")

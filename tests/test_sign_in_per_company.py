@@ -102,3 +102,66 @@ def test_a_company_id_goes_with_its_engine():
     del engine
     gc.collect()
     assert len(auth_service._company_ids) == 0
+
+
+# John's build: switching back to a company signed in to earlier in this app
+# asks no password. Switch company… sets the sign-in aside (/api/auth/leave),
+# and the cookie keeps each company's sign-in; Sign Out ends them all.
+
+
+def _serve(db_session, company_id):
+    set_setting(db_session, "company_session_id", company_id)
+    db_session.commit()
+    auth_service.forget_company_ids()
+
+
+def test_switching_back_to_a_company_signed_in_to_asks_no_password(client, db_session):
+    assert client.get("/api/settings").status_code == 200
+    first = auth_service._company_id()
+    # Switch company…: this one's sign-in set aside
+    assert client.post("/api/auth/leave").is_success
+    # the other company asks for its own password
+    _serve(db_session, "another-company-0000000000000000")
+    assert client.get("/api/auth/status").json()["authenticated"] is False
+    assert client.get("/api/settings").status_code == 401
+    assert client.post("/api/auth/login", json={"password": FIXTURE_PW}).is_success
+    assert client.get("/api/settings").status_code == 200
+    # back to the first: signed in, no password
+    assert client.post("/api/auth/leave").is_success
+    _serve(db_session, first)
+    assert client.get("/api/auth/status").json()["authenticated"] is True
+    assert client.get("/api/settings").status_code == 200
+    # and to the other again, the same
+    _serve(db_session, "another-company-0000000000000000")
+    assert client.get("/api/settings").status_code == 200
+
+
+def test_a_company_reached_without_leaving_also_keeps_the_first(client, db_session):
+    """Opened another way (last_opened changed, the picker after a crash):
+    the first company's sign-in is set aside all the same."""
+    assert client.get("/api/settings").status_code == 200
+    first = auth_service._company_id()
+    _serve(db_session, "another-company-0000000000000000")
+    r = client.get("/api/settings")
+    assert r.status_code == 401 and "another company" in r.json()["detail"]
+    assert client.post("/api/auth/login", json={"password": FIXTURE_PW}).is_success
+    _serve(db_session, first)
+    assert client.get("/api/settings").status_code == 200
+
+
+def test_sign_out_ends_every_company(client, db_session):
+    assert client.get("/api/settings").status_code == 200
+    first = auth_service._company_id()
+    assert client.post("/api/auth/leave").is_success
+    _serve(db_session, "another-company-0000000000000000")
+    assert client.post("/api/auth/login", json={"password": FIXTURE_PW}).is_success
+    assert client.post("/api/auth/logout").is_success
+    _serve(db_session, first)
+    assert client.get("/api/auth/status").json()["authenticated"] is False
+    assert client.get("/api/settings").status_code == 401
+
+
+def test_switch_company_sets_the_sign_in_aside():
+    js = (ROOT / "app/static/js/companies.js").read_text(encoding="utf-8")
+    switch = js[js.index("async switchCompany() {") : js.index("async render() {")]
+    assert "API.post('/auth/leave'" in switch and "/auth/logout" not in switch

@@ -521,9 +521,62 @@ def remember_this_company(session: dict) -> None:
         session[SESSION_COMPANY_KEY] = company
 
 
+# John's build: switching company in the desktop app asked for the password
+# every time, even for a company signed in to minutes before. The cookie now
+# keeps each company's sign-in made in it (the app's own cookie, signed with
+# the app's key): leaving a company sets its sign-in aside, and coming back
+# puts it back, checked against that company's users as any sign-in is.
+# Sign Out clears them all.
+SESSION_OTHERS_KEY = "other_companies"
+
+
+def clear_keeping_others(session: dict) -> None:
+    """session.clear(), keeping the other companies' sign-ins set aside."""
+    others = session.get(SESSION_OTHERS_KEY)
+    session.clear()
+    if others:
+        session[SESSION_OTHERS_KEY] = others
+
+
+def _set_aside(session: dict) -> dict:
+    """This session's sign-in, set aside under its company."""
+    others = dict(session.get(SESSION_OTHERS_KEY) or {})
+    company = session.get(SESSION_COMPANY_KEY)
+    if company and session.get("authenticated") is True:
+        others[company] = {k: v for k, v in session.items() if k != SESSION_OTHERS_KEY}
+    return others
+
+
+def leave_company(session: dict) -> None:
+    """Switch company… (desktop): this company's sign-in set aside, not
+    ended, so coming back to it needs no password."""
+    others = _set_aside(session)
+    session.clear()
+    if others:
+        session[SESSION_OTHERS_KEY] = others
+
+
+def resume_this_company(session: dict) -> bool:
+    """A session signed in to no company, holding a sign-in set aside for
+    this one: put it back. True when it did."""
+    if session.get("authenticated") is True:
+        return False
+    others = dict(session.get(SESSION_OTHERS_KEY) or {})
+    company = _company_id()
+    mine = others.pop(company, None) if company else None
+    if not mine:
+        return False
+    session.clear()
+    session.update(mine)
+    if others:
+        session[SESSION_OTHERS_KEY] = others
+    return True
+
+
 def signed_in_to_another_company(session: dict) -> bool:
-    """True when a signed-in session was signed in to another company: the
-    caller treats it as signed out."""
+    """True when a signed-in session was signed in to another company (and
+    this one has no sign-in of its own set aside): the caller treats it as
+    signed out. Its sign-in is set aside for when that company is back."""
     company = _company_id()
     if company is None:
         return False
@@ -531,4 +584,15 @@ def signed_in_to_another_company(session: dict) -> bool:
     if signed_in_to is None:
         session[SESSION_COMPANY_KEY] = company
         return False
-    return signed_in_to != company
+    if signed_in_to == company:
+        return False
+    others = _set_aside(session)
+    mine = others.pop(company, None)
+    if mine:
+        session.clear()
+        session.update(mine)
+        if others:
+            session[SESSION_OTHERS_KEY] = others
+        return False
+    session[SESSION_OTHERS_KEY] = others
+    return True

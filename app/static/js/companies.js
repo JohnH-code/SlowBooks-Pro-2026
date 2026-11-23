@@ -18,9 +18,10 @@ const CompaniesPage = {
     },
 
     async switchCompany() {
-        if (!confirm('Sign out of this company and choose another?')) return;
+        // John's build: this company's sign-in is set aside, not ended, so
+        // coming back to it in this app needs no password (Sign Out ends it)
         try {
-            await API.post('/auth/logout', {});
+            await API.post('/auth/leave', {});
         } catch (e) {
             // Signed out already (a 401) is fine; anything else may have left
             // this sign-in open, so the picker waits (skytech R6-1, 2.18.0).
