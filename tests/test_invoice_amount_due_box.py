@@ -132,4 +132,4 @@ def test_settings_offers_the_box():
         encoding="utf-8"
     )
     assert 'name="invoice_show_amount_due" value="true" data-bool' in js
-    assert "Show the Amount Due box" in js
+    assert "Show the Amount Due box on" in js
