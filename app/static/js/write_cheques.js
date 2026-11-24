@@ -344,9 +344,31 @@
         form.requestSubmit();
     };
 
+    // Close without saving (QuickBooks' window close): asks first when
+    // something has been entered or changed.
+    ExpensesPage.qbCancel = function () {
+        const form = $('#expense-form');
+        const changed = form && (ExpensesPage._editId
+            ? ExpensesPage._qbSnap && ExpensesPage._qbSnap !== qbState(form)
+            : !qbBlank(form));
+        const files = typeof AttachFile !== 'undefined' && AttachFile.pending.length;
+        if ((changed || files) && !confirm(ExpensesPage._editId
+            ? 'Close without saving your changes to this cheque?'
+            : 'Close without saving this cheque?')) return;
+        ScanHelper.discard();
+        closeModal();
+    };
+
     ExpensesPage.qbClear = function () {
         const form = $('#expense-form');
         const keep = form ? parseInt(form.paid_from_account_id.value, 10) : null;
+        // seen at once, while the fresh form loads
+        if (form) {
+            if (form.dataset.clearing) return;
+            form.dataset.clearing = '1';
+            form.style.opacity = '0.5';
+            form.style.pointerEvents = 'none';
+        }
         ScanHelper.discard();
         // a cheque being edited goes back to what was saved
         if (ExpensesPage._editId) return ExpensesPage.edit(ExpensesPage._editId);
@@ -569,6 +591,7 @@
                     <button type="button" class="btn btn-secondary" onclick="ExpensesPage.qbSubmit('close')">Save &amp; Close</button>
                     <button type="button" class="btn btn-primary" onclick="ExpensesPage.qbSubmit('new')">Save &amp; New</button>
                     <button type="button" class="btn btn-secondary" onclick="ExpensesPage.qbClear()" title="${ExpensesPage._editId ? 'Put the cheque back as it was saved' : 'Start this cheque over'}">${ExpensesPage._editId ? 'Revert' : 'Clear'}</button>
+                    <button type="button" class="btn btn-secondary" onclick="ExpensesPage.qbCancel()" title="Close without saving">Cancel</button>
                 </div>
             </form>`, { wide: true });
 

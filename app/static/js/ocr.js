@@ -85,7 +85,12 @@ const ScanHelper = {
         });
     },
 
+    _scanGen: 0,
+
     async scan(file, applyCallback) {
+        // a scan the form was cleared or closed during is dropped when it
+        // comes back, not written into the form that replaced it
+        const gen = ++this._scanGen;
         const btn = $('#scan-btn');
         const statusEl = $('#scan-status');
         const fd = new FormData();
@@ -98,6 +103,10 @@ const ScanHelper = {
             catch (err) { throw new Error("SlowBooks isn't responding (network error) — if this keeps happening, close and relaunch SlowBooks Pro."); }
             if (!resp.ok) throw new Error(await API.responseError(resp, 'Scan failed'));
             const result = await resp.json();
+            if (gen !== this._scanGen) {
+                if (result.intake_id) API.del(`/ocr/intake/${result.intake_id}`).catch(() => {});
+                return;
+            }
             if (!result.ocr_available) {
                 if (statusEl) statusEl.textContent = result.message || 'Scanning unavailable.';
                 return;
@@ -154,6 +163,7 @@ const ScanHelper = {
         // Runs from the modal's Cancel button ahead of closeModal(): nothing
         // in here may throw or block, or the modal never closes.
         try { if (window.OcrCanvas) OcrCanvas.close(); } catch (_) { /* never block Cancel */ }
+        this._scanGen++;
         this._lastResult = null;
         if (!this._intakeId) return;
         const intakeId = this._intakeId;
