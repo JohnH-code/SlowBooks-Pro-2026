@@ -573,6 +573,11 @@ const SettingsPage = {
                                         `<option value="${v}" ${(s.invoice_logo_size || 'small') === v ? 'selected' : ''}>${l}</option>`).join('')}
                                 </select>
                                 <div style="font-size:10px; color:var(--text-muted); margin-top:4px;">On invoices, estimates, statements, credit memos and the other printed forms. A wide logo stops at the width shown first.</div>
+                                <label for="invoice-show-amount-due" style="font-weight:normal; display:block; margin-top:8px;">
+                                    <input type="checkbox" id="invoice-show-amount-due" name="invoice_show_amount_due" value="true" data-bool data-write aria-describedby="invoice-show-amount-due-help" style="width:auto; vertical-align:middle; margin-right:6px;" ${s.invoice_show_amount_due !== 'false' ? 'checked' : ''}>
+                                    Show the Amount Due box
+                                </label>
+                                <div id="invoice-show-amount-due-help" style="font-size:10px; color:var(--text-muted); margin-top:4px;">The box beside Bill To with the balance owing and the due date, on invoices and pledges. Without it, the due date still shows in the row under the title and the balance in the totals.</div>
                             </div>` : ''}
                         </div>
                     </div>

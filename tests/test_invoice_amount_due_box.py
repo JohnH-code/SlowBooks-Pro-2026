@@ -94,3 +94,42 @@ def test_the_box_prints_on_the_pdf(db_session, customer):
     assert "AMOUNT DUE" in text.upper(), text[:600]
     assert "$150.00" in text
     assert "Due Oct 31, 2026" in text
+
+
+# Settings can leave the box off (invoice_show_amount_due): for a business
+# whose invoices say it already, under the title (Due Date) and in the
+# totals (Balance Due). On by default, so nothing changes until it is.
+
+
+def test_the_box_is_on_unless_settings_turn_it_off(db_session, customer):
+    inv = _invoice(db_session, customer)
+    company = get_all_settings(db_session)
+    assert company["invoice_show_amount_due"] == "true"
+    assert '<div class="amount-due-box">' in _html(db_session, inv, company)
+    company["invoice_show_amount_due"] = "false"
+    html = _html(db_session, inv, company)
+    assert '<div class="amount-due-box">' not in html
+    # the due date and the balance are still on the invoice
+    assert "Oct 31, 2026" in html and "$250.00" in html
+
+
+def test_the_setting_is_saved_and_checked(client):
+    r = client.put("/api/settings", json={"invoice_show_amount_due": "false"})
+    assert r.status_code == 200, r.text
+    assert client.get("/api/settings").json()["invoice_show_amount_due"] == "false"
+    assert (
+        client.put(
+            "/api/settings", json={"invoice_show_amount_due": "maybe"}
+        ).status_code
+        == 422
+    )
+
+
+def test_settings_offers_the_box():
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[1] / "app/static/js/settings.js").read_text(
+        encoding="utf-8"
+    )
+    assert 'name="invoice_show_amount_due" value="true" data-bool' in js
+    assert "Show the Amount Due box" in js

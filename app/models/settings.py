@@ -154,6 +154,8 @@ DEFAULT_SETTINGS = {
     # when a logo prints: without one the heading stays, so a document never
     # goes out nameless. The address block prints either way.
     "invoice_logo_only": "false",
+    # the Amount Due box beside Bill To on invoices and pledges (#680)
+    "invoice_show_amount_due": "true",
     # How big the logo prints on the forms (John's build): small is the
     # size it always printed, 60 px tall by 200 wide at most.
     "invoice_logo_size": "small",

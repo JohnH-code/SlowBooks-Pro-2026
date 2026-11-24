@@ -78,6 +78,8 @@ ENUM_SETTINGS = {
     "ask_password_on_start": frozenset({"true", "false"}),
     "invoice_show_logo": frozenset({"true", "false"}),
     "invoice_logo_only": frozenset({"true", "false"}),
+    # the Amount Due box beside Bill To (#680): shown unless turned off
+    "invoice_show_amount_due": frozenset({"true", "false"}),
     # how big the logo prints (John's build)
     "invoice_logo_size": frozenset({"small", "medium", "large", "xlarge"}),
     "class_warn_blank": frozenset({"true", "false"}),

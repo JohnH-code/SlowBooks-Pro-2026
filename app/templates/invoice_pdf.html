@@ -145,8 +145,10 @@
         {% endif %}
         {# Amount Due (#680): the balance and the due date at the top. A pledge
            reads Balance, as its totals row does; a paid invoice reads 0.00 and
-           keeps the box. A receipt is paid at the time of sale: no box. #}
-        {% if kind in ('Invoice', 'Pledge') %}
+           keeps the box. A receipt is paid at the time of sale: no box. Settings
+           can leave it off (invoice_show_amount_due): the due date is in the row
+           under the title and the balance in the totals. #}
+        {% if kind in ('Invoice', 'Pledge') and company.invoice_show_amount_due != 'false' %}
         <div class="amount-due-box">
             <div class="amount-due-label">{% if kind == 'Pledge' %}Balance{% else %}Amount Due{% endif %}</div>
             <div class="amount-due-value">{{ (inv.balance_due or 0) | currency(cur) }}</div>
